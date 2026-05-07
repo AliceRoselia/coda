@@ -100,7 +100,7 @@ tunables!(
     (FUT_BASE, 36, 20, 200, 9.0),
     (FUT_PER_DEPTH, 70, 40, 250, 10.5),
     (HIST_PRUNE_DEPTH, 3, 1, 8, 1.5),
-    (HIST_PRUNE_MULT, 12825, 500, 50000, 2475.0),
+    (HIST_PRUNE_MULT, 4097, 500, 50000, 2475.0),
     (SEE_QUIET_MULT, 32, 5, 80, 3.75),
     (LMR_HIST_DIV, 6744, 2000, 100000, 4900.0),
     (LMR_C_QUIET, 133, 40, 300, 13.0),
@@ -2753,29 +2753,34 @@ fn negamax(
         };
 
         // History-based pruning: prune quiet moves with deeply negative history at shallow depths.
-        // Removed `!improving && !unstable` gate clauses per
-        // cross_engine_comparison_2026-04-25.md item #10 — SF/Obsidian/
-        // Halogen/Reckless gate hist-prune on neither. Coda's prior gate
-        // suppressed firing in ~50% of nodes hist-prune was meant for.
+        // SF-aligned signal: cont_hist[ply-1] + cont_hist[ply-2] + pawn_hist.
+        // mainHist intentionally excluded — it's the global "is this move good"
+        // signal; hist-prune wants the contextual signal (does this move stink
+        // *here*). Mixing main washed out the contextual gradient and caused
+        // the feature to fire ~0.7/Kn (vs 50-80/Kn for SF) and SPSA to drift
+        // without conviction.
         if ply > 0 && !in_check && depth <= tp(&HIST_PRUNE_DEPTH)
             && !is_cap && !is_promo
             && mv != tt_move
             && best_score > -(MATE_SCORE - 100)
             && FEAT_HIST_PRUNE.load(Ordering::Relaxed)
         {
-            let mut hist_prune_score = info.history.main_score(from, to, enemy_attacks);
             if moved_piece != NO_PIECE {
                 let gp = go_piece(moved_piece);
+                let mut hist_prune_score: i32 = 0;
                 if prev_piece_for_cont != 0 {
                     hist_prune_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize] as i32;
                 }
-                // Pawn history in pruning decision
+                if prev2_piece_for_cont != 0 {
+                    hist_prune_score += info.history.cont_hist[prev2_piece_for_cont][prev2_to_for_cont as usize][gp][to as usize] as i32;
+                }
                 let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
                 hist_prune_score += info.pawn_hist[ph_idx][gp][to as usize] as i32;
-            }
-            if hist_prune_score < -tp(&HIST_PRUNE_MULT) * depth as i32 {
-                info.stats.history_prunes += 1;
-                continue;
+
+                if hist_prune_score < -tp(&HIST_PRUNE_MULT) * depth as i32 {
+                    info.stats.history_prunes += 1;
+                    continue;
+                }
             }
         }
 
