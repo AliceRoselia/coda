@@ -2769,6 +2769,9 @@ fn negamax(
                 if prev_piece_for_cont != 0 {
                     hist_prune_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize] as i32;
                 }
+                if prev2_piece_for_cont != 0 {
+                    hist_prune_score += info.history.cont_hist[prev2_piece_for_cont][prev2_to_for_cont as usize][gp][to as usize] as i32;
+                }
                 // Pawn history in pruning decision
                 let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
                 hist_prune_score += info.pawn_hist[ph_idx][gp][to as usize] as i32;
