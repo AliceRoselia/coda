@@ -3101,6 +3101,17 @@ fn negamax(
                     reduction += 1;
                 }
 
+                // EXPERIMENT (SF/Weiss/Obsidian/BlackMarlin/Clarity): extra LMR
+                // reduction at expected cut nodes. Compounds with the existing
+                // !is_pv + move_count > 1 logic. cut_node is the parent's
+                // explicit "we expect this to fail high" signal — when set,
+                // first move is the cut candidate, others are exploratory.
+                // Reduce them more aggressively. Also fires at the first move
+                // under cut_node, which the existing logic doesn't catch.
+                if cut_node {
+                    reduction += 1;
+                }
+
                 // Reduce less when the position is improving
                 if improving {
                     reduction -= 1;
