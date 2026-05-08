@@ -3101,6 +3101,16 @@ fn negamax(
                     reduction += 1;
                 }
 
+                // EXPERIMENT (Stockfish search.cpp source): at cut nodes with no TT
+                // move guidance, reduce by an extra +1. The reasoning: cut_node says
+                // "we expect to fail high"; absence of TT move says "we have no
+                // historical signal about which move is the cut candidate" → trust
+                // the search less, prune harder. Compounds with #1017's general
+                // cut_node +1 reduction (if it merges).
+                if cut_node && tt_move == NO_MOVE {
+                    reduction += 1;
+                }
+
                 // Reduce less when the position is improving
                 if improving {
                     reduction -= 1;
