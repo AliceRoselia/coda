@@ -99,6 +99,13 @@ tunables!(
     // where Reckless prunes confidently. SPSA retune-on-branch expected.
     (FUT_BASE, 36, 20, 200, 9.0),
     (FUT_PER_DEPTH, 70, 40, 250, 10.5),
+    // T1.2 — eval-magnitude-scaled history bonus. Multiplies history_bonus
+    // and capture_history_bonus by (1 + |static_eval|/EVAL_HIST_SCALE),
+    // capped at 2x. Hypothesis: replicates the high-WDL "sharper history
+    // malus on bad-quiet moves in clearly-winning/losing positions" effect
+    // at search time without retraining. Bigger malus → more bimodal hist
+    // distribution → more hist-prune fires (matching Hobbes A2/A3 stats).
+    (EVAL_HIST_SCALE, 800, 200, 4000, 100.0),
     (HIST_PRUNE_DEPTH, 3, 1, 8, 1.5),
     (HIST_PRUNE_MULT, 12825, 500, 50000, 2475.0),
     (SEE_QUIET_MULT, 32, 5, 80, 3.75),
@@ -2147,13 +2154,16 @@ fn negamax(
                         let tt_is_cap = board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
                             || move_flags(tt_move) == FLAG_EN_PASSANT;
                         if !tt_is_cap && tt_piece != NO_PIECE {
-                            let bonus = history_bonus(depth);
+                            // T1.2: at TT cutoff, static_eval isn't yet
+                            // computed — use tt_score (the cutoff value) as
+                            // the eval magnitude proxy.
+                            let bonus = history_bonus(depth, tt_score);
                             History::update_history(
                                 info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
                                 bonus,
                             );
                         } else if tt_is_cap && tt_piece != NO_PIECE {
-                            let bonus = capture_history_bonus(depth);
+                            let bonus = capture_history_bonus(depth, tt_score);
                             let cpt_pt = board.piece_type_at(move_to(tt_move));
                             let ct = if move_flags(tt_move) == FLAG_EN_PASSANT {
                                 captured_type(PAWN)
@@ -3317,7 +3327,7 @@ fn negamax(
 
                     // Beta cutoff - update history for quiet moves (killers/counter removed — SF pattern)
                     if !is_cap {
-                        let bonus = history_bonus(depth);
+                        let bonus = history_bonus(depth, static_eval);
 
                         // Update main history
                         History::update_history(
@@ -3405,7 +3415,7 @@ fn negamax(
 
                     } else {
                         // Capture caused beta cutoff: bonus the cutoff capture
-                        let cap_bonus = capture_history_bonus(depth);
+                        let cap_bonus = capture_history_bonus(depth, static_eval);
                         if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                             let cpt = if flags == FLAG_EN_PASSANT {
                                 captured_type(PAWN)
@@ -3423,7 +3433,7 @@ fn negamax(
                     // (matching Stockfish/Obsidian/Viridithas — captures that fail should be
                     // penalized regardless of whether the best move was quiet or tactical)
                     {
-                        let cap_malus = capture_history_bonus(depth);
+                        let cap_malus = capture_history_bonus(depth, static_eval);
                         let cap_count = if is_cap { n_captures_tried.saturating_sub(1) } else { n_captures_tried };
                         for i in 0..cap_count {
                             let (cp, ct, cv) = captures_tried[i];
@@ -3530,16 +3540,28 @@ fn negamax(
 /// Consensus: SF min(1469, 155*d-93), Clarity min(1632, 276*d-119),
 /// Obsidian min(1400, 175*d-50). Our old depth² formula gave 25 at d=5
 /// vs SF's 682 — history values were 27× too small to influence ordering.
-fn history_bonus(depth: i32) -> i32 {
+fn history_bonus(depth: i32, static_eval: i32) -> i32 {
     // Offset shape — mirrors Stockfish's `155*d - 93` and our own
     // capture-history's `MULT * d - BASE`. Clamped at 0 to avoid
     // negative bonuses at very shallow depth (which would corrupt
     // gravity updates) and at MAX to cap the late-depth plateau.
-    (tp(&HIST_BONUS_MULT) * depth - tp(&HIST_BONUS_OFFSET)).clamp(0, tp(&HIST_BONUS_MAX))
+    let base = (tp(&HIST_BONUS_MULT) * depth - tp(&HIST_BONUS_OFFSET)).clamp(0, tp(&HIST_BONUS_MAX));
+    apply_eval_mag_scale(base, static_eval)
 }
 
-fn capture_history_bonus(depth: i32) -> i32 {
-    (tp(&CAP_HIST_MULT) * depth - tp(&CAP_HIST_BASE)).clamp(0, tp(&CAP_HIST_MAX))
+fn capture_history_bonus(depth: i32, static_eval: i32) -> i32 {
+    let base = (tp(&CAP_HIST_MULT) * depth - tp(&CAP_HIST_BASE)).clamp(0, tp(&CAP_HIST_MAX));
+    apply_eval_mag_scale(base, static_eval)
+}
+
+/// T1.2: scale a history bonus by (1 + |static_eval|/EVAL_HIST_SCALE),
+/// capped at 2x. Uses 256-fixed-point math to avoid float ops on the hot
+/// path. factor=256 means 1.0x, factor=512 means 2.0x.
+#[inline]
+fn apply_eval_mag_scale(base: i32, static_eval: i32) -> i32 {
+    let scale = tp(&EVAL_HIST_SCALE);
+    let factor = 256 + (static_eval.abs() * 256 / scale).min(256);
+    base * factor / 256
 }
 
 /// Quiescence search wrapper.
