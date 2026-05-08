@@ -2468,9 +2468,22 @@ fn negamax(
             // > UNSTABLE_THRESH). Static eval can't be trusted for RFP when
             // eval is volatile. Mirrors unstable × ProbCut skip (#542 +6.7).
             if unstable { margin += margin / 3; }
-            if static_eval - margin >= beta {
+
+            // EXPERIMENT (Motor T1.3): TT-blended eval for RFP gate. When TT
+            // has a lower-bound entry exceeding static_eval, use the TT score.
+            // The TT lower bound is a proven floor on the true score; if it
+            // says "score >= ttScore" and ttScore > static_eval, we can prune
+            // on the stronger signal. Symmetric upper-bound case for futility
+            // is in a separate experiment to keep signals clean.
+            let pruning_eval = if tt_hit && tt_entry.flag == TT_FLAG_LOWER {
+                let tt_s = score_from_tt(tt_entry.score, ply);
+                if tt_s > static_eval { tt_s } else { static_eval }
+            } else {
+                static_eval
+            };
+            if pruning_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
-                return static_eval - margin;
+                return pruning_eval - margin;
             }
         }
 
