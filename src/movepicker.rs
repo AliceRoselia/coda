@@ -35,9 +35,18 @@ pub struct History {
     /// Counter-move: [piece 1-12][to]
     /// piece uses 1-12 indexing (slot 0 unused).
     pub counter: [[Move; 64]; 13],
-    /// Continuation history: [piece 1-12][to][piece 1-12][to]
-    /// piece uses 1-12 indexing (slot 0 unused).
-    pub cont_hist: [[[[i16; 64]; 13]; 64]; 13],
+    /// Continuation history (parent-context bucketed):
+    ///   [bucket][prev_piece 1-12][prev_to][curr_piece 1-12][curr_to]
+    /// bucket = (in_check_at_parent << 0) | (parent_was_capture << 1), so
+    ///   0 = not in check, parent was quiet
+    ///   1 = in check, parent was quiet
+    ///   2 = not in check, parent was capture
+    ///   3 = in check, parent was capture
+    /// Reckless/PlentyChess pattern. Splits per-cell signal pool by parent
+    /// move context so each cell sees a more homogeneous traffic stream.
+    /// 4× table size (1.36MB → 5.4MB) but addresses the diagnostic-flagged
+    /// per-cell signal density problem (ply-1 noise from traffic dilution).
+    pub cont_hist: [[[[[i16; 64]; 13]; 64]; 13]; 4],
 }
 
 impl History {
@@ -65,14 +74,13 @@ impl History {
         }
     }
 
-    pub fn new() -> Self {
-        History {
-            main: [[[[0; 64]; 64]; 2]; 2],
-            capture: [[[0i16; 7]; 64]; 13],
-            killers: [[NO_MOVE; 2]; crate::search::MAX_PLY],
-            counter: [[NO_MOVE; 64]; 13],
-            cont_hist: [[[[0; 64]; 13]; 64]; 13],
-        }
+    /// Create a new History via heap-zero allocation. Required because the
+    /// cont_hist field is now ~5.4MB after 4-bucket parent-context split —
+    /// stack-allocating History would overflow the test thread's stack.
+    /// Production paths (SearchInfo::new) call `alloc_zeroed_box::<History>()`
+    /// directly; this is a convenience wrapper for tests.
+    pub fn new() -> Box<Self> {
+        crate::search::alloc_zeroed_box()
     }
 
     pub fn clear(&mut self) {
@@ -80,7 +88,15 @@ impl History {
         self.capture = [[[0i16; 7]; 64]; 13];
         self.killers = [[NO_MOVE; 2]; crate::search::MAX_PLY];
         self.counter = [[NO_MOVE; 64]; 13];
-        self.cont_hist = [[[[0; 64]; 13]; 64]; 13];
+        for bucket in self.cont_hist.iter_mut() {
+            for plane0 in bucket.iter_mut() {
+                for plane1 in plane0.iter_mut() {
+                    for row in plane1.iter_mut() {
+                        for v in row.iter_mut() { *v = 0; }
+                    }
+                }
+            }
+        }
     }
 
     /// Age all history tables by multiplying by factor/divisor (e.g. 4/5 = 0.80).
@@ -99,10 +115,12 @@ impl History {
                 for v in row.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
             }
         }
-        for plane0 in self.cont_hist.iter_mut() {
-            for plane1 in plane0.iter_mut() {
-                for row in plane1.iter_mut() {
-                    for v in row.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
+        for bucket in self.cont_hist.iter_mut() {
+            for plane0 in bucket.iter_mut() {
+                for plane1 in plane0.iter_mut() {
+                    for row in plane1.iter_mut() {
+                        for v in row.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
+                    }
                 }
             }
         }
@@ -227,6 +245,7 @@ impl MovePicker {
         xray_blockers: Bitboard,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
+        move_context_stack: &[u8],
     ) -> Self {
         let killers = if ply < 64 {
             history.killers[ply]
@@ -253,11 +272,16 @@ impl MovePicker {
         let mut cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4] = [None; 4];
         let offsets = [1usize, 2, 4, 6];
         for (i, &off) in offsets.iter().enumerate() {
-            if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
+            if ply >= off
+                && ply - off < moved_piece_stack.len()
+                && ply - off < moved_to_stack.len()
+                && ply - off < move_context_stack.len()
+            {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
+                let bucket = (move_context_stack[ply - off] & 0x3) as usize;
                 if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
-                    cont_hist_subs[i] = Some(&history.cont_hist[prior_piece][prior_to] as *const [[i16; 64]; 13]);
+                    cont_hist_subs[i] = Some(&history.cont_hist[bucket][prior_piece][prior_to] as *const [[i16; 64]; 13]);
                 }
             }
         }
@@ -363,6 +387,7 @@ impl MovePicker {
         threats: Threats,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
+        move_context_stack: &[u8],
     ) -> Self {
         // Build cont-hist pointers for evasion (same as main picker).
         // Also guard the upper bound: qsearch can deepen past MAX_PLY via
@@ -371,11 +396,16 @@ impl MovePicker {
         let mut cont_hist_subs: [Option<*const [[i16; 64]; 13]>; 4] = [None; 4];
         let offsets = [1usize, 2, 4, 6];
         for (i, &off) in offsets.iter().enumerate() {
-            if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
+            if ply >= off
+                && ply - off < moved_piece_stack.len()
+                && ply - off < moved_to_stack.len()
+                && ply - off < move_context_stack.len()
+            {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
+                let bucket = (move_context_stack[ply - off] & 0x3) as usize;
                 if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
-                    cont_hist_subs[i] = Some(&history.cont_hist[prior_piece][prior_to] as *const [[i16; 64]; 13]);
+                    cont_hist_subs[i] = Some(&history.cont_hist[bucket][prior_piece][prior_to] as *const [[i16; 64]; 13]);
                 }
             }
         }
