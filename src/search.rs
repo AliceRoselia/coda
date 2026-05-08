@@ -3352,7 +3352,13 @@ fn negamax(
 
                     // Beta cutoff - update history for quiet moves (killers/counter removed — SF pattern)
                     if !is_cap {
-                        let bonus = history_bonus(depth);
+                        // EXPERIMENT: bonus depth-boost on big fail-high (Stockfish
+                        // search.cpp:1182-1183, Obsidian similar). When the cutoff
+                        // exceeds beta by a margin, use depth+1 for the bonus formula
+                        // → stronger history reinforcement for clear-win moves.
+                        // Cascades through main/cont/pawn updates via single bonus.
+                        let bonus_depth = depth + if best_score > beta + 80 { 1 } else { 0 };
+                        let bonus = history_bonus(bonus_depth);
 
                         // Update main history
                         History::update_history(
