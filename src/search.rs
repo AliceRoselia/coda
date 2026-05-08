@@ -2813,8 +2813,21 @@ fn negamax(
             let mut hist_prune_score = info.history.main_score(from, to, enemy_attacks);
             if moved_piece != NO_PIECE {
                 let gp = go_piece(moved_piece);
-                if prev_piece_for_cont != 0 {
-                    hist_prune_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize] as i32;
+                // Cont-hist at offsets {1, 2, 4} — Obsidian/Alexandria/Berserk/
+                // Caissa/Viridithas pattern. Diagnostic data showed adding
+                // ply-2 and ply-4 to the score raises hypothetical fire rate
+                // +43% at unchanged threshold (see
+                // docs/history_prune_cont_hist_data_2026-05-08.md what-if).
+                // Coda was the field outlier using only ply-1.
+                let offsets = [1usize, 2, 4];
+                for &off in &offsets {
+                    if ply_u >= off {
+                        let p = info.moved_piece_stack[ply_u - off] as usize;
+                        let pt = info.moved_to_stack[ply_u - off] as usize;
+                        if p > 0 && p < 13 && pt < 64 {
+                            hist_prune_score += info.history.cont_hist[p][pt][gp][to as usize] as i32;
+                        }
+                    }
                 }
                 // Pawn history in pruning decision
                 let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
