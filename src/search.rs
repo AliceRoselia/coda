@@ -2040,9 +2040,15 @@ fn negamax(
             // near-miss + QS) on halfmove < 90. Window-narrowing is still applied —
             // it only biases the search, while returning stale tt_score is unsafe.
             let halfmove_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
-            if tt_depth >= depth && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
+            // EXPERIMENT (Motor T1.1): allow PV TT cutoffs with deeper-depth requirement.
+            // Coda previously required `!is_pv` (no PV cutoffs ever); SF-lineage allows
+            // PV cutoffs when `tt_depth >= depth + 2*is_pv`. The +2 ply penalty is the
+            // safety margin — TT entries from a deeper search are reliable enough at
+            // PV nodes too. Trades a small risk of stale-TT PV-poisoning for fewer
+            // duplicate searches at strong TT positions.
+            let pv_depth_penalty = 2 * (is_pv as i32);
+            if tt_depth >= depth + pv_depth_penalty && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 // Unified TT cutoff with node-type guard (Alexandria pattern):
-                // At non-PV nodes, accept TT cutoff when:
                 // - cut_node matches score direction (cut expects fail-high, all expects fail-low)
                 // - TT bound type matches (LOWER for fail-high, UPPER for fail-low)
                 let score_above_beta = tt_score >= beta;
@@ -2051,7 +2057,7 @@ fn negamax(
                 } else {
                     tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT
                 };
-                if !is_pv && cut_node == score_above_beta && bound_matches
+                if cut_node == score_above_beta && bound_matches
                     && halfmove_ok
                 {
                     info.stats.tt_cutoffs += 1;
