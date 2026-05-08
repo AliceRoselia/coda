@@ -99,6 +99,12 @@ tunables!(
     // where Reckless prunes confidently. SPSA retune-on-branch expected.
     (FUT_BASE, 36, 20, 200, 9.0),
     (FUT_PER_DEPTH, 70, 40, 250, 10.5),
+    // T1.1 — eval clip for threshold computation only.
+    // Clamps |static_eval| at this magnitude when used in RFP/futility/NMP-bonus
+    // comparisons. Eval that propagates as bestScore / TT / corr-history is
+    // unchanged. Hypothesis: replicates the high-WDL "eval more piecewise-
+    // constant in clear regions" effect at search time without retraining.
+    (EVAL_CLIP_THRESHOLD, 600, 200, 2000, 50.0),
     (HIST_PRUNE_DEPTH, 3, 1, 8, 1.5),
     (HIST_PRUNE_MULT, 12825, 500, 50000, 2475.0),
     (SEE_QUIET_MULT, 32, 5, 80, 3.75),
@@ -2394,7 +2400,12 @@ fn negamax(
             r += 1;
         }
         if static_eval > beta {
-            let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp(&NMP_EVAL_MAX));
+            // T1.1: clip static_eval magnitude when computing the eval-bonus
+            // reduction. Caps how aggressive NMP becomes in clearly-winning
+            // positions where the raw eval may overstate certainty.
+            let clip = tp(&EVAL_CLIP_THRESHOLD);
+            let clipped_eval = static_eval.clamp(-clip, clip);
+            let eval_r = ((clipped_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp(&NMP_EVAL_MAX));
             r += eval_r;
         }
         // Clamp so null-move search is at least depth 1
@@ -2468,7 +2479,11 @@ fn negamax(
             // > UNSTABLE_THRESH). Static eval can't be trusted for RFP when
             // eval is volatile. Mirrors unstable × ProbCut skip (#542 +6.7).
             if unstable { margin += margin / 3; }
-            if static_eval - margin >= beta {
+            // T1.1: clip static_eval magnitude for the cutoff-decision
+            // comparison. Returned cutoff score is unchanged.
+            let clip = tp(&EVAL_CLIP_THRESHOLD);
+            let clipped_eval = static_eval.clamp(-clip, clip);
+            if clipped_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 return static_eval - margin;
             }
@@ -2950,7 +2965,12 @@ fn negamax(
             // our_defenses widener: add margin per our-piece-under-attack so
             // tactical positions keep more lines from being pruned on eval.
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
+            // T1.1: clip static_eval for the futility threshold comparison.
+            // Clamps the influence of "very losing" eval that could over-prune
+            // legitimate score-improving moves in clearly-bad positions.
+            let clip = tp(&EVAL_CLIP_THRESHOLD);
+            let clipped_eval = static_eval.clamp(-clip, clip);
+            let futility_value = clipped_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
             // Don't futility-prune moves with very strong history (Igel pattern)
             // Direct-check carve-out: don't prune moves that give direct check
             // (Reckless #410 +1.62 STC).
