@@ -99,12 +99,12 @@ tunables!(
     // where Reckless prunes confidently. SPSA retune-on-branch expected.
     (FUT_BASE, 36, 20, 200, 9.0),
     (FUT_PER_DEPTH, 70, 40, 250, 10.5),
-    (HIST_PRUNE_DEPTH, 3, 1, 8, 1.5),
-    (HIST_PRUNE_MULT, 12825, 500, 50000, 2475.0),
+    (HIST_PRUNE_DEPTH, 2, 1, 8, 1.5),
+    (HIST_PRUNE_MULT, 12495, 500, 50000, 2475.0),
     (SEE_QUIET_MULT, 32, 5, 80, 3.75),
-    (LMR_HIST_DIV, 6744, 2000, 100000, 4900.0),
-    (LMR_C_QUIET, 133, 40, 300, 13.0),
-    (LMR_C_CAP, 103, 80, 350, 12.5),
+    (LMR_HIST_DIV, 7248, 2000, 100000, 4900.0),
+    (LMR_C_QUIET, 138, 40, 300, 13.0),
+    (LMR_C_CAP, 97, 80, 350, 12.5),
     (SE_DEPTH, 4, 4, 20, 2.0),
     (ASP_DELTA, 11, 5, 30, 1.5),
     (ASP_SCORE_DIV, 29581, 8000, 50000, 2100.0),
@@ -124,8 +124,8 @@ tunables!(
     (CORR_W_MAJOR, 99, 30, 300, 13.5),
     (CORR_W_CONT, 41, 30, 400, 18.5),
     (FH_BLEND_DEPTH, 3, 0, 8, 1.5),
-    (HIST_BONUS_MULT, 325, 50, 400, 17.5),
-    (HIST_BONUS_MAX, 1752, 500, 3000, 125.0),
+    (HIST_BONUS_MULT, 327, 50, 400, 17.5),
+    (HIST_BONUS_MAX, 1694, 500, 3000, 125.0),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
     // history bonus adopts Stockfish/cap-hist offset shape:
     //   old: min(MAX, MULT * d)
@@ -135,10 +135,10 @@ tunables!(
     // wider depth discrimination. cap-history already uses the offset
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 22, 0, 400, 25.0),
-    (CAP_HIST_MULT, 279, 50, 400, 17.5),
-    (CAP_HIST_BASE, 35, 0, 200, 10.0),
-    (CAP_HIST_MAX, 1663, 500, 3000, 125.0),
+    (HIST_BONUS_OFFSET, 6, 0, 400, 25.0),
+    (CAP_HIST_MULT, 276, 50, 400, 17.5),
+    (CAP_HIST_BASE, 32, 0, 200, 10.0),
+    (CAP_HIST_MAX, 1664, 500, 3000, 125.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
