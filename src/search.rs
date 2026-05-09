@@ -3463,8 +3463,12 @@ fn negamax(
                         }
 
                     } else {
-                        // Capture caused beta cutoff: bonus the cutoff capture
-                        let cap_bonus = capture_history_bonus(depth);
+                        // Capture caused beta cutoff: bonus the cutoff capture.
+                        // Apply depth-boost on big fail-high (#1008 ext to caps):
+                        // use depth+1 when cutoff exceeds beta by BONUS_BOOST_AT.
+                        // Same trigger that earned +1.1 on quiet bonus.
+                        let cap_bonus_depth = depth + if best_score > beta + tp(&BONUS_BOOST_AT) { 1 } else { 0 };
+                        let cap_bonus = capture_history_bonus(cap_bonus_depth);
                         if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                             let cpt = if flags == FLAG_EN_PASSANT {
                                 captured_type(PAWN)
@@ -3477,6 +3481,7 @@ fn negamax(
                             );
                         }
                     }
+
 
                     // Unconditionally penalize all tried captures that didn't cause cutoff
                     // (matching Stockfish/Obsidian/Viridithas — captures that fail should be
