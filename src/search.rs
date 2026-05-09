@@ -2389,7 +2389,14 @@ fn negamax(
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && king_zone_pressure < tp(&NMP_KING_ZONE_MAX)  // New gate
         && any_threat_count < 3  // S7-style: skip NMP when many of our pieces are under threat
-        && undefended_count < tp(&NMP_UNDEFENDED_MAX)  // T2.1: skip when hanging pieces
+        // 2026-05-09 ablation: remove undefended_count gate. SPSA pushed
+        // NMP_UNDEFENDED_MAX toward floor across 5 tunes (float values
+        // 2.24/1.74/1.45/1.79/2.08, 25K-iter tune-928 wanting 1.45). MAX=0
+        // would disable NMP entirely (`< 0` always false), so the right
+        // test is removing the gate. If H0, the gate is real signal; if H1,
+        // simplify and drop NMP_UNDEFENDED_MAX tunable + the cheap-eval
+        // setup at line 2374-2382. SPRT [-3, 3].
+        // && undefended_count < tp(&NMP_UNDEFENDED_MAX)  // T2.1: skip when hanging pieces
         && cut_node  // Reckless gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
         && FEAT_NMP.load(Ordering::Relaxed)
     {
