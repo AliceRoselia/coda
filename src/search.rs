@@ -227,12 +227,15 @@ tunables!(
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
     // LMR over-reduces king-restriction queen moves that complete mates.
     //
-    // NARROW RANGE [4, 9]: this parameter is correctness-load-bearing —
+    // NARROW RANGE [5, 9]: this parameter is correctness-load-bearing —
     // too low and we regress on deep endgame conversions (play-quality bug
-    // discovered watching Coda on Lichess). 2026-04-22 SPSA #660 drifted
-    // it to 4 (pinned at floor); manually restored to 5 here. SPSA can
-    // still explore ±2-3 from 5 within the clamped range.
-    (LMR_ENDGAME_PIECES, 4, 4, 9, 1.5),
+    // discovered watching Coda on Lichess: rook on open board has many
+    // legal moves, so tactical recoveries get treated as "late" and
+    // over-reduced). 2026-04-22 SPSA #660 drifted to 4 then tune-784
+    // override "kept at 5" was lost when applied → silent regression
+    // discovered 2026-05-09. Floor raised from 4 to 5 to prevent SPSA
+    // re-drift; SPSA can still explore 5..=9.
+    (LMR_ENDGAME_PIECES, 5, 5, 9, 1.5),
     // --- Previously-hardcoded pruning depth gates, now tunable ---
     // Per 2026-04-24 strategy: at our strength/eval regime, optimal
     // depth caps/gates are sensitive to eval quality and will need
