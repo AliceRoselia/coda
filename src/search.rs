@@ -2396,11 +2396,19 @@ fn negamax(
         info.stats.nmp_attempts += 1;
         // Adaptive reduction: scales with depth and eval margin above beta
         let mut r = tp(&NMP_BASE_R) + depth / tp(&NMP_DEPTH_DIV);
-        // Reduce more after captures: opponent just captured, null move more likely to work
-        // (Consensus: SF/Obsidian increase R after captures, not decrease)
-        if !board.undo_stack.is_empty() && board.undo_stack[board.undo_stack.len() - 1].captured != NO_PIECE_TYPE {
-            r += 1;
-        }
+        // 2026-05-09 ablation (Tier 4 A4): the original 2da11be commit
+        // claimed SF/Obsidian "increase R after captures (consensus)" — but
+        // the 2026-05-09 cross-engine audit found this citation is wrong.
+        // SF and Reckless have no such term. Obsidian uses `R +=
+        // ttMoveNoisy` based on the CURRENT node's TT move noisiness, NOT
+        // the PREVIOUS move's capture. Different signal.
+        //
+        // The flip was bundled with a SPSA retune in April, but trunk has
+        // moved a lot since. Ablating here. If H0, term defends itself; if
+        // H1, drop and look at porting Obsidian's ttMoveNoisy pattern.
+        // if !board.undo_stack.is_empty() && board.undo_stack[board.undo_stack.len() - 1].captured != NO_PIECE_TYPE {
+        //     r += 1;
+        // }
         if static_eval > beta {
             let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp(&NMP_EVAL_MAX));
             r += eval_r;
