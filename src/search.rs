@@ -3415,14 +3415,18 @@ fn negamax(
                             info.pawn_hist[ph_idx][gp][to as usize] = new_v.clamp(-32000, 32000) as i16;
                         }
 
-                        // Penalize all quiet moves tried before the cutoff move
+                        // Penalize all quiet moves tried before the cutoff move.
+                        // Reckless asymmetric malus pattern: 3× larger malus
+                        // coefficient than bonus (Reckless uses 352*d malus vs
+                        // 108*d bonus = 3.26×). Coda was symmetric (-bonus).
+                        let malus_3x: i32 = -bonus * 3;
                         for i in 0..quiets_count.saturating_sub(1) {
                             let q = quiets_tried[i];
                             let qf = move_from(q);
                             let qt = move_to(q);
                             History::update_history(
                                 info.history.main_entry(qf, qt, enemy_attacks),
-                                -bonus,
+                                malus_3x,
                             );
 
                             // Penalize continuation history at plies 1, 2, 4, 6
@@ -3436,7 +3440,7 @@ fn negamax(
                                             let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                             let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                             if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
-                                                let ch_pen = if off <= 1 { -bonus } else { -bonus / 2 };
+                                                let ch_pen = if off <= 1 { malus_3x } else { malus_3x / 2 };
                                                 History::update_cont_history(
                                                     &mut info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize],
                                                     ch_pen,
@@ -3455,7 +3459,7 @@ fn negamax(
                                 if q_piece != NO_PIECE {
                                     let gp = go_piece(q_piece);
                                     let v = info.pawn_hist[ph_idx][gp][qt as usize] as i32;
-                                    let clamped = (-bonus).clamp(-16384, 16384);
+                                    let clamped = malus_3x.clamp(-16384, 16384);
                                     let new_v = v + clamped - v * clamped.abs() / 16384;
                                     info.pawn_hist[ph_idx][gp][qt as usize] = new_v.clamp(-32000, 32000) as i16;
                                 }
