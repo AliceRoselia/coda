@@ -84,7 +84,7 @@ tunables!(
     //   NMP_UNDEFENDED_MAX float-converged at 0.6 (int rounds to 1, no
     //     change); two consecutive tunes have drifted this toward feature-
     //     disable. Candidate for ablation SPRT (set to 0).
-    (NMP_BASE_R, 7, 2, 8, 1.5),
+    (NMP_BASE_R, 7, 2, 12, 1.5),
     (NMP_DEPTH_DIV, 5, 1, 6, 1.5),
     (NMP_EVAL_DIV, 112, 50, 400, 17.5),
     (NMP_EVAL_MAX, 1, 1, 6, 1.5),
@@ -111,7 +111,7 @@ tunables!(
     (LMR_HIST_DIV, 7459, 2000, 100000, 4900.0),
     (LMR_C_QUIET, 131, 40, 300, 13.0),
     (LMR_C_CAP, 102, 80, 350, 12.5),
-    (SE_DEPTH, 3, 4, 20, 2.0),
+    (SE_DEPTH, 3, 2, 20, 2.0),
     (ASP_DELTA, 11, 5, 30, 1.5),
     (ASP_SCORE_DIV, 29595, 8000, 50000, 2100.0),
     (LMP_BASE, 9, 1, 15, 2.0),
@@ -241,8 +241,8 @@ tunables!(
     // Future retune-on-branch cycles will sweep these with the
     // eval+pruning co-tune; expect meaningful movement as net quality
     // changes.
-    (IIR_MIN_DEPTH, 2, 2, 10, 1.5),         // was hardcoded 4; tune #743 converged to 2 (strong signal)
-    (PROBCUT_MIN_DEPTH, 3, 3, 12, 1.5),     // was hardcoded 5 (ProbCut activation gate)
+    (IIR_MIN_DEPTH, 2, 1, 10, 1.5),         // was hardcoded 4; tune #743 converged to 2 (strong signal)
+    (PROBCUT_MIN_DEPTH, 3, 2, 12, 1.5),     // was hardcoded 5 (ProbCut activation gate)
     (SEE_CAP_DEPTH, 6, 3, 15, 1.5),         // was hardcoded 6 (SEE capture prune depth cap)
     (FUT_LMR_DEPTH, 14, 5, 20, 1.5),         // was hardcoded 10; tune #743 → 9
     (BAD_NOISY_DEPTH, 12, 4, 15, 1.5),       // was hardcoded 4 (BNFP depth cap)
