@@ -147,6 +147,12 @@ tunables!(
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
     (NFH_CAP, 3, 1, 6, 1.0),
     (NFH_DIV, 4, 2, 12, 1.0),
+    // SF-style malus decay on non-cutoff quiets (search.cpp:1855-1867).
+    // malus_scale starts at MALUS_BOOST/1024, then *= MALUS_DECAY/1024 per
+    // iteration. Default 1024/1024 = no-op (bit-identical to flat -bonus).
+    // SF values: 1113 boost, 977 decay (initial 1.087×, decay 0.954×/iter).
+    (MALUS_BOOST, 1024, 500, 2000, 75.0),
+    (MALUS_DECAY, 1024, 700, 1024, 16.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -3415,14 +3421,20 @@ fn negamax(
                             info.pawn_hist[ph_idx][gp][to as usize] = new_v.clamp(-32000, 32000) as i16;
                         }
 
-                        // Penalize all quiet moves tried before the cutoff move
+                        // Penalize all quiet moves tried before the cutoff move.
+                        // SF malus decay (search.cpp:1855-1867), parameterised:
+                        // start at MALUS_BOOST/1024, decay by MALUS_DECAY/1024
+                        // per iteration. Defaults 1024/1024 = no-op (-bonus flat).
+                        let mut malus_scale: i32 = tp(&MALUS_BOOST);
                         for i in 0..quiets_count.saturating_sub(1) {
+                            malus_scale = malus_scale * tp(&MALUS_DECAY) / 1024;
+                            let scaled_malus = -bonus * malus_scale / 1024;
                             let q = quiets_tried[i];
                             let qf = move_from(q);
                             let qt = move_to(q);
                             History::update_history(
                                 info.history.main_entry(qf, qt, enemy_attacks),
-                                -bonus,
+                                scaled_malus,
                             );
 
                             // Penalize continuation history at plies 1, 2, 4, 6
@@ -3436,7 +3448,7 @@ fn negamax(
                                             let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                             let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                             if prior_piece > 0 && prior_piece < 12 && prior_to < 64 {
-                                                let ch_pen = if off <= 1 { -bonus } else { -bonus / 2 };
+                                                let ch_pen = if off <= 1 { scaled_malus } else { scaled_malus / 2 };
                                                 History::update_cont_history(
                                                     &mut info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize],
                                                     ch_pen,
@@ -3455,7 +3467,7 @@ fn negamax(
                                 if q_piece != NO_PIECE {
                                     let gp = go_piece(q_piece);
                                     let v = info.pawn_hist[ph_idx][gp][qt as usize] as i32;
-                                    let clamped = (-bonus).clamp(-16384, 16384);
+                                    let clamped = scaled_malus.clamp(-16384, 16384);
                                     let new_v = v + clamped - v * clamped.abs() / 16384;
                                     info.pawn_hist[ph_idx][gp][qt as usize] = new_v.clamp(-32000, 32000) as i16;
                                 }
