@@ -3306,6 +3306,28 @@ fn negamax(
                             }
                         }
                     }
+                } else if is_cap && moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
+                    // Post-LMR-research capture-history nudge (extension of #1007).
+                    // After re-search, nudge capture history if it confirms or refutes.
+                    let nudge_depth = (new_depth - 1).max(1);
+                    let nudge_cap = if lmr_score >= beta {
+                        capture_history_bonus(nudge_depth)
+                    } else if lmr_score <= alpha {
+                        -capture_history_bonus(nudge_depth)
+                    } else {
+                        0
+                    };
+                    if nudge_cap != 0 {
+                        let cpt = if flags == FLAG_EN_PASSANT {
+                            captured_type(PAWN)
+                        } else {
+                            captured_type(captured_pt)
+                        };
+                        History::update_cont_history(
+                            &mut info.history.capture[go_piece(moved_piece)][to as usize][cpt],
+                            nudge_cap,
+                        );
+                    }
                 }
             }
 
