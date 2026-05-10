@@ -255,7 +255,7 @@ tunables!(
     // eval+pruning co-tune; expect meaningful movement as net quality
     // changes.
     (IIR_MIN_DEPTH, 2, 2, 10, 1.5),         // was hardcoded 4; tune #743 converged to 2 (strong signal)
-    (PROBCUT_MIN_DEPTH, 3, 3, 12, 1.5),     // was hardcoded 5 (ProbCut activation gate)
+    (PROBCUT_MIN_DEPTH, 4, 3, 12, 1.5),     // was hardcoded 5 (ProbCut activation gate)
     (SEE_CAP_DEPTH, 6, 3, 15, 1.5),         // was hardcoded 6 (SEE capture prune depth cap)
     (FUT_LMR_DEPTH, 14, 5, 20, 1.5),         // was hardcoded 10; tune #743 → 9
     (BAD_NOISY_DEPTH, 12, 4, 15, 1.5),       // was hardcoded 4 (BNFP depth cap)
