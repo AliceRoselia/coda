@@ -90,7 +90,7 @@ tunables!(
     (NMP_EVAL_MAX, 1, 1, 6, 1.5),
     (NMP_VERIFY_DEPTH, 9, 4, 20, 2.0),
     (RFP_DEPTH, 18, 2, 20, 2.0),
-    (RFP_MARGIN_IMP, 30, 30, 150, 6.0),
+    (RFP_MARGIN_IMP, 50, 30, 150, 6.0),
     (RFP_MARGIN_NOIMP, 84, 50, 200, 7.5),
     // Futility margin reduced to Reckless scale. At lmr_d=5:
     //   Old: 78 + 160*5 = 878 (Coda 2.4× wider than Reckless 364)
