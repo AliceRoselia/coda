@@ -155,6 +155,11 @@ tunables!(
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
     (NFH_CAP, 3, 1, 6, 1.0),
     (NFH_DIV, 4, 2, 12, 1.0),
+    // LMR alpha-raises adjustment (Stormphrax search.cpp:1033):
+    // reduction += alpha_raises / LMR_ALPHA_RAISE_DIV. Default 2 means
+    // every 2 prior alpha-raises at this node adds +1 LMR reduction.
+    // (Default 4 was bench-identical — rarely fires at depth 12.)
+    (LMR_ALPHA_RAISE_DIV, 2, 1, 32, 2.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -2637,6 +2642,11 @@ fn negamax(
     // this count — more fail-highs at this node = stronger signal that the
     // cutoff move is genuinely good.
     let mut num_fail_highs: i32 = 0;
+    // Stormphrax search.cpp:892, 1033, 1153 — count moves that raised alpha
+    // at this node. Used as LMR reduction adjustment: at high-density-of-good-
+    // moves nodes, subsequent moves are less likely to be the cutoff and can
+    // be reduced more aggressively.
+    let mut alpha_raises: i32 = 0;
     // Track quiet moves searched before beta cutoff for history penalty
     let mut quiets_tried = [NO_MOVE; 64];
     let mut quiets_count = 0usize;
@@ -3163,6 +3173,11 @@ fn negamax(
                     reduction -= 1;
                 }
 
+                // Reduce more when many prior moves at this node already raised
+                // alpha (Stormphrax search.cpp:1033). High-density-of-good-moves
+                // nodes are usually all-nodes; subsequent moves unlikely to cut.
+                reduction += alpha_raises / tp(&LMR_ALPHA_RAISE_DIV);
+
                 // Reduce less when position was previously a PV node (Alexandria/Obsidian/Seer pattern).
                 // Sticky: once a position is searched as PV, tt_pv stays set even at non-PV nodes.
                 if tt_pv {
@@ -3368,6 +3383,7 @@ fn negamax(
 
             if score > alpha {
                 alpha = score;
+                alpha_raises += 1;  // Stormphrax T8: count alpha-raises for LMR adj
 
                 // Update triangular PV table
                 if ply_u <= MAX_PLY {
