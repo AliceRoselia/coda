@@ -99,7 +99,7 @@ tunables!(
     // where Reckless prunes confidently. SPSA retune-on-branch expected.
     (FUT_BASE, 36, 20, 200, 9.0),
     (FUT_PER_DEPTH, 70, 40, 250, 10.5),
-    (HIST_PRUNE_DEPTH, 3, 1, 8, 1.5),
+    (HIST_PRUNE_DEPTH, 2, 1, 8, 1.5),
     (HIST_PRUNE_MULT, 12825, 500, 50000, 2475.0),
     (SEE_QUIET_MULT, 32, 5, 80, 3.75),
     (LMR_HIST_DIV, 6744, 2000, 100000, 4900.0),
