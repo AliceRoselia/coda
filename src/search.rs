@@ -1015,8 +1015,15 @@ fn update_corr_entry(entry: &mut i32, err: i32, weight: i32, cap_div: i32) {
 
 /// Update all correction history tables.
 fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, raw_eval: i32, depth: i32) {
-    let err_max = tp(&CORR_HIST_ERR_MAX);
-    let err = (search_score - raw_eval).clamp(-err_max, err_max);
+    // P1 (cross-engine divergence audit 2026-05-10): drop err pre-clamp
+    // and let the bonus-level clamp inside `update_corr_entry` do the
+    // bounding (matches SF / Obsidian / Viridithas pattern). The previous
+    // structure pre-clamped err to ±CORR_HIST_ERR_MAX (SPSA floor-pinned
+    // at 1), losing magnitude information before scaling by weight. This
+    // is paired with a SPSA retune of the corr-hist cluster (CORR_W_*,
+    // CORR_HIST_DIV, CORR_HIST_GRAIN_T, CORR_BONUS_CAP_DIV) to find the
+    // new equilibrium with the formula change.
+    let err = search_score - raw_eval;
     let weight = (depth + 1).min(tp(&CORR_UPDATE_WEIGHT_MAX));
     let cap_div = tp(&CORR_BONUS_CAP_DIV);
     let stm = board.side_to_move as usize;
