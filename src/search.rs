@@ -2326,11 +2326,21 @@ fn negamax(
             || move_flags(tt_move) == FLAG_EN_PASSANT
     };
 
+    // Hoisted: prior_reduction needed for both IIR gate (Tier 5.6) and
+    // hindsight reduction below.
+    let prior_reduction = if ply_u >= 1 { info.reductions[ply_u - 1] } else { 0 };
+
     // Internal Iterative Reduction: reduce depth when no TT move exists.
     // Restricted to PV/cut nodes (Obsidian/Berserk/Stormphrax pattern).
     // All-nodes have tight bounds already, IIR there wastes depth.
+    // Stockfish-style gate: skip IIR when parent was already heavily
+    // reduced (prior_reduction > 3) — re-reducing already-reduced nodes
+    // tends to over-shrink branches that needed normal coverage.
     let is_pv = beta - alpha_orig > 1;
-    if depth >= tp(&IIR_MIN_DEPTH) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
+    if depth >= tp(&IIR_MIN_DEPTH) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node)
+        && prior_reduction <= 3
+        && FEAT_IIR.load(Ordering::Relaxed)
+    {
         depth -= 1;
     }
 
@@ -2340,7 +2350,6 @@ fn negamax(
     // Hindsight reduction: when parent was LMR-reduced and both sides
     // think the position is quiet, reduce depth further.
     // Gate on prior_reduction (Stockfish >= 2, Alexandria >= 1).
-    let prior_reduction = if ply_u >= 1 { info.reductions[ply_u - 1] } else { 0 };
     if !in_check && ply >= 1 && depth >= tp(&HINDSIGHT_MIN_DEPTH) && ply_u >= 1
         && prior_reduction >= 2
         && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
