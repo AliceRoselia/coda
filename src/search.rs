@@ -3490,7 +3490,12 @@ fn negamax(
                         // Capture caused beta cutoff: bonus the cutoff capture.
                         // Depth-boost on big fail-high (#1069 ext of #1008): use
                         // depth+1 when cutoff exceeds beta by BONUS_BOOST_AT.
-                        let cap_bonus_depth = depth + if best_score > beta + tp(&BONUS_BOOST_AT) { 1 } else { 0 };
+                        // Plus eval-vs-bestScore boost (#1056 ext to caps): boost
+                        // when cutoff bestScore exceeds static eval — unexpected
+                        // strong cutoff (Stormphrax search.cpp:1185 pattern).
+                        let cap_bonus_depth = depth
+                            + if best_score > beta + tp(&BONUS_BOOST_AT) { 1 } else { 0 }
+                            + if !in_check && static_eval <= best_score { 1 } else { 0 };
                         // numFailHighs multiplicative scaling (#1054 ext of #1020):
                         // more cascades = stronger cutoff confidence.
                         let raw_cap_bonus = capture_history_bonus(cap_bonus_depth);
