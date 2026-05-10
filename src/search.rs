@@ -2724,7 +2724,7 @@ fn negamax(
         if mv == tt_move
             && tt_move != NO_MOVE
             && ply > 0
-            && depth >= tp(&SE_DEPTH)
+            && depth >= tp(&SE_DEPTH) - (tt_entry.tt_pv as i32)
             && !in_check
             && info.excluded_move[ply_u] == NO_MOVE
             && tt_hit
