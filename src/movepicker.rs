@@ -633,7 +633,9 @@ impl MovePicker {
             if piece != NO_PIECE {
                 let gp = go_piece(piece);
                 let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
-                let weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
+                let w4 = crate::search::CONT_HIST_W4.load(std::sync::atomic::Ordering::Relaxed);
+                let w6 = crate::search::CONT_HIST_W6.load(std::sync::atomic::Ordering::Relaxed);
+                let weights = [cm, cm, w4, w6]; // ply-1, ply-2, ply-4, ply-6
                 for (i, &w) in weights.iter().enumerate() {
                     if let Some(sub_ptr) = self.cont_hist_subs[i] {
                         let sub = unsafe { &*sub_ptr };
@@ -852,7 +854,9 @@ impl MovePicker {
                 if piece != NO_PIECE {
                     let gp = go_piece(piece);
                     let cm = crate::search::CONT_HIST_MULT.load(std::sync::atomic::Ordering::Relaxed);
-                    let weights = [cm, cm, 1i32, 1];
+                    let w4 = crate::search::CONT_HIST_W4.load(std::sync::atomic::Ordering::Relaxed);
+                    let w6 = crate::search::CONT_HIST_W6.load(std::sync::atomic::Ordering::Relaxed);
+                    let weights = [cm, cm, w4, w6];
                     for (i, &w) in weights.iter().enumerate() {
                         if let Some(sub_ptr) = self.cont_hist_subs[i] {
                             let sub = unsafe { &*sub_ptr };

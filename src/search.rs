@@ -233,6 +233,11 @@ tunables!(
     (SE_XRAY_BLOCKER_MARGIN, 2, 0, 40, 2.0),
     (MVV_CAP_MULT, 32, 4, 64, 3.0),
     (CONT_HIST_MULT, 1, 1, 8, 1.5),
+    // Per-offset cont-hist read weights for plies 4 and 6 (Berserk-style
+    // shape exploration). ply-1 and ply-2 weights remain governed by
+    // CONT_HIST_MULT. Previously hardcoded to 1; defaults preserve behavior.
+    (CONT_HIST_W4, 1, 0, 8, 1.0),
+    (CONT_HIST_W6, 1, 0, 8, 1.0),
     (KNIGHT_FORK_BONUS, 8987, 0, 20000, 1000.0),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
