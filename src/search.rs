@@ -102,6 +102,12 @@ tunables!(
     (HIST_PRUNE_DEPTH_10X, 10, 10, 80, 15.0),
     (HIST_PRUNE_MULT, 13098, 500, 50000, 2475.0),
     (SEE_QUIET_MULT, 31, 5, 80, 3.75),
+    // 2026-05-12 audit Tier 5.2 (Reckless port): modulate SEE quiet
+    // threshold by main history. Good-history moves are shielded from
+    // SEE pruning (threshold becomes more negative); bad-history moves
+    // are pruned more aggressively. Reckless: -21 * history / 1024
+    // (effective DIV ~= 49). Default 50 matches Reckless.
+    (SEE_QUIET_HIST_DIV, 50, 20, 400, 18.0),
     (LMR_HIST_DIV, 6810, 2000, 100000, 4900.0),
     (LMR_C_QUIET, 135, 40, 300, 13.0),
     (LMR_C_CAP, 107, 80, 350, 12.5),
@@ -2714,13 +2720,17 @@ fn negamax(
 
         // SEE quiet pruning: prune quiet moves landing on attacked squares.
         // Use lmrDepth² scaling (matching Stockfish/Berserk/Obsidian).
+        // History modulation (Reckless port): good-history moves shielded
+        // from prune; bad-history pruned more aggressively. Tier 5.2.
         if ply > 0 && !in_check
             && !is_cap && !is_promo
             && mv != tt_move
             && best_score > -(MATE_SCORE - 100)
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
-            let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
+            let main_hist = info.history.main_score(from, to, enemy_attacks);
+            let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d
+                - main_hist / tp(&SEE_QUIET_HIST_DIV);
             if !see_ge(board, mv, see_quiet_threshold) {
                 info.stats.see_prunes += 1;
                 continue;
