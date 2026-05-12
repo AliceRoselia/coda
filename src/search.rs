@@ -155,6 +155,15 @@ tunables!(
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
     (NFH_CAP_10X, 32, 10, 60, 10.0),
     (NFH_DIV_10X, 47, 20, 120, 10.0),
+    // Hobbes #15 dynamic policy bonus: at every non-root non-singular node,
+    // apply eval-driven history bonus to parent's quiet move:
+    //   value = DPB_MULT * -(static_eval + prev_eval) / 10
+    //   bonus = clamp(value, -DPB_MAX, +DPB_MAX)
+    // Reinforces parent moves that led to favorable eval flips, penalises
+    // those that didn't. Different from PRIOR_COUNTERMOVE_BONUS which only
+    // fires on beta cutoff — this fires at every node.
+    (DPB_MULT_10X, 10, 0, 80, 8.0),
+    (DPB_MAX, 200, 0, 1000, 50.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -2319,6 +2328,46 @@ fn negamax(
     } else {
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = -INFINITY;
+        }
+    }
+
+    // Hobbes #15 dynamic policy bonus: eval-driven history bonus on
+    // parent's quiet move at every non-root, non-singular, non-check node.
+    // Couples NNUE delta directly into policy without waiting for cutoff.
+    if !in_check && ply >= 1 && ply_u >= 1
+        && info.excluded_move[ply_u] == NO_MOVE
+        && static_eval > -INFINITY
+        && info.static_evals[ply_u - 1] > -INFINITY
+        && tp10(&DPB_MULT_10X) > 0
+    {
+        let stack_len = board.undo_stack.len();
+        if stack_len >= 1 {
+            let parent_undo = &board.undo_stack[stack_len - 1];
+            if parent_undo.mv != NO_MOVE && parent_undo.captured == NO_PIECE_TYPE {
+                let parent_from = move_from(parent_undo.mv);
+                let parent_to = move_to(parent_undo.mv);
+                let prev_eval = info.static_evals[ply_u - 1];
+                // value = MULT/10 * -(static_eval + prev_eval).
+                // Both evals are POV-positive for their stm. Sum is high when
+                // parent had advantage going in AND we have advantage now (bad
+                // for parent). Negate to make bonus positive when parent's
+                // move was BAD for them.
+                // Wait — parent move good for parent means after move, OUR eval
+                // is LOW (parent gained, we lost). So static_eval LOW + prev_eval
+                // HIGH = parent's move was good. -(L + H) = -(small) = small
+                // negative for big parent-favor, or large positive when parent
+                // blundered (their eval was high but ours is also high = they
+                // gave away advantage).
+                let value = tp10(&DPB_MULT_10X) * -(static_eval + prev_eval);
+                let dpb_max = tp(&DPB_MAX);
+                let bonus = value.clamp(-dpb_max, dpb_max);
+                // Approximate parent's threats with current enemy_attacks
+                // (parent's threats at their ply not stored).
+                History::update_history(
+                    info.history.main_entry(parent_from, parent_to, enemy_attacks),
+                    bonus,
+                );
+            }
         }
     }
 
