@@ -461,9 +461,11 @@ impl TT {
                 return;
             }
 
-            // Key match: update if newer generation or sufficiently deep
+            // Key match: update if newer generation or sufficiently deep.
+            // Depth margin tunable via TT_DEPTH_MARGIN_10X (default 30 → 3).
             if recovered_upper == key_upper {
-                if depth > slot_depth - 3 || gen != slot_gen {
+                let margin = crate::search::tp10(&crate::search::TT_DEPTH_MARGIN_10X);
+                if depth > slot_depth - margin || gen != slot_gen {
                     bucket.data[i].store(new_data, Ordering::Release);
                     bucket.keys[i].store(new_key, Ordering::Release);
                 }

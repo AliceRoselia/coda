@@ -155,6 +155,12 @@ tunables!(
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
     (NFH_CAP_10X, 32, 10, 60, 10.0),
     (NFH_DIV_10X, 47, 20, 120, 10.0),
+    // TT replacement depth margin (Hobbes uses +4, Coda used hardcoded +3):
+    // on same-key store, replace if `depth > slot_depth - TT_DEPTH_MARGIN`.
+    // Default 30 → effective 3 via tp10 (matches prior hardcoded behavior).
+    // Larger margin keeps shallower entries longer (Hobbes pattern);
+    // smaller is stricter about depth quality.
+    (TT_DEPTH_MARGIN_10X, 30, 10, 80, 5.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //

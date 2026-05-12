@@ -1,0 +1,1 @@
+TT_DEPTH_MARGIN_10X, int, 30, 10, 80, 5.0, 0.002
