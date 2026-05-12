@@ -2129,8 +2129,19 @@ fn negamax(
                                 && opp_to < 64 && our_to < 64
                             {
                                 let malus = -((155 * depth).min(385));
-                                History::update_cont_history(
+                                // T6 extension: base = cont_hist + main_hist/2
+                                // (Stormphrax history.h:120). The threats bucket
+                                // for opp's move is approximated by current
+                                // enemy_attacks — not exact (opp's threats at
+                                // their ply were different) but close enough as
+                                // a base for gravity scaling.
+                                let opp_from = move_from(opp_undo.mv) as u8;
+                                let opp_main = info.history.main_score(opp_from, opp_to as u8, enemy_attacks);
+                                let cur_cont = info.history.cont_hist[our_gp][our_to][opp_gp][opp_to] as i32;
+                                let base = cur_cont + opp_main / 2;
+                                History::update_cont_history_with_base(
                                     &mut info.history.cont_hist[our_gp][our_to][opp_gp][opp_to],
+                                    base,
                                     malus,
                                 );
                             }
