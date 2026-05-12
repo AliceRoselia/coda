@@ -87,8 +87,18 @@ tunables!(
     (NMP_BASE_R_10X, 69, 20, 80, 15.0),
     (NMP_DEPTH_DIV_10X, 46, 10, 60, 15.0),
     (NMP_EVAL_DIV, 116, 50, 400, 17.5),
-    (NMP_EVAL_MAX_10X, 23, 10, 60, 5.0),
+    (NMP_EVAL_MAX_10X, 23, 10, 80, 5.0),
     (NMP_VERIFY_DEPTH_10X, 120, 40, 200, 20.0),
+    // NMP gate margin (Tier 1 cascade fix per correctness_audit_plan_2026-05-09):
+    // SF-style condition is `static_eval >= beta - DEPTH_MUL*depth - IMPROV_MUL*improving + OFFSET`
+    // rather than Coda's prior binary `static_eval >= beta`. Defaults match SF
+    // (16, 53, 378). Hypothesis: looser gate lets NMP fire at shallow depth where
+    // SPSA had to compensate by raising MIN_DEPTH and pinning EVAL_MAX at 1.
+    // SPSA should re-explore the (BASE_R, DEPTH_DIV, MIN_DEPTH, EVAL_MAX) cluster
+    // around new equilibrium after this lands.
+    (NMP_GATE_DEPTH_MUL, 16, 0, 60, 3.0),
+    (NMP_GATE_IMPROV_MUL, 53, 0, 200, 8.0),
+    (NMP_GATE_OFFSET, 378, 0, 800, 30.0),
     (RFP_DEPTH, 17, 2, 20, 2.0),
     (RFP_MARGIN_IMP, 33, 30, 150, 6.0),
     (RFP_MARGIN_NOIMP, 67, 50, 200, 7.5),
@@ -2386,11 +2396,20 @@ fn negamax(
     // NMP-eligible nodes (most nodes either fail the depth gate or are
     // in_check). ~10-15 magic lookups per computed node — comparable
     // to king-zone-pressure's cost.
+    // SF-style NMP gate margin: static_eval >= beta - DEPTH_MUL*depth - IMPROV_MUL*improving + OFFSET
+    // (replaces the prior binary `static_eval >= beta`). Cheaper to evaluate
+    // than the binary form was misleading — the margin grows with depth so
+    // shallow NMP attempts also become eligible.
+    let nmp_gate_margin = tp(&NMP_GATE_DEPTH_MUL) * depth
+        + tp(&NMP_GATE_IMPROV_MUL) * (improving as i32)
+        - tp(&NMP_GATE_OFFSET);
+    let nmp_eval_ok = static_eval >= beta - nmp_gate_margin;
+
     let undefended_count: i32 = {
         // Only bother computing when NMP might actually fire.
         let nmp_gate_cheap = depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0
             && stm_non_pawn != 0 && beta - alpha == 1
-            && static_eval >= beta && !prev_was_null
+            && nmp_eval_ok && !prev_was_null
             && beta.abs() < MATE_SCORE - 100
             && info.excluded_move[ply_u] == NO_MOVE;
         if nmp_gate_cheap && tp10(&NMP_UNDEFENDED_MAX_10X) > 0 {
@@ -2405,7 +2424,7 @@ fn negamax(
     };
 
     if depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0 && stm_non_pawn != 0
-        && beta - alpha == 1 && static_eval >= beta
+        && beta - alpha == 1 && nmp_eval_ok  // SF-style depth/improving-scaled eval gate
         && !prev_was_null  // Prevent consecutive null moves
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
