@@ -1,82 +1,135 @@
-# Mini-prod (cal-day0 S200) branch
+# Mini-prod branch
 
-A long-lived branch that serves as the **tuned baseline** for S200 model
-experiments. Forking S200 experiments from `main` (which is tuned for the
-prod SB800 net) gives the experimental side a "free" tune-flation advantage
-of 5-15 Elo from the freshness asymmetry; forking from this branch removes
-that artifact.
+Long-lived branch carrying trunk tunables SPSA-calibrated for the current
+**baby-prod S200 net**, so that S200 experiment SPRTs measure pure
+net/feature quality without tune-flation asymmetry.
 
-## Branch contents (2026-05-11)
+Branch name stays `mini-prod` across baby-prod net rotations; the
+current reference net is named in net.txt and a comment at the top of
+the `tunables!` macro in `src/search.rs`.
 
-- **Base commit**: forked from `main` after `_10X` migration (commit
-  `6567cb8`) + 12-tunable `_10X` batch + NMP_EVAL_MAX=2 bisect.
-- **Net (net.txt)**: `cal-day0-factor-w15-warm30-hlcrelu-s200.nnue`
-  (SHA `61115E7F`, uploaded to v0.4.0-nets release).
-- **Tunables**: tune-#1092 outputs applied (1500-iter focused sweep against
-  cal-day0 net). 52 default changes from trunk-prod equilibrium.
-- **Canonical bench**: **4,006,126** (`make && ./coda bench`).
+See `docs/mini_prod_branch_workflow.md` for full methodology + the
+canonical refresh procedure.
 
-## When to use this branch as a base
+## Current state (2026-05-12)
 
-- Any S200 model-vs-model SPRT (e.g. comparing two SB200 candidate nets).
-- Any net-architecture probe trained to ~SB200 (factor variants, hidden-
-  layer shape, threat-feature changes) where you want a tuned-vs-tuned
-  comparison instead of tuned-vs-untuned.
+- **Baby-prod net (net.txt)**: `cal-day0-factor-w15-warm30-hlcrelu-s200.nnue`
+  (SHA `61115E7F`).
+- **Last refresh**: 2026-05-11 — established from main commit `6567cb8`
+  with tune-#1092 outputs applied (1500-iter focused sweep).
+- **Canonical bench**: 4,006,126 (`make && ./coda bench`).
 
-## When NOT to use it
+Update the section above on every refresh.
 
-- Production deployment: this branch is for S200 baseline only. Prod
-  uses `main` with the SB800 net.
-- SB800 experiments: use `main`. Mini-prod's tune outputs are for the S200
-  eval scale, not SB800.
+## TL;DR usage
 
-## Refresh procedure
-
-Refresh whenever a substantive search/eval change lands on `main`:
+**S200 experiments fork from here, not main:**
 
 ```bash
-git checkout mini-prod-cal-day0-s200
-git rebase main                          # carry _10X + bisect updates forward
-# Resolve any conflicts (rare — tunable defaults).
-
-# Re-tune against cal-day0 S200 net via OB:
-OPENBENCH_PASSWORD=<pw> python3 scripts/ob_tune.py mini-prod-cal-day0-s200 \
-    --iterations 1500 --dev-network 61115E7F
-
-# Apply outputs once the tune converges:
-curl -s -u <ob_creds> 'https://ob.atwiss.com/api/spsa/<TUNE_ID>/outputs/' > /tmp/refresh.txt
-python3 /tmp/apply_tune_outputs.py /tmp/refresh.txt src/search.rs
-make && ./coda bench    # update the canonical bench number above
-
-git commit -am "mini-prod: rebase + retune (tune #<TUNE_ID>)"
-git push origin mini-prod-cal-day0-s200
-```
-
-Document each refresh in the trailer of the commit message and update
-the "Branch contents" section here with the new bench number.
-
-## How to launch S200 experiments off this branch
-
-```bash
-git checkout mini-prod-cal-day0-s200
+git checkout mini-prod
 git checkout -b experiment/s200-<description>
-# Make your S200 experimental changes (apply alternative net via net.txt
-# or train-time architectural changes etc.)
+# ... make S200 experimental changes ...
+make && ./coda bench
 
-# SPRT against mini-prod baseline:
 OPENBENCH_PASSWORD=<pw> python3 scripts/ob_submit.py experiment/s200-<...> \
-    --base-branch mini-prod-cal-day0-s200 \
-    --dev-network <CANDIDATE_SHA> \
-    --base-network 61115E7F
+    --base-branch mini-prod --base-bench <mini-prod-bench> \
+    --dev-network <CANDIDATE_SHA> --base-network 61115E7F
 ```
 
-Both sides run with the same S200 baseline tunables but their respective
-nets, so the SPRT measures pure net-quality difference, not tune-flation
-asymmetry.
+Both sides share S200-natively-tuned trunk → SPRT measures net/feature
+delta, not tune-freshness asymmetry.
 
-## Provenance
+## Merge cadence (asymmetric — important)
 
-- Established 2026-05-11 from main commit `6567cb8`.
-- Tune #1092 applied (cal-day0 net, 1500 iter, focused sweep on prod
-  tunable cluster).
-- See `docs/mini_prod_branch_workflow.md` for the methodology discussion.
+- **To main**: H1 search/eval wins merge ASAP (normal SPRT cadence).
+- **To mini-prod**: SAME wins propagate to mini-prod ONLY in scheduled
+  refresh windows when **no S200 experiments are in flight**. Mid-flight
+  base shifts invalidate in-progress mini-prod SPRTs.
+
+So mini-prod intentionally lags main between refreshes. That's the
+design, not a bug.
+
+## When to trigger a refresh
+
+Refresh mini-prod (rebase + retune) when ANY of:
+
+1. Main has bumped the `tunables!` macro structure (added, removed,
+   renamed, or widened range on a tunable).
+2. Main landed a search-shape change (new pruning feature / gate /
+   extension) that may interact with tuned values.
+3. Main has accumulated **~5+ Elo** of merged changes since the last
+   mini-prod refresh.
+4. A new baby-prod net is deployed (different training methodology
+   produces a new S200 reference) — note this is a **net rotation**,
+   not a routine refresh; see `docs/mini_prod_branch_workflow.md`.
+
+**Do not refresh during in-flight mini-prod experiments.** Pause until
+they resolve.
+
+## Refresh procedure (rebase + retune, agreed 2026-05-12)
+
+```bash
+git fetch origin
+git checkout mini-prod
+git pull origin mini-prod
+git rebase origin/main
+
+# Conflict resolution policy:
+#   - Take main's STRUCTURAL changes (new/renamed tunables, new
+#     features, widened ranges).
+#   - Keep mini-prod's tuned VALUES for any tunable that exists on
+#     both sides (those are S200-calibrated, not S800-calibrated).
+
+make && ./coda bench   # record new bench
+
+git commit -am "mini-prod: rebase onto main @ <main-sha>
+
+Bench: <new-bench>"
+
+# Focused full-sweep retune against the baby-prod net
+OPENBENCH_PASSWORD=$OPENBENCH_PASSWORD python3 scripts/ob_tune.py mini-prod \
+  --iterations 1500 --dev-network 61115E7F
+
+# Wait for convergence (~few hours fleet), then apply outputs
+curl -s -u <ob_creds> 'https://ob.atwiss.com/api/spsa/<TUNE_ID>/outputs/' \
+  > /tmp/refresh.txt
+python3 /tmp/apply_tune.py /tmp/refresh.txt
+make && ./coda bench   # update the "Canonical bench" line above
+
+git commit -am "mini-prod: apply tune-#<TUNE_ID> outputs
+
+Bench: <new-bench>"
+
+# Validate the refresh didn't regress
+OPENBENCH_PASSWORD=$OPENBENCH_PASSWORD python3 scripts/ob_submit.py mini-prod \
+  --base-branch <pre-refresh-mini-prod-sha> --bounds '[-3, 3]'
+
+# On H1 or no-regression: push. On H0: investigate (likely SPSA noise
+# or insufficient iter count).
+git push origin mini-prod
+```
+
+Update the "Current state" section at the top of this file on every
+refresh push.
+
+## Baby-prod net rotation (different from refresh)
+
+When training methodology produces a NEW S200 reference net (different
+architecture / training recipe — not just a more-baked version of the
+same net), archive the current mini-prod and start over:
+
+```bash
+git branch mini-prod-<old-net-shortname>-archive  # preserve history
+git push origin mini-prod-<old-net-shortname>-archive
+git checkout main
+git branch -D mini-prod
+git checkout main -b mini-prod
+# Update net.txt to the new baby-prod
+# Fire a fresh ~2500-iter full-sweep tune from main defaults
+# ... apply, validate, push
+```
+
+Why rotation is different from refresh: the previous mini-prod tunings
+were calibrated for the previous baby-prod's eval scale and shape. A
+new baby-prod likely shifts the optimum enough that starting fresh is
+cleaner than rebase+retune.
