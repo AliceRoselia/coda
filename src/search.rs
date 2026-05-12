@@ -132,8 +132,8 @@ tunables!(
     (CORR_W_MAJOR, 99, 30, 300, 13.5),
     (CORR_W_CONT, 36, 30, 400, 18.5),
     (FH_BLEND_DEPTH_10X, 32, 0, 80, 15.0),
-    (HIST_BONUS_MULT, 296, 50, 400, 17.5),
-    (HIST_BONUS_MAX, 1894, 500, 3000, 125.0),
+    (HIST_BONUS_MULT, 141, 50, 400, 17.5),
+    (HIST_BONUS_MAX, 1489, 500, 3000, 125.0),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
     // history bonus adopts Stockfish/cap-hist offset shape:
     //   old: min(MAX, MULT * d)
@@ -143,7 +143,7 @@ tunables!(
     // wider depth discrimination. cap-history already uses the offset
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 11, 0, 400, 25.0),
+    (HIST_BONUS_OFFSET, 81, 0, 400, 25.0),
     (CAP_HIST_MULT, 307, 50, 400, 17.5),
     (CAP_HIST_BASE, 39, 0, 200, 10.0),
     (CAP_HIST_MAX, 1834, 500, 3000, 125.0),
