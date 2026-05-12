@@ -155,6 +155,12 @@ tunables!(
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
     (NFH_CAP_10X, 32, 10, 60, 10.0),
     (NFH_DIV_10X, 47, 20, 120, 10.0),
+    // Stormphrax T9 (movepick.h:113): additive offset on good-capture SEE
+    // threshold. Coda's existing formula: see_threshold = -capt_hist / 18.
+    // Stormphrax adds a constant offset (goodNoisySeeOffset, default 15cp).
+    // Effective SEE_HIST_OFFSET = SEE_HIST_OFFSET_10X / 10, applied via tp10.
+    // Default 150 → effective 15 (Stormphrax-faithful starting point).
+    (SEE_HIST_OFFSET_10X, 150, -3000, 3000, 30.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //

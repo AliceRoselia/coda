@@ -585,9 +585,10 @@ impl MovePicker {
             }
             // Dynamic SEE threshold: captures with strong history get a more
             // forgiving threshold. Use captHist only (not MVV) to avoid inflation.
+            // Stormphrax T9: additive offset (default 15cp = Stormphrax).
             let capt_hist = capt_hist_score_static(board, history, m);
             let cap_score = mvv_lva(board, m) + capt_hist;
-            let see_threshold = -capt_hist / 18;
+            let see_threshold = -capt_hist / 18 + crate::search::tp10(&crate::search::SEE_HIST_OFFSET_10X);
             if !see_ge(board, m, see_threshold) {
                 // Bad capture.
                 // C8 audit LIKELY #24: limit raised to 256 (from 64). 64
