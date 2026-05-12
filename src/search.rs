@@ -155,6 +155,11 @@ tunables!(
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
     (NFH_CAP_10X, 32, 10, 60, 10.0),
     (NFH_DIV_10X, 47, 20, 120, 10.0),
+    // T6 cont-hist base-aware update: main_hist weight in gravity base.
+    // Formula: base = cur_cont + main_score * T6_MAIN_WEIGHT_10X / 10.
+    // Default 5 → main_score/2 (Stormphrax history.h:120 hardcoded /2).
+    // SPSA can explore /1 (10), /3 (3.3), /4 (2.5), or disable (0).
+    (T6_MAIN_WEIGHT_10X, 5, 0, 20, 2.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -3331,7 +3336,7 @@ fn negamax(
                                 if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                                     let ch_b = if off <= 1 { nudge_bonus } else { nudge_bonus / 2 };
                                     let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
-                                    let base = cur_cont + main_score_v / 2;
+                                    let base = cur_cont + main_score_v * T6_MAIN_WEIGHT_10X.load(Ordering::Relaxed) / 10;
                                     History::update_cont_history_with_base(
                                         &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
                                         base,
@@ -3438,7 +3443,7 @@ fn negamax(
                                     if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                                         let ch_bonus = if off <= 1 { bonus } else { bonus / 2 };
                                         let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
-                                        let base = cur_cont + main_score_v / 2;
+                                        let base = cur_cont + main_score_v * T6_MAIN_WEIGHT_10X.load(Ordering::Relaxed) / 10;
                                         History::update_cont_history_with_base(
                                             &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
                                             base,
@@ -3485,7 +3490,7 @@ fn negamax(
                                             if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                                                 let ch_pen = if off <= 1 { -bonus } else { -bonus / 2 };
                                                 let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize] as i32;
-                                                let base = cur_cont + q_main_score / 2;
+                                                let base = cur_cont + q_main_score * T6_MAIN_WEIGHT_10X.load(Ordering::Relaxed) / 10;
                                                 History::update_cont_history_with_base(
                                                     &mut info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize],
                                                     base,
