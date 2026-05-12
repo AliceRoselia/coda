@@ -232,14 +232,13 @@ tunables!(
     // extensions for tactically significant moves.
     (SE_XRAY_BLOCKER_MARGIN_10X, 58, 0, 400, 20.0),
     (MVV_CAP_MULT, 29, 4, 64, 3.0),
-    (CONT_HIST_MULT_10X, 10, 10, 80, 15.0),
     // Per-offset cont-hist read weights at 10X precision (sub-integer for SPSA).
-    // Defaults 10 → effective 1.0× weight (bench-neutral). Used directly with
-    // /10 scaling at the read site, NOT via tp10 — preserves fractional values.
-    // Tune #1089 under integer precision showed CONT_HIST_W4 wanted +30%
-    // (rounded to int 1, lost); CONT_HIST_W6 wanted -10% (rounded to 1, lost).
-    (CONT_HIST_W4_10X, 10, 0, 80, 10.0),
-    (CONT_HIST_W6_10X, 10, 0, 80, 10.0),
+    // Used directly with /10 scaling at the read site, NOT via tp10 — preserves
+    // fractional values. min widened from 10 to 5 (former floor was tp10 artifact).
+    // Tune #1127 (1500 iters) found: MULT 10→11.6, W4 10→10.9, W6 10→7.2 (***).
+    (CONT_HIST_MULT_10X, 12, 5, 80, 15.0),
+    (CONT_HIST_W4_10X, 11, 0, 80, 10.0),
+    (CONT_HIST_W6_10X, 7, 0, 80, 10.0),
     (KNIGHT_FORK_BONUS, 9087, 0, 20000, 1000.0),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
