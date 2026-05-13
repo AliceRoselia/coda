@@ -155,6 +155,11 @@ tunables!(
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
     (NFH_CAP_10X, 32, 10, 60, 10.0),
     (NFH_DIV_10X, 47, 20, 120, 10.0),
+    // Hindsight extension eval_sum threshold (mirror of HINDSIGHT_THRESH=157
+    // for the reduction). Currently hardcoded 0 (Stormphrax default); makes
+    // the trigger asymmetric vs reduction. Tunable explores whether non-zero
+    // threshold improves the trigger.
+    (HINDSIGHT_EXT_THRESH, 0, -500, 500, 50.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -2378,7 +2383,7 @@ fn negamax(
         && FEAT_HINDSIGHT.load(Ordering::Relaxed)
     {
         let eval_sum = info.static_evals[ply_u - 1] + static_eval;
-        if eval_sum <= 0 {
+        if eval_sum <= tp(&HINDSIGHT_EXT_THRESH) {
             depth += 1;
         }
     }
