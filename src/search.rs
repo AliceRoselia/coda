@@ -155,6 +155,11 @@ tunables!(
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
     (NFH_CAP_10X, 32, 10, 60, 10.0),
     (NFH_DIV_10X, 47, 20, 120, 10.0),
+    // Hobbes #14 child num_fail_highs → LMR adjustment. When the prior child
+    // had > LMR_CHILD_FH_THRESHOLD fail-highs (cut node thrashed), reduce
+    // current move by +LMR_CHILD_FH_BONUS extra.
+    (LMR_CHILD_FH_THRESHOLD, 2, 0, 10, 1.0),
+    (LMR_CHILD_FH_BONUS, 1, 0, 3, 1.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -508,6 +513,9 @@ pub struct SearchInfo {
     pub excluded_move: [Move; MAX_PLY + 1],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
     double_ext_count: [i32; MAX_PLY + 1],
+    /// Per-ply fail-high count (#1020/Hobbes #14). Updated in-place during the
+    /// move loop so parents can read the just-completed child's final count.
+    pub fail_highs_stack: [i32; MAX_PLY + 1],
     /// Per-ply moved piece (go_piece index 1-12, 0=none). Set before make_move.
     /// Used for correct cont hist lookups at ply-2+ (avoids stale board.piece_at).
     moved_piece_stack: [u8; MAX_PLY + 1],
@@ -564,6 +572,7 @@ impl SearchInfo {
             depth_nodes: [0; MAX_PLY + 1],
             completed_depth: 0,
             static_evals: [0; MAX_PLY + 1],
+            fail_highs_stack: [0; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
             double_ext_count: [0; MAX_PLY + 1],
@@ -2663,8 +2672,9 @@ fn negamax(
     // full depth, or zero-window PVS failed high → full-window re-search)
     // increments. On the eventual beta cutoff, scale the history bonus by
     // this count — more fail-highs at this node = stronger signal that the
-    // cutoff move is genuinely good.
-    let mut num_fail_highs: i32 = 0;
+    // cutoff move is genuinely good. Stored in info.fail_highs_stack[ply_u]
+    // so that parent can read child's final count for Hobbes #14 LMR adjust.
+    info.fail_highs_stack[ply_u] = 0;
     // Track quiet moves searched before beta cutoff for history penalty
     let mut quiets_tried = [NO_MOVE; 64];
     let mut quiets_count = 0usize;
@@ -3197,6 +3207,17 @@ fn negamax(
                     reduction -= 1;
                 }
 
+                // Hobbes #14: child num_fail_highs → LMR penalty. If the
+                // previously-searched child at this parent had many fail-highs,
+                // current move is likely at a cut node where subsequent moves
+                // are less likely to be best. Reduce more.
+                if ply_u + 1 <= MAX_PLY {
+                    let child_fail_highs = info.fail_highs_stack[ply_u + 1];
+                    if child_fail_highs > tp(&LMR_CHILD_FH_THRESHOLD) {
+                        reduction += tp(&LMR_CHILD_FH_BONUS);
+                    }
+                }
+
                 // Continuous history adjustment: good history reduces less, bad more
                 // Uses main history + ply-1 + ply-2 continuation history (consensus).
                 // Ply-2 weighted at half to avoid over-scaling the total.
@@ -3310,7 +3331,7 @@ fn negamax(
                 // old "new_depth ≈ 10-15" effective threshold but with proper
                 // cp semantics. If this also H0s, the true value is smaller
                 // still (try 10cp) or the feature wants a depth-scaled margin.
-                num_fail_highs += 1; // Starzix T1 #1: LMR fail-high cascade.
+                info.fail_highs_stack[ply_u] += 1; // Starzix T1 #1: LMR fail-high cascade.
                 let mut do_deeper_adj = 0;
                 if lmr_score > best_score + 60 + 10 * reduction {
                     do_deeper_adj = 1;
@@ -3371,7 +3392,7 @@ fn negamax(
             // PVS: zero-window for non-first moves
             let mut pvs_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
             if pvs_score > alpha && pvs_score < beta && !info.stop.load(Ordering::Relaxed) {
-                num_fail_highs += 1; // Starzix T1 #1: PVS fail-high cascade.
+                info.fail_highs_stack[ply_u] += 1; // Starzix T1 #1: PVS fail-high cascade.
                 // Failed high: full window re-search
                 pvs_score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
             }
@@ -3432,7 +3453,7 @@ fn negamax(
                         // numFailHighs multiplicative scaling (#1020, Starzix T1 #1) —
                         // more cascades = stronger cutoff confidence.
                         let raw_bonus = history_bonus(bonus_depth);
-                        let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
+                        let scale_factor = info.fail_highs_stack[ply_u].min(tp10(&NFH_CAP_10X));
                         let bonus = raw_bonus + raw_bonus * scale_factor / tp10(&NFH_DIV_10X);
 
                         // Update main history
@@ -3537,7 +3558,7 @@ fn negamax(
                         // numFailHighs multiplicative scaling (#1054 ext of #1020):
                         // more cascades = stronger cutoff confidence.
                         let raw_cap_bonus = capture_history_bonus(cap_bonus_depth);
-                        let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
+                        let scale_factor = info.fail_highs_stack[ply_u].min(tp10(&NFH_CAP_10X));
                         let cap_bonus = raw_cap_bonus + raw_cap_bonus * scale_factor / tp10(&NFH_DIV_10X);
                         if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                             let cpt = if flags == FLAG_EN_PASSANT {
