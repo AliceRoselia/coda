@@ -2370,8 +2370,12 @@ fn negamax(
     // reduction. When parent reduced aggressively (>=3) but the combined
     // eval shows position has worsened (eval_sum <= 0), extend +1 ply to
     // find the threat we missed. Non-PV only (PV already searched fully).
+    // Additional gate: !improving — only extend when we're actually getting
+    // worse (improving=true would mean we're recovering despite parent's
+    // aggressive reduction, no need to extend further).
     if !in_check && ply >= 1 && ply_u >= 1
         && !is_pv
+        && !improving
         && prior_reduction >= 3
         && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
         && static_eval > -INFINITY
