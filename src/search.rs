@@ -3468,12 +3468,16 @@ fn negamax(
                             }
                         }
 
-                        // Update pawn history
+                        // Update pawn history with T6 base-aware gravity:
+                        // base = pawn_hist + main_hist / 2. Tests whether the
+                        // gravity-shape lesson from cont_hist generalises.
                         if moved_piece != NO_PIECE {
                             let gp = go_piece(moved_piece);
                             let v = info.pawn_hist[ph_idx][gp][to as usize] as i32;
+                            let main_score_v = info.history.main_score(from, to, enemy_attacks);
+                            let base = v + main_score_v / 2;
                             let clamped = bonus.clamp(-16384, 16384);
-                            let new_v = v + clamped - v * clamped.abs() / 16384;
+                            let new_v = v + clamped - base * clamped.abs() / 16384;
                             info.pawn_hist[ph_idx][gp][to as usize] = new_v.clamp(-32000, 32000) as i16;
                         }
 
@@ -3516,14 +3520,16 @@ fn negamax(
                                 }
                             }
 
-                            // Penalize pawn history
+                            // Penalize pawn history with T6 base-aware gravity.
                             {
                                 let q_piece = board.piece_at(qf);
                                 if q_piece != NO_PIECE {
                                     let gp = go_piece(q_piece);
                                     let v = info.pawn_hist[ph_idx][gp][qt as usize] as i32;
+                                    let q_main = info.history.main_score(qf, qt, enemy_attacks);
+                                    let base = v + q_main / 2;
                                     let clamped = (-bonus).clamp(-16384, 16384);
-                                    let new_v = v + clamped - v * clamped.abs() / 16384;
+                                    let new_v = v + clamped - base * clamped.abs() / 16384;
                                     info.pawn_hist[ph_idx][gp][qt as usize] = new_v.clamp(-32000, 32000) as i16;
                                 }
                             }
