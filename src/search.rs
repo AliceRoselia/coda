@@ -160,9 +160,9 @@ tunables!(
     // gets per-piece-type penalty (Reckless: 8k/14k/20k for minor/rook/queen).
     // Coda's unstratified version H0'd (#465); this is the stratified variant
     // flagged as untested in engine-notes/reckless.md line 28.
-    (ONTO_PAWN_PEN_MINOR, 8000, 0, 30000, 1500.0),
-    (ONTO_PAWN_PEN_ROOK, 14000, 0, 30000, 2000.0),
-    (ONTO_PAWN_PEN_QUEEN, 20000, 0, 30000, 2500.0),
+    (ONTO_PAWN_PEN_MINOR, 8107, 0, 30000, 1500.0),
+    (ONTO_PAWN_PEN_ROOK, 13466, 0, 30000, 2000.0),
+    (ONTO_PAWN_PEN_QUEEN, 19691, 0, 30000, 2500.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -196,9 +196,9 @@ tunables!(
     (CORR_BONUS_CAP_DIV_10X, 44, 10, 160, 15.0),
     (CORR_HIST_GRAIN_T, 14, 1, 32, 1.55),
     (CORR_HIST_ERR_MAX_10X, 27, 10, 640, 5.0),
-    (ESCAPE_BONUS_Q, 18198, 5000, 40000, 1750.0),
-    (ESCAPE_BONUS_R, 9381, 3000, 30000, 1350.0),
-    (ESCAPE_BONUS_MINOR, 5607, 2000, 20000, 900.0),
+    (ESCAPE_BONUS_Q, 17829, 5000, 40000, 1750.0),
+    (ESCAPE_BONUS_R, 9658, 3000, 30000, 1350.0),
+    (ESCAPE_BONUS_MINOR, 5466, 2000, 20000, 900.0),
     (NMP_KING_ZONE_MAX_10X, 75, 20, 90, 15.0),
     // T2.1 (Titan's next_ideas 2026-04-21): undefended-piece NMP skip
     // threshold. Count our pieces with ≥1 enemy attacker AND zero of
