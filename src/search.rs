@@ -3545,8 +3545,15 @@ fn negamax(
                             } else {
                                 captured_type(captured_pt)
                             };
-                            History::update_cont_history(
+                            // T6 extension: base = cap_hist + main_hist/2.
+                            // Same gravity-formula change that earned +2.1 on
+                            // cont_hist; tests if pattern generalises to cap_hist.
+                            let cap_main = info.history.main_score(from, to, enemy_attacks);
+                            let cur_cap = info.history.capture[go_piece(moved_piece)][to as usize][cpt] as i32;
+                            let base = cur_cap + cap_main / 2;
+                            History::update_cont_history_with_base(
                                 &mut info.history.capture[go_piece(moved_piece)][to as usize][cpt],
+                                base,
                                 cap_bonus,
                             );
                         }
