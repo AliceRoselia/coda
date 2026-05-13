@@ -155,6 +155,14 @@ tunables!(
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
     (NFH_CAP_10X, 32, 10, 60, 10.0),
     (NFH_DIV_10X, 47, 20, 120, 10.0),
+    // Reckless stratified onto-threatened penalty (move-ordering).
+    // Quiet move with piece value > pawn landing on a pawn-attacked square
+    // gets per-piece-type penalty (Reckless: 8k/14k/20k for minor/rook/queen).
+    // Coda's unstratified version H0'd (#465); this is the stratified variant
+    // flagged as untested in engine-notes/reckless.md line 28.
+    (ONTO_PAWN_PEN_MINOR, 8000, 0, 30000, 1500.0),
+    (ONTO_PAWN_PEN_ROOK, 14000, 0, 30000, 2000.0),
+    (ONTO_PAWN_PEN_QUEEN, 20000, 0, 30000, 2500.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //

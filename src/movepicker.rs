@@ -687,6 +687,28 @@ impl MovePicker {
                 }
             }
 
+            // Reckless stratified onto-threatened penalty: piece worth more
+            // than a pawn moves to a pawn-attacked square. Per-piece type.
+            if piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                let them = 1 - board.side_to_move;
+                let their_pawns = board.pieces[PAWN as usize] & board.colors[them as usize];
+                let enemy_pawn_attacks: u64 = if them == WHITE {
+                    ((their_pawns & !FILE_A) << 7) | ((their_pawns & !FILE_H) << 9)
+                } else {
+                    ((their_pawns & !FILE_A) >> 9) | ((their_pawns & !FILE_H) >> 7)
+                };
+                if enemy_pawn_attacks & (1u64 << to) != 0 {
+                    let pen = match pt {
+                        1 | 2 => crate::search::ONTO_PAWN_PEN_MINOR.load(std::sync::atomic::Ordering::Relaxed),
+                        3 => crate::search::ONTO_PAWN_PEN_ROOK.load(std::sync::atomic::Ordering::Relaxed),
+                        4 => crate::search::ONTO_PAWN_PEN_QUEEN.load(std::sync::atomic::Ordering::Relaxed),
+                        _ => 0,
+                    };
+                    score -= pen;
+                }
+            }
+
             // B1: Discovered-attack bonus. If `from` is one of our pieces
             // currently blocking our slider's attack on an enemy, moving
             // it uncovers that attack. Flat bonus — victim-value scaling
