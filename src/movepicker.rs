@@ -223,6 +223,8 @@ pub struct MovePicker {
     // Checking squares: from which squares does each piece type give direct check?
     // Indexed by piece type (0=PAWN..5=KING). Computed once per node.
     checking_sqs: [Bitboard; 6],
+    // King ring (8 squares adjacent to enemy king) for rook king-ring-ortho bonus.
+    enemy_king_ring: Bitboard,
 }
 
 impl MovePicker {
@@ -304,6 +306,12 @@ impl MovePicker {
         // (game 2agDftuq, 2026-04-29).
         let pinned = board.pinned();
 
+        let enemy_king_ring = if their_king_sq < 64 {
+            king_attacks(their_king_sq)
+        } else {
+            0
+        };
+
         MovePicker {
             stage: Stage::TTMove,
             tt_move,
@@ -326,6 +334,7 @@ impl MovePicker {
             pinned,
             threat_sq: -1,
             checking_sqs,
+            enemy_king_ring,
         }
     }
 
@@ -358,6 +367,7 @@ impl MovePicker {
             pinned: 0,
             threat_sq: -1,
             checking_sqs: [0; 6], // not used in QS
+            enemy_king_ring: 0,
         }
     }
 
@@ -422,6 +432,7 @@ impl MovePicker {
             pinned,
             threat_sq: -1,
             checking_sqs: [0; 6], // not used in evasions
+            enemy_king_ring: 0,
         }
     }
 
@@ -684,6 +695,15 @@ impl MovePicker {
                 let pt = board.piece_type_at(from);
                 if pt < 6 && self.checking_sqs[pt as usize] & (1u64 << to) != 0 {
                     score += crate::search::QUIET_CHECK_BONUS.load(std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+
+            // Reckless rook king-ring-ortho bonus: quiet rook move landing
+            // adjacent to enemy king. Pre-mate / king-cornering signal.
+            if piece != NO_PIECE {
+                let pt = board.piece_type_at(from);
+                if pt == 3 && self.enemy_king_ring & (1u64 << to) != 0 {
+                    score += crate::search::ROOK_KING_RING_BONUS.load(std::sync::atomic::Ordering::Relaxed);
                 }
             }
 

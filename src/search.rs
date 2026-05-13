@@ -155,6 +155,11 @@ tunables!(
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
     (NFH_CAP_10X, 32, 10, 60, 10.0),
     (NFH_DIV_10X, 47, 20, 120, 10.0),
+    // Reckless rook king-ring-ortho move-ordering bonus.
+    // Quiet rook move landing adjacent to enemy king (8-square ring).
+    // Reckless uses +5000; signal is "rook getting close to king" — relevant
+    // for mating attacks and king-cornering threats.
+    (ROOK_KING_RING_BONUS, 5000, 0, 20000, 800.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
