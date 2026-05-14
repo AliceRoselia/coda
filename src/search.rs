@@ -2780,7 +2780,12 @@ fn negamax(
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
-                let singular_score = negamax(board, info, singular_beta - 1, singular_beta, singular_depth, ply, false);
+                // Pass parent's cut_node (SF/Reckless consensus). Prior code
+                // hardcoded `false`, which treated SE verification as an
+                // all-node — wrong, since the node-type classification is
+                // a property of the position, not affected by exclusion of
+                // one move.
+                let singular_score = negamax(board, info, singular_beta - 1, singular_beta, singular_depth, ply, cut_node);
                 info.excluded_move[ply_u] = NO_MOVE;
 
                 if info.stop.load(Ordering::Relaxed) {
