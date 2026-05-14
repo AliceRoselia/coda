@@ -2864,7 +2864,11 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
             && FEAT_HIST_PRUNE.load(Ordering::Relaxed)
         {
-            let mut hist_prune_score = info.history.main_score(from, to, enemy_attacks);
+            // 2026-05-14 audit: drop main_hist from hist-prune score (SF does
+            // not include main_hist in its hist-prune gate). Per memory
+            // `feedback_hist_prune_signal_must_be_contextual` — main_hist
+            // dilutes the contextual signal that hist-prune needs.
+            let mut hist_prune_score: i32 = 0;
             if moved_piece != NO_PIECE {
                 let gp = go_piece(moved_piece);
                 // Cont-hist at offsets {1, 2, 4, 6} — full set used by
