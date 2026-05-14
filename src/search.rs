@@ -3374,6 +3374,41 @@ fn negamax(
                 num_fail_highs += 1; // Starzix T1 #1: PVS fail-high cascade.
                 // Failed high: full window re-search
                 pvs_score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
+
+                // Post-PVS-research cont-hist nudge (extension of #1007).
+                // After zero-window re-searched at full window, nudge cont-hist
+                // based on outcome:
+                //   pvs_score >= beta: confirmed strongly → +bonus
+                //   pvs_score <= alpha: refuted → -bonus
+                //   else: PV-band, no nudge (no clear signal)
+                // Quiet moves only. Different decision point from LMR-research.
+                if !is_cap && moved_piece != NO_PIECE {
+                    let nudge_depth = (new_depth - 1).max(1);
+                    let nudge_bonus = if pvs_score >= beta {
+                        history_bonus(nudge_depth)
+                    } else if pvs_score <= alpha {
+                        -history_bonus(nudge_depth)
+                    } else {
+                        0
+                    };
+                    if nudge_bonus != 0 {
+                        let gp_mv = go_piece(moved_piece);
+                        let ch_offsets = [1usize, 2, 4, 6];
+                        for &off in &ch_offsets {
+                            if ply_u >= off {
+                                let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
+                                let prior_to = info.moved_to_stack[ply_u - off] as usize;
+                                if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
+                                    let ch_b = if off <= 1 { nudge_bonus } else { nudge_bonus / 2 };
+                                    History::update_cont_history(
+                                        &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
+                                        ch_b,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
             }
             score = pvs_score;
         } else {
