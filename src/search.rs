@@ -3421,17 +3421,13 @@ fn negamax(
 
                     // Beta cutoff - update history for quiet moves (killers/counter removed — SF pattern)
                     if !is_cap {
-                        // Depth-boost on big fail-high (#1008, SF/Obsidian) —
-                        // use depth+1 when cutoff exceeds beta by BONUS_BOOST_AT.
-                        // Additionally (Stormphrax search.cpp:1185): boost depth
-                        // when cutoff move beat our static eval (unexpected-strong
-                        // cutoff signal). Both can stack for +2 depth.
-                        // Third additive trigger: boost depth when improving
-                        // (we're doing better than 2 plies ago). Tests whether
-                        // multiple depth-boost signals compound.
+                        // 2026-05-14 audit (rebased post-ae19c4f): drop the static-eval
+                        // boost (Stormphrax pattern). Keep the margin boost (#1008) and
+                        // the improving boost (#1173, merged ae19c4f). Removing
+                        // static-eval is the cleanest source-by-source ablation of the
+                        // historical 3-trigger Coda-only stack.
                         let bonus_depth = depth
                             + if best_score > beta + tp(&BONUS_BOOST_AT) { 1 } else { 0 }
-                            + if !in_check && static_eval <= best_score { 1 } else { 0 }
                             + if improving { 1 } else { 0 };
                         // numFailHighs multiplicative scaling (#1020, Starzix T1 #1) —
                         // more cascades = stronger cutoff confidence.
