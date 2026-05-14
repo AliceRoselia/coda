@@ -2830,11 +2830,12 @@ fn negamax(
                     // Cut node with competitive alternatives — moderate reduce
                     singular_extension = -2;
                     info.stats.negative_ext += 1;
-                } else {
-                    // All-node with competitive alternatives — mild reduce
-                    singular_extension = -1;
-                    info.stats.negative_ext += 1;
                 }
+                // All-node case: leave singular_extension = 0 (SF/Reckless
+                // consensus). Prior Coda code applied -1 here; cross-engine
+                // audit found neither SF nor Reckless reduces the TT move at
+                // all-nodes when alternatives are competitive — at an all-node
+                // the TT move might be the actual best.
             }
         }
 
