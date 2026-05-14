@@ -3021,9 +3021,12 @@ fn negamax(
         // section states LMP is non-PV only, matching
         // SF/Obsidian/Viridithas/Berserk consensus; the code was missing
         // the gate so LMP fired on PV nodes.
+        // 2026-05-14 audit: add stm_non_pawn safety guard. SF & Obsidian both
+        // require side-to-move has non-pawn material (avoid LMP in K+P endings).
         if ply > 0 && !is_pv && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
             && !is_cap && !is_promo
             && !board.gives_direct_check(mv)
+            && stm_non_pawn != 0
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
         {
