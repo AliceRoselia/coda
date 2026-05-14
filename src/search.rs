@@ -2341,7 +2341,7 @@ fn negamax(
     // Restricted to PV/cut nodes (Obsidian/Berserk/Stormphrax pattern).
     // All-nodes have tight bounds already, IIR there wastes depth.
     let is_pv = beta - alpha_orig > 1;
-    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
+    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && info.excluded_move[ply_u] == NO_MOVE && FEAT_IIR.load(Ordering::Relaxed) {
         depth -= 1;
     }
 
@@ -2356,6 +2356,7 @@ fn negamax(
         && prior_reduction >= 2
         && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
         && static_eval > -INFINITY
+        && info.excluded_move[ply_u] == NO_MOVE
         && FEAT_HINDSIGHT.load(Ordering::Relaxed)
     {
         // Both sides optimistic about their position (eval_sum > threshold)
@@ -2375,6 +2376,7 @@ fn negamax(
         && prior_reduction >= 3
         && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
         && static_eval > -INFINITY
+        && info.excluded_move[ply_u] == NO_MOVE
         && FEAT_HINDSIGHT.load(Ordering::Relaxed)
     {
         let eval_sum = info.static_evals[ply_u - 1] + static_eval;
