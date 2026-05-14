@@ -3439,11 +3439,24 @@ fn negamax(
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         let bonus = raw_bonus + raw_bonus * scale_factor / tp10(&NFH_DIV_10X);
 
-                        // Update main history
-                        History::update_history(
-                            info.history.main_entry(from, to, enemy_attacks),
-                            bonus,
-                        );
+                        // Update main history with T6 base-aware gravity.
+                        // base = main + cont_hist_ply1 / 2 (mirror of T6 cont_hist).
+                        {
+                            let main_val = info.history.main_score(from, to, enemy_attacks);
+                            let cont_ply1 = if ply_u >= 1 {
+                                let pp = info.moved_piece_stack[ply_u - 1] as usize;
+                                let pt = info.moved_to_stack[ply_u - 1] as usize;
+                                if pp > 0 && pp < 13 && pt < 64 && moved_piece != NO_PIECE {
+                                    info.history.cont_hist[pp][pt][go_piece(moved_piece)][to as usize] as i32
+                                } else { 0 }
+                            } else { 0 };
+                            let base = main_val + cont_ply1 / 2;
+                            History::update_history_with_base(
+                                info.history.main_entry(from, to, enemy_attacks),
+                                base,
+                                bonus,
+                            );
+                        }
 
                         // Update continuation history at plies 1, 2, 4, 6
                         // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
@@ -3486,10 +3499,23 @@ fn negamax(
                             let q = quiets_tried[i];
                             let qf = move_from(q);
                             let qt = move_to(q);
-                            History::update_history(
-                                info.history.main_entry(qf, qt, enemy_attacks),
-                                -bonus,
-                            );
+                            {
+                                let main_val = info.history.main_score(qf, qt, enemy_attacks);
+                                let cont_ply1 = if ply_u >= 1 {
+                                    let pp = info.moved_piece_stack[ply_u - 1] as usize;
+                                    let pt = info.moved_to_stack[ply_u - 1] as usize;
+                                    let q_piece = board.piece_at(qf);
+                                    if pp > 0 && pp < 13 && pt < 64 && q_piece != NO_PIECE {
+                                        info.history.cont_hist[pp][pt][go_piece(q_piece)][qt as usize] as i32
+                                    } else { 0 }
+                                } else { 0 };
+                                let base = main_val + cont_ply1 / 2;
+                                History::update_history_with_base(
+                                    info.history.main_entry(qf, qt, enemy_attacks),
+                                    base,
+                                    -bonus,
+                                );
+                            }
 
                             // Penalize continuation history at plies 1, 2, 4, 6.
                             // T6: base uses qf,qt move's main_score (the move being malused).

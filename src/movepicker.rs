@@ -116,6 +116,14 @@ impl History {
         *entry += clamped - *entry * clamped.abs() / MAX_HISTORY;
     }
 
+    /// Update main-history with gravity from a combined "base" score
+    /// (T6 base-aware pattern applied to main_hist). Gravity uses the
+    /// move's combined signal rather than just the cell value.
+    pub fn update_history_with_base(entry: &mut i32, base: i32, bonus: i32) {
+        let clamped = bonus.clamp(-MAX_HISTORY, MAX_HISTORY);
+        *entry += clamped - base * clamped.abs() / MAX_HISTORY;
+    }
+
     /// Update continuation history (i16 entries) with gravity.
     /// Uses same formula as update_history but with i16 values and MAX_HISTORY divisor.
     pub fn update_cont_history(entry: &mut i16, bonus: i32) {
