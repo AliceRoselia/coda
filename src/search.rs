@@ -2867,12 +2867,11 @@ fn negamax(
             let mut hist_prune_score = info.history.main_score(from, to, enemy_attacks);
             if moved_piece != NO_PIECE {
                 let gp = go_piece(moved_piece);
-                // Cont-hist at offsets {1, 2, 4, 6} — full set used by
-                // Coda's move-ordering already; bringing hist-prune score
-                // in line. Diagnostic data showed including ply-6 doubles
-                // fire rate at unchanged threshold (most-often-dominant
-                // offset). See docs/history_prune_cont_hist_data_2026-05-08.md.
-                let offsets = [1usize, 2, 4, 6];
+                // 2026-05-14 audit: drop cont[4] and cont[6] from hist-prune
+                // score. SF uses 3 sources (cont1+cont2+pawn), Coda was at 6
+                // (main + cont1+2+4+6 + pawn). Source-count outlier explained
+                // 2-3× MULT inflation; this aligns the score scale to consensus.
+                let offsets = [1usize, 2];
                 for &off in &offsets {
                     if ply_u >= off {
                         let p = info.moved_piece_stack[ply_u - off] as usize;
