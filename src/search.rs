@@ -2538,8 +2538,11 @@ fn negamax(
     let probcut_beta = beta + tp(&PROBCUT_MARGIN);
     let probcut_tt_noshot = if tt_hit && tt_entry.depth >= depth - 3 {
         let adj_score = score_from_tt(tt_entry.score, ply);
-        (tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT)
-            && adj_score < probcut_beta
+        // SF pattern (search.cpp:963): accept ANY flag for TT-noshot.
+        // Coda previously required UPPER/EXACT on the theory that LOWER
+        // bounds are uninformative ceilings, but cross-engine consensus
+        // (SF, Obsidian) just gates on score regardless of flag.
+        adj_score < probcut_beta
     } else {
         false
     };
