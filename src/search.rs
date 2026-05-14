@@ -155,6 +155,10 @@ tunables!(
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
     (NFH_CAP_10X, 32, 10, 60, 10.0),
     (NFH_DIV_10X, 47, 20, 120, 10.0),
+    // Hindsight extension parent_reduction threshold. Hardcoded >=3
+    // (Stormphrax). Reduction half uses >=2. Tunable explores whether
+    // symmetric (2) or stricter (4+) values are better for extension.
+    (HINDSIGHT_EXT_PRIOR_REDUCE, 3, 1, 8, 1.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -2372,7 +2376,7 @@ fn negamax(
     // find the threat we missed. Non-PV only (PV already searched fully).
     if !in_check && ply >= 1 && ply_u >= 1
         && !is_pv
-        && prior_reduction >= 3
+        && prior_reduction >= tp(&HINDSIGHT_EXT_PRIOR_REDUCE)
         && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
         && static_eval > -INFINITY
         && FEAT_HINDSIGHT.load(Ordering::Relaxed)
