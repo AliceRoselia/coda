@@ -3021,9 +3021,10 @@ fn negamax(
         // section states LMP is non-PV only, matching
         // SF/Obsidian/Viridithas/Berserk consensus; the code was missing
         // the gate so LMP fired on PV nodes.
+        // 2026-05-14 audit: drop !gives_direct_check carve-out. SF/Obsidian
+        // don't have it; only Reckless does. Test the ablation.
         if ply > 0 && !is_pv && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
             && !is_cap && !is_promo
-            && !board.gives_direct_check(mv)
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
         {
