@@ -120,6 +120,10 @@ tunables!(
     (LMP_DEPTH, 8, 4, 20, 2.0),
     (BAD_NOISY_MARGIN, 77, 30, 150, 6.0),
     (PROBCUT_MARGIN, 185, 80, 300, 11.0),
+    // ProbCut improving modulation (SF: 224-61*improving; Reckless: 269-72).
+    // Subtract from probcut_beta when improving — easier ProbCut hit in
+    // improving positions where ProbCut is more likely correct.
+    (PROBCUT_MARGIN_IMP, 60, 0, 150, 8.0),
     (HINDSIGHT_THRESH, 157, 50, 400, 17.5),
     (UNSTABLE_THRESH, 313, 50, 500, 22.5),
     (SEE_MATERIAL_SCALE, 214, 30, 300, 13.5),
@@ -2535,7 +2539,7 @@ fn negamax(
     //   "score is AT LEAST X" — it does not mean "no chance at probcut_beta",
     //   the true score can be much higher. Only UPPER/EXACT bounds are
     //   evidence of a ceiling. Switch to ply-adjusted score + bound gate.
-    let probcut_beta = beta + tp(&PROBCUT_MARGIN);
+    let probcut_beta = beta + tp(&PROBCUT_MARGIN) - if improving { tp(&PROBCUT_MARGIN_IMP) } else { 0 };
     let probcut_tt_noshot = if tt_hit && tt_entry.depth >= depth - 3 {
         let adj_score = score_from_tt(tt_entry.score, ply);
         (tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT)
