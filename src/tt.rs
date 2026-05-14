@@ -475,7 +475,7 @@ impl TT {
             // the previous `*4`, freeing slots for fresh shallow entries
             // when TT pressure is high.
             let age = gen.wrapping_sub(slot_gen) as i32;
-            let slot_score = slot_depth - age * 8;
+            let slot_score = slot_depth - age * crate::search::tp(&crate::search::TT_AGE_PENALTY);
             if slot_score < replace_score {
                 replace_score = slot_score;
                 replace_idx = i;

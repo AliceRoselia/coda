@@ -1,0 +1,1 @@
+TT_AGE_PENALTY, int, 8, 1, 32, 2.0, 0.002

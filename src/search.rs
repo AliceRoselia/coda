@@ -155,6 +155,10 @@ tunables!(
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
     (NFH_CAP_10X, 32, 10, 60, 10.0),
     (NFH_DIV_10X, 47, 20, 120, 10.0),
+    // TT replacement age penalty: slot_score = slot_depth - age * PENALTY.
+    // Hardcoded *8 matches SF GENERATION_DELTA. Higher = stale entries
+    // depreciate faster (younger preferred); lower = depth wins more often.
+    (TT_AGE_PENALTY, 8, 1, 32, 2.0),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -269,7 +273,7 @@ tunables!(
 
 /// Get a tunable parameter value (inline for hot paths)
 #[inline(always)]
-fn tp(param: &AtomicI32) -> i32 {
+pub fn tp(param: &AtomicI32) -> i32 {
     param.load(Ordering::Relaxed)
 }
 
