@@ -149,7 +149,10 @@ tunables!(
     (CAP_HIST_MAX, 1834, 500, 3000, 125.0),
     // Bonus depth-boost margin (#1008): use depth+1 in history_bonus when
     // cutoff exceeds beta by this margin (SF StatBonusBoostAt, Obsidian=95).
-    (BONUS_BOOST_AT, 29, 0, 300, 15.0),
+    // 2026-05-14 audit: SF StatBonusBoostAt = 95. Coda's SPSA converged
+    // to 29 — 3× smaller threshold means boost fires 3× more often. Probe
+    // consensus value; SPSA may have compensated for the 2-boost-stack.
+    (BONUS_BOOST_AT, 95, 0, 300, 15.0),
     // numFailHighs multiplicative scaling (#1020 / Starzix T1 #1):
     // bonus = raw + raw * min(num_fail_highs, NFH_CAP) / NFH_DIV.
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
