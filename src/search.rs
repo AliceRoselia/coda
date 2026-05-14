@@ -2774,9 +2774,15 @@ fn negamax(
                     tp10(&SE_XRAY_BLOCKER_MARGIN_10X)
                 } else { 0 };
                 // S4: widen singular test margin when king under pressure.
+                // tt_pv non-PV widening (Reckless search.rs:645, SF analogue):
+                // at sticky-PV nodes outside the current PV, widen margin to
+                // make singularity harder — avoids over-extending re-entry
+                // into former PV lines.
+                let ttpv_widen = if tt_pv && !is_pv { depth } else { 0 };
                 let singular_beta = tt_score_local - depth
                     - king_zone_pressure * tp(&SE_KING_PRESSURE_MARGIN)
-                    - xray_bonus;
+                    - xray_bonus
+                    - ttpv_widen;
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
