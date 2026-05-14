@@ -186,7 +186,12 @@ tunables!(
     (CORR_HIST_DIV, 1408, 256, 4096, 192.0),
     (CORR_UPDATE_WEIGHT_MAX, 12, 4, 48, 2.2),
     (CORR_BONUS_CAP_DIV_10X, 44, 10, 160, 15.0),
-    (CORR_HIST_GRAIN_T, 14, 1, 32, 1.55),
+    // 2026-05-14 audit: GRAIN_T=14 is a read-side workaround for the
+    // clamp-err corr-hist formula bug. Drop to 1 (no quantization). SPSA
+    // pinned this at 14; per `feedback_spsa_as_feature_utility_diagnostic`
+    // boundary-pinning of a workaround param indicates the workaround
+    // is itself signal-destroying.
+    (CORR_HIST_GRAIN_T, 1, 1, 32, 1.55),
     (CORR_HIST_ERR_MAX_10X, 27, 10, 640, 5.0),
     (ESCAPE_BONUS_Q, 18198, 5000, 40000, 1750.0),
     (ESCAPE_BONUS_R, 9381, 3000, 30000, 1350.0),
