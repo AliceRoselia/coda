@@ -3028,7 +3028,8 @@ fn negamax(
             && FEAT_LMP.load(Ordering::Relaxed)
         {
             let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
-            if move_count > lmp_limit {
+            // 2026-05-14 audit: align with SF/Obsidian/Reckless `>=` semantics.
+            if move_count >= lmp_limit {
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
                 continue;
