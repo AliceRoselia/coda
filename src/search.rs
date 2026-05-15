@@ -1054,8 +1054,13 @@ fn update_corr_entry(entry: &mut i32, err: i32, weight: i32, cap_div: i32) {
 
 /// Update all correction history tables.
 fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, raw_eval: i32, depth: i32) {
-    let err_max = tp10(&CORR_HIST_ERR_MAX_10X);
-    let err = (search_score - raw_eval).clamp(-err_max, err_max);
+    // 2026-05-15 audit: remove err pre-clamp. The bonus is already clamped
+    // by cap inside update_corr_entry; pre-clamping err truncates signal
+    // before weight multiplication. Reckless and SF apply only the bonus
+    // clamp (see Reckless search.rs:1326 — raw diff, no pre-clamp).
+    // CORR_HIST_ERR_MAX_10X SPSA-detuned to 27 (eff ±3cp), gutting signal
+    // on any err > 3cp (the common case for depth >= 6 search).
+    let err = search_score - raw_eval;
     let weight = (depth + 1).min(tp(&CORR_UPDATE_WEIGHT_MAX));
     let cap_div = tp10(&CORR_BONUS_CAP_DIV_10X);
     let stm = board.side_to_move as usize;
