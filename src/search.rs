@@ -224,7 +224,12 @@ tunables!(
     // 2026-05-09 ablation (Tier 4 A2): 25K-iter tune-928 drove float to 0.22.
     // Three other tunes wanted 1.18-1.97; #874 prior ablation showed -2.6 Elo
     // (in noise). Decisive [-3, 3] SPRT at 0.
-    (SE_KING_PRESSURE_MARGIN, 0, 0, 30, 1.5),
+    //
+    // 10X variant (2026-05-15): the tune-928 float reading of 0.22 hit the
+    // integer floor. Other tunes converged to 1-2. Promote to direct /10
+    // scaling so SPSA can express fractional values cleanly. Default 0
+    // (bench-neutral with old). Range [-50, 300] = effective [-5.0, +30.0].
+    (SE_KING_PRESSURE_MARGIN_10X, 0, -50, 300, 5.0),
     // xray-SE: widen singular test margin when TT move is from an x-ray
     // blocker square (moving it uncovers our slider's attack on an enemy).
     // Signal already delivered +52 in movepicker (#502). Flat bonus
@@ -2775,7 +2780,7 @@ fn negamax(
                 } else { 0 };
                 // S4: widen singular test margin when king under pressure.
                 let singular_beta = tt_score_local - depth
-                    - king_zone_pressure * tp(&SE_KING_PRESSURE_MARGIN)
+                    - king_zone_pressure * SE_KING_PRESSURE_MARGIN_10X.load(Ordering::Relaxed) / 10
                     - xray_bonus;
                 let singular_depth = (depth - 1) / 2;
 
