@@ -85,7 +85,7 @@ tunables!(
     //     change); two consecutive tunes have drifted this toward feature-
     //     disable. Candidate for ablation SPRT (set to 0).
     (NMP_BASE_R_10X, 69, 20, 80, 15.0),
-    (NMP_DEPTH_DIV_10X, 46, 10, 60, 15.0),
+    (NMP_DEPTH_DIV_10X, 45, 10, 60, 15.0),
     (NMP_EVAL_DIV, 116, 50, 400, 17.5),
     (NMP_EVAL_MAX_10X, 23, 10, 60, 5.0),
     (NMP_VERIFY_DEPTH_10X, 120, 40, 200, 20.0),
@@ -97,12 +97,12 @@ tunables!(
     //   New: 40 + 65*5 = 365 (matches Reckless)
     // Force-more-pruning experiment: Coda was under-pruning at mid-depth
     // where Reckless prunes confidently. SPSA retune-on-branch expected.
-    (FUT_BASE, 28, 20, 200, 9.0),
+    (FUT_BASE, 27, 20, 200, 9.0),
     (FUT_PER_DEPTH, 91, 40, 250, 10.5),
     (HIST_PRUNE_DEPTH_10X, 10, 10, 80, 15.0),
     (HIST_PRUNE_MULT, 13098, 500, 50000, 2475.0),
     (SEE_QUIET_MULT, 31, 5, 80, 3.75),
-    (LMR_HIST_DIV, 6810, 2000, 100000, 4900.0),
+    (LMR_HIST_DIV, 8584, 2000, 100000, 4900.0),
     (LMR_C_QUIET, 135, 40, 300, 13.0),
     (LMR_C_CAP, 107, 80, 350, 12.5),
     // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv,
@@ -130,7 +130,7 @@ tunables!(
     (CORR_W_NP, 77, 50, 400, 17.5),
     (CORR_W_MINOR, 47, 30, 300, 13.5),
     (CORR_W_MAJOR, 99, 30, 300, 13.5),
-    (CORR_W_CONT, 36, 30, 400, 18.5),
+    (CORR_W_CONT, 33, 30, 400, 18.5),
     (FH_BLEND_DEPTH_10X, 32, 0, 80, 15.0),
     (HIST_BONUS_MULT, 296, 50, 400, 17.5),
     (HIST_BONUS_MAX, 1894, 500, 3000, 125.0),
@@ -143,13 +143,13 @@ tunables!(
     // wider depth discrimination. cap-history already uses the offset
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 11, 0, 400, 25.0),
+    (HIST_BONUS_OFFSET, 12, 0, 400, 25.0),
     (CAP_HIST_MULT, 307, 50, 400, 17.5),
-    (CAP_HIST_BASE, 39, 0, 200, 10.0),
+    (CAP_HIST_BASE, 38, 0, 200, 10.0),
     (CAP_HIST_MAX, 1834, 500, 3000, 125.0),
     // Bonus depth-boost margin (#1008): use depth+1 in history_bonus when
     // cutoff exceeds beta by this margin (SF StatBonusBoostAt, Obsidian=95).
-    (BONUS_BOOST_AT, 29, 0, 300, 15.0),
+    (BONUS_BOOST_AT, 26, 0, 300, 15.0),
     // numFailHighs multiplicative scaling (#1020 / Starzix T1 #1):
     // bonus = raw + raw * min(num_fail_highs, NFH_CAP) / NFH_DIV.
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
@@ -198,15 +198,15 @@ tunables!(
     // NMP — opponent's free tempo is very likely to exploit the hanger.
     // Fits Titan's W2 pattern (binary signal gating a pruning decision).
     // Default 1 = skip NMP whenever any piece is hanging.
-    (NMP_UNDEFENDED_MAX_10X, 15, 0, 50, 10.0),
+    (NMP_UNDEFENDED_MAX_10X, 17, 0, 50, 10.0),
     // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering weight.
     // Bonus applied in movepicker quiets = (to_mobility - from_mobility) × this.
     // Default 32 = ±256 typical range, additive to history (~1000s scale).
     (MOBILITY_DELTA_WEIGHT, 34, 0, 256, 8.0),
-    (PROBCUT_KING_ZONE_MAX_10X, 59, 20, 90, 15.0),
+    (PROBCUT_KING_ZONE_MAX_10X, 61, 20, 90, 15.0),
     (LMR_THREAT_DIV_10X, 42, 10, 50, 15.0),
     (LMR_KING_PRESSURE_DIV_10X, 77, 20, 90, 15.0),
-    (FUT_THREATS_MARGIN, 19, 0, 200, 10.0),
+    (FUT_THREATS_MARGIN, 18, 0, 200, 10.0),
     (DISCOVERED_ATTACK_BONUS, 3396, 0, 30000, 1500.0),
     // T1.4: quiet-slider move that completes a battery — lands on a square
     // where a friendly slider stands between us and an enemy piece along
