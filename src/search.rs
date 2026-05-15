@@ -135,15 +135,17 @@ tunables!(
     (HIST_BONUS_MULT, 296, 50, 400, 17.5),
     (HIST_BONUS_MAX, 1894, 500, 3000, 125.0),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
-    // history bonus adopts Stockfish/cap-hist offset shape:
-    //   old: min(MAX, MULT * d)
-    //   new: clamp(0, MAX, MULT * d - OFFSET)
-    // Rationale: at d=5 the old formula saturates at ~1500; d=5 and d=10
-    // get the same bonus. New shape with offset 72 (SF's value) gives
-    // wider depth discrimination. cap-history already uses the offset
-    // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
-    // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 11, 0, 400, 25.0),
+    // History bonus shape: clamp(0, MAX, MULT * d + BIAS).
+    //
+    // 2026-05-15 refactor: previous form was `MULT*d - OFFSET` with OFFSET
+    // restricted to [0, 400] — i.e., the y-intercept could only shift the
+    // line down. SPSA repeatedly pulled OFFSET toward 0 across recent tunes
+    // (#1221 -17.5% at 37/1000 was the cleanest signal), suggesting the
+    // optimum has a y-intercept SF/Obsidian-style "MULT*d + BIAS" where BIAS
+    // can be positive. Renamed to BIAS with range [-400, 400] so SPSA can
+    // express line-shifted-up shapes. Default -11 preserves prior behavior
+    // (-11 + MULT*d == MULT*d - 11 == old form with OFFSET=11).
+    (HIST_BONUS_BIAS, -11, -400, 400, 25.0),
     (CAP_HIST_MULT, 307, 50, 400, 17.5),
     (CAP_HIST_BASE, 39, 0, 200, 10.0),
     (CAP_HIST_MAX, 1834, 500, 3000, 125.0),
@@ -3673,7 +3675,7 @@ fn history_bonus(depth: i32) -> i32 {
     // capture-history's `MULT * d - BASE`. Clamped at 0 to avoid
     // negative bonuses at very shallow depth (which would corrupt
     // gravity updates) and at MAX to cap the late-depth plateau.
-    (tp(&HIST_BONUS_MULT) * depth - tp(&HIST_BONUS_OFFSET)).clamp(0, tp(&HIST_BONUS_MAX))
+    (tp(&HIST_BONUS_MULT) * depth + tp(&HIST_BONUS_BIAS)).clamp(0, tp(&HIST_BONUS_MAX))
 }
 
 fn capture_history_bonus(depth: i32) -> i32 {
