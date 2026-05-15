@@ -3021,9 +3021,13 @@ fn negamax(
         // section states LMP is non-PV only, matching
         // SF/Obsidian/Viridithas/Berserk consensus; the code was missing
         // the gate so LMP fired on PV nodes.
+        // 2026-05-15: depth-gated check carve. The unconditional carve-out
+        // (1207) H0'd at -1.3 ±2.1. Hybrid: keep the check-protection at
+        // shallow depths where tactical checks matter most; drop at depth ≥ 4
+        // where the carve is mostly preserving low-quality late checks.
         if ply > 0 && !is_pv && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
             && !is_cap && !is_promo
-            && !board.gives_direct_check(mv)
+            && (depth >= 4 || !board.gives_direct_check(mv))
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
         {
