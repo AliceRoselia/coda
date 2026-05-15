@@ -149,7 +149,10 @@ tunables!(
     (CAP_HIST_MAX, 1834, 500, 3000, 125.0),
     // Bonus depth-boost margin (#1008): use depth+1 in history_bonus when
     // cutoff exceeds beta by this margin (SF StatBonusBoostAt, Obsidian=95).
-    (BONUS_BOOST_AT, 29, 0, 300, 15.0),
+    // 2026-05-15 bisect: SPSA found 29, SF uses 95, prior 95-probe H0'd at
+    // -1.8 ±2.5 (#1206). Try midpoint 50 — if H1, optimum is between 29-95;
+    // if H0, 29 was correct and the SF value doesn't transfer at Coda's scale.
+    (BONUS_BOOST_AT, 50, 0, 300, 15.0),
     // numFailHighs multiplicative scaling (#1020 / Starzix T1 #1):
     // bonus = raw + raw * min(num_fail_highs, NFH_CAP) / NFH_DIV.
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
