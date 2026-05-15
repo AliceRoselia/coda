@@ -135,15 +135,11 @@ tunables!(
     (HIST_BONUS_MULT, 296, 50, 400, 17.5),
     (HIST_BONUS_MAX, 1894, 500, 3000, 125.0),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
-    // history bonus adopts Stockfish/cap-hist offset shape:
-    //   old: min(MAX, MULT * d)
-    //   new: clamp(0, MAX, MULT * d - OFFSET)
-    // Rationale: at d=5 the old formula saturates at ~1500; d=5 and d=10
-    // get the same bonus. New shape with offset 72 (SF's value) gives
-    // wider depth discrimination. cap-history already uses the offset
-    // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
-    // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 11, 0, 400, 25.0),
+    // History bonus shape: clamp(0, MAX, MULT * d + BIAS). Signed BIAS
+    // refactor — see experiment/histbonus-signed-bias for rationale. This
+    // branch combines the BIAS parameterization with the drop-eval-boost
+    // change so #1233 vs #1221 is a clean A/B of parameterization only.
+    (HIST_BONUS_BIAS, -11, -400, 400, 25.0),
     (CAP_HIST_MULT, 307, 50, 400, 17.5),
     (CAP_HIST_BASE, 39, 0, 200, 10.0),
     (CAP_HIST_MAX, 1834, 500, 3000, 125.0),
@@ -3421,17 +3417,10 @@ fn negamax(
 
                     // Beta cutoff - update history for quiet moves (killers/counter removed — SF pattern)
                     if !is_cap {
-                        // Depth-boost on big fail-high (#1008, SF/Obsidian) —
-                        // use depth+1 when cutoff exceeds beta by BONUS_BOOST_AT.
-                        // Additionally (Stormphrax search.cpp:1185): boost depth
-                        // when cutoff move beat our static eval (unexpected-strong
-                        // cutoff signal). Both can stack for +2 depth.
-                        // Third additive trigger: boost depth when improving
-                        // (we're doing better than 2 plies ago). Tests whether
-                        // multiple depth-boost signals compound.
+                        // BIAS+noeval: signed BIAS (this branch) + drop-eval-boost
+                        // (#1213 / #1221). Keep margin (#1008) + improving (#1173).
                         let bonus_depth = depth
                             + if best_score > beta + tp(&BONUS_BOOST_AT) { 1 } else { 0 }
-                            + if !in_check && static_eval <= best_score { 1 } else { 0 }
                             + if improving { 1 } else { 0 };
                         // numFailHighs multiplicative scaling (#1020, Starzix T1 #1) —
                         // more cascades = stronger cutoff confidence.
@@ -3673,7 +3662,7 @@ fn history_bonus(depth: i32) -> i32 {
     // capture-history's `MULT * d - BASE`. Clamped at 0 to avoid
     // negative bonuses at very shallow depth (which would corrupt
     // gravity updates) and at MAX to cap the late-depth plateau.
-    (tp(&HIST_BONUS_MULT) * depth - tp(&HIST_BONUS_OFFSET)).clamp(0, tp(&HIST_BONUS_MAX))
+    (tp(&HIST_BONUS_MULT) * depth + tp(&HIST_BONUS_BIAS)).clamp(0, tp(&HIST_BONUS_MAX))
 }
 
 fn capture_history_bonus(depth: i32) -> i32 {
