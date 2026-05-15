@@ -109,7 +109,7 @@ tunables!(
     // Reckless at >=5+ttPv. Coda's 4 fires SE at shallower depth where
     // singular_depth is too low to judge singularity reliably. Bumping
     // 4 → 6 first; ttPv add deferred to a follow-up if H1.
-    (SE_DEPTH_10X, 41, 40, 200, 20.0),
+    (SE_DEPTH_10X, 43, 40, 200, 20.0),
     (ASP_DELTA, 11, 5, 30, 1.5),
     (ASP_SCORE_DIV, 33382, 8000, 50000, 2100.0),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
@@ -179,7 +179,7 @@ tunables!(
     (DEXT_MARGIN_PV, 167, 50, 400, 15.0),
     (DEXT_MARGIN_QUIET, 8, 0, 100, 4.0),
     (DEXT_MARGIN_CORR, 22, 0, 64, 3.0),
-    (DEXT_MARGIN_BASE, 41, -50, 150, 6.0),
+    (DEXT_MARGIN_BASE, 43, -50, 150, 6.0),
     (DEXT_CAP, 13, 4, 32, 2.0),
     (QUIET_CHECK_BONUS, 14372, 2000, 30000, 1400.0),
     (LMR_COMPLEXITY_DIV, 163, 30, 500, 23.5),
@@ -230,7 +230,7 @@ tunables!(
     // Signal already delivered +52 in movepicker (#502). Flat bonus
     // subtracted from singular_beta → easier to judge singular → more
     // extensions for tactically significant moves.
-    (SE_XRAY_BLOCKER_MARGIN_10X, 58, 0, 400, 20.0),
+    (SE_XRAY_BLOCKER_MARGIN_10X, 52, 0, 400, 20.0),
     (MVV_CAP_MULT, 29, 4, 64, 3.0),
     (CONT_HIST_MULT_10X, 10, 10, 80, 15.0),
     (KNIGHT_FORK_BONUS, 9087, 0, 20000, 1000.0),
@@ -2837,11 +2837,11 @@ fn negamax(
                     // Cut node with competitive alternatives — moderate reduce
                     singular_extension = -2;
                     info.stats.negative_ext += 1;
-                } else {
-                    // All-node with competitive alternatives — mild reduce
-                    singular_extension = -1;
-                    info.stats.negative_ext += 1;
                 }
+                // All-node case: leave singular_extension = 0 (SF/Reckless
+                // consensus). Coupled retune of SE-adjacent tunables shifts
+                // SE_DEPTH/DEXT_MARGIN_PV/DEXT_MARGIN_BASE up slightly and
+                // SE_XRAY_BLOCKER_MARGIN_10X down -10% to compensate.
             }
         }
 
