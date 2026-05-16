@@ -190,7 +190,7 @@ tunables!(
     (CORR_HIST_ERR_MAX_10X, 25, 10, 640, 5.0),
     (ESCAPE_BONUS_Q, 17819, 5000, 40000, 1750.0),
     (ESCAPE_BONUS_R, 8181, 3000, 30000, 1350.0),
-    (ESCAPE_BONUS_MINOR, 5250, 2000, 20000, 900.0),
+    (ESCAPE_BONUS_MINOR, 0, 0, 20000, 900.0),  // ABLATION: disabled (was 5250)
     (NMP_KING_ZONE_MAX_10X, 68, 20, 90, 15.0),
     // T2.1 (Titan's next_ideas 2026-04-21): undefended-piece NMP skip
     // threshold. Count our pieces with ≥1 enemy attacker AND zero of
