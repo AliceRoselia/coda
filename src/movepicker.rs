@@ -88,6 +88,11 @@ impl History {
     /// time, so helpers don't start every search with empty ordering
     /// info. Arrays of POD types — compiles to memcpy on the heap, no
     /// stack alloc.
+    ///
+    /// `#[cold]` + `#[inline(never)]`: helper-only path. Isolates from
+    /// LTO inlining decisions affecting T=1 hot paths.
+    #[cold]
+    #[inline(never)]
     pub fn copy_from(&mut self, src: &History) {
         self.main = src.main;
         self.capture = src.capture;

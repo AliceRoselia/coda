@@ -1200,6 +1200,13 @@ fn alloc_zeroed_box<T>() -> Box<T> {
 }
 
 /// Create a helper SearchInfo that shares TT and stop flag with the main thread.
+///
+/// `#[cold]` + `#[inline(never)]`: this function is called once per
+/// helper thread at the start of a multi-threaded search and never at
+/// T=1 (search_smp early-returns). Marking cold + non-inlinable tells
+/// LTO to keep its codegen isolated from the main-thread hot paths.
+#[cold]
+#[inline(never)]
 fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     // Use the shared TT directly (avoids allocating a throwaway 1 MB TT
     // and the misleading "TT 1 MB" info string that prints before swap).
@@ -1446,6 +1453,12 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
 ///
 /// History is seeded from main in `create_helper_info` — see comment
 /// there. We deliberately do NOT clear it here.
+///
+/// `#[cold]` + `#[inline(never)]`: helper-only entry point. Never
+/// called at T=1; isolates this function's body from LTO inlining
+/// decisions that affect the main thread's `search()` hot path.
+#[cold]
+#[inline(never)]
 fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimits, _thread_id: usize) -> Move {
     init_feature_flags();
 
