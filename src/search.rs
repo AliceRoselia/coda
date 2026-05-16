@@ -1231,7 +1231,10 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     helper.move_overhead = main.move_overhead;
     helper.root_stm = main.root_stm; // kept in sync for potential future stm-aware features
     helper.syzygy = main.syzygy.clone(); // share tablebases (read-only)
-    // Helpers start with fresh history for SMP diversity (cleared in search_helper)
+    // BISECT VARIANT (history-only): seed helpers with main's aged
+    // history. Helpers keep their bare-negamax search (no aspiration),
+    // and depth-offset diversity is unchanged.
+    helper.history.copy_from(&main.history);
     helper
 }
 
@@ -1418,7 +1421,11 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
 fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimits, thread_id: usize) -> Move {
     init_feature_flags();
 
-    info.history.clear();
+    // BISECT VARIANT (history-only): history was just seeded from
+    // main in create_helper_info — do NOT clear it here. Other
+    // per-search scratch tables (pawn_hist, correction_history) are
+    // still cleared since the bundled test indicated copying those
+    // wasn't a meaningful contributor at their size.
     info.clear_correction_history();
     info.stats = PruneStats::default();
     for entry in info.pawn_hist.iter_mut() {

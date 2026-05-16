@@ -83,6 +83,17 @@ impl History {
         self.cont_hist = [[[[0; 64]; 13]; 64]; 13];
     }
 
+    /// Copy all table contents from `src`. Used to seed Lazy SMP
+    /// helpers with the main thread's accumulated history at spawn
+    /// time. Arrays of POD types — compiles to memcpy on the heap.
+    pub fn copy_from(&mut self, src: &History) {
+        self.main = src.main;
+        self.capture = src.capture;
+        self.killers = src.killers;
+        self.counter = src.counter;
+        self.cont_hist = src.cont_hist;
+    }
+
     /// Age all history tables by multiplying by factor/divisor (e.g. 4/5 = 0.80).
     /// Preserves useful information from prior searches while letting new data dominate.
     /// Killers and counter-moves are cleared (they're position-specific, not transferable).
