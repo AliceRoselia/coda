@@ -211,7 +211,7 @@ tunables!(
     // T1.4: quiet-slider move that completes a battery — lands on a square
     // where a friendly slider stands between us and an enemy piece along
     // the same ray. Flat bonus; tp==0 disables detection.
-    (BATTERY_BONUS, 8122, 0, 20000, 1000.0),
+    (BATTERY_BONUS, 0, 0, 20000, 1000.0),  // ABLATION: disabled (was 8122)
     // T3.2 (next_ideas_2026-04-21): "good quiet" — bonus when a quiet
     // move's destination attacks an enemy piece MORE valuable than the
     // moving piece. Stacks on top of existing offense bonus (+6000 flat)
