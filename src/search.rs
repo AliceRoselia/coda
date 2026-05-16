@@ -1448,7 +1448,13 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     let root_legal = generate_legal_moves(board);
     let mut best_move = if root_legal.len > 0 { root_legal.get(0) } else { NO_MOVE };
 
+    // BISECT VARIANT (aspiration-only): helpers run full aspiration ID
+    // loop with prev_score carry, matching main `search()`. History
+    // clearing and `thread_id % 2` depth offset are unchanged. Tests
+    // whether aspiration alone delivers the +89 Elo T=4 win observed
+    // in the full bundle.
     let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
+    let mut prev_score = 0i32;
     for depth in 1..=effective_max {
         if info.stop.load(Ordering::Relaxed) { break; }
 
@@ -1456,12 +1462,46 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
         let search_depth = depth + (thread_id % 2) as i32;
         if search_depth > effective_max { break; }
 
-        let _score = negamax(board, info, -INFINITY, INFINITY, search_depth, 0, false);
+        let score;
+
+        if search_depth >= 4 && prev_score > -MATE_SCORE + 100 && prev_score < MATE_SCORE - 100 {
+            let avg = prev_score;
+            let mut delta = tp(&ASP_DELTA) + (avg as i64 * avg as i64 / tp(&ASP_SCORE_DIV) as i64) as i32;
+            let mut alpha = (prev_score - delta).max(-INFINITY);
+            let mut beta = (prev_score + delta).min(INFINITY);
+            let mut asp_depth = search_depth;
+            #[allow(unused_assignments)]
+            let mut asp_result = prev_score;
+            loop {
+                let result = negamax(board, info, alpha, beta, asp_depth, 0, false);
+                if info.stop.load(Ordering::Relaxed) {
+                    asp_result = result;
+                    break;
+                }
+                if result <= alpha {
+                    beta = (3 * alpha + 5 * beta) / 8;
+                    alpha = (result - delta).max(-INFINITY);
+                } else if result >= beta {
+                    alpha = (5 * alpha + 3 * beta) / 8;
+                    beta = (result + delta).min(INFINITY);
+                    asp_depth = (asp_depth - 1).max(1);
+                } else {
+                    asp_result = result;
+                    break;
+                }
+                delta += delta / 2;
+            }
+            score = asp_result;
+        } else {
+            score = negamax(board, info, -INFINITY, INFINITY, search_depth, 0, false);
+        }
+
         if info.stop.load(Ordering::Relaxed) { break; }
 
         if info.pv_len[0] > 0 {
             best_move = info.pv_table[0][0];
         }
+        prev_score = score;
     }
 
     best_move
