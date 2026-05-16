@@ -220,7 +220,7 @@ tunables!(
     // which is the dominant positive-SEE case (~70% of positive SEEs).
     // Reuses offense's `attacks_from_to` computation — zero extra
     // attacks_from() calls. tp==0 disables.
-    (QSEE_BONUS, 6687, 0, 20000, 1000.0),
+    (QSEE_BONUS, 0, 0, 20000, 1000.0),  // ABLATION: disabled (was 6687)
     // SE_KING_PRESSURE_MARGIN removed 2026-05-15: tune at _10X precision
     // (range -5..+30, direct /10 scaling) confirmed optimum is genuinely 0.
     // Historical conflicting reads (0.22 vs 1-2 across tunes) were SPSA
