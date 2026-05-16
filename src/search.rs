@@ -1448,15 +1448,16 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     let root_legal = generate_legal_moves(board);
     let mut best_move = if root_legal.len > 0 { root_legal.get(0) } else { NO_MOVE };
 
+    // BISECT VARIANT (no-depth-offset): drop the `thread_id % 2`
+    // depth offset that no top engine uses. Helpers all iterate at
+    // `depth` like main. Diversity now comes from asynchrony + TT
+    // churn only. Aspiration and history-seeding are unchanged.
+    let _ = thread_id;
     let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
     for depth in 1..=effective_max {
         if info.stop.load(Ordering::Relaxed) { break; }
 
-        // Depth offset for thread diversity: odd threads +1, even threads +0
-        let search_depth = depth + (thread_id % 2) as i32;
-        if search_depth > effective_max { break; }
-
-        let _score = negamax(board, info, -INFINITY, INFINITY, search_depth, 0, false);
+        let _score = negamax(board, info, -INFINITY, INFINITY, depth, 0, false);
         if info.stop.load(Ordering::Relaxed) { break; }
 
         if info.pv_len[0] > 0 {
