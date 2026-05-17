@@ -11,13 +11,21 @@ the `tunables!` macro in `src/search.rs`.
 See `docs/mini_prod_branch_workflow.md` for full methodology + the
 canonical refresh procedure.
 
-## Current state (2026-05-12)
+## Current state (2026-05-17, pre-retune)
 
 - **Baby-prod net (net.txt)**: `cal-day0-factor-w15-warm30-hlcrelu-s200.nnue`
-  (SHA `61115E7F`).
-- **Last refresh**: 2026-05-11 — established from main commit `6567cb8`
-  with tune-#1092 outputs applied (1500-iter focused sweep).
-- **Canonical bench**: 4,006,126 (`make && ./coda bench`).
+  (SHA `61115E7F`) — unchanged from prior refresh.
+- **Last refresh**: 2026-05-17 — rebased onto main commit `1509806`
+  (SMP bundle + cgu=16 + tune-1290 --core + Phase 3 ablation + core
+  flag + binpack-stats anomaly-retention extension). S200-calibrated
+  tunable values preserved from prior mini-prod for every tunable that
+  exists on both sides; 10 renamed tunables (`_10X` migration) had
+  values translated by ×10; 6 ablated tunables dropped. Focused --core
+  retune pending to reconcile residual drift from structural changes.
+- **Canonical bench (pre-retune)**: 4,307,652 (`make && ./coda bench`).
+- **Previous refresh**: 2026-05-11 — established from main commit
+  `6567cb8` with tune-#1092 outputs applied. Pre-rebase canonical
+  bench was 4,006,126.
 
 Update the section above on every refresh.
 
