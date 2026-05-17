@@ -29,36 +29,36 @@ endif
 # Rust flags
 export RUSTFLAGS := -Ctarget-cpu=native
 
-# Default: build with embedded NNUE net (downloads from net.txt if needed)
-# EVALFILE may be overridden by OpenBench with an absolute path to the network
-rule: check-rust net
-	CODA_EVALFILE=$(abspath $(EVALFILE)) cargo rustc --release --features embedded-net -- --emit link=$(NAME)
+# Default: PGO build on this branch (experiment/pgo-openbench-default).
+# OpenBench invokes `make -j EXE=<out>` which builds the first target; making
+# `rule` an alias to `pgo` is the only way to route OB through PGO today
+# (OB's makefile_command in Client/utils.py is hardcoded — no make_target
+# field). On main, `rule` stays plain so local dev builds stay fast.
+rule: pgo
 
-# Alias for OpenBench compatibility
-openbench: rule
+# OpenBench build — same as default on this branch.
+openbench: pgo
 
 # PGO build (profile-guided optimization).
 #
-# Status (2026-04-17):
-#   v5 on main:          +3-5% NPS. Use this.
-#   v5 on threat branch: -5% NPS regression.
-#   v9 on threat branch: -10 to -12% NPS regression. DO NOT USE.
+# Status (2026-05-17): WORKS AGAIN with codegen-units = 16.
+#   Plain release:  ~370K NPS bench
+#   PGO:            ~400K NPS bench  (+8-9%)
 #
-# Why it regresses on the threat branch: the PGO *instrument* build inserts
-# entry/branch counters that slow the bench profile run by ~20%. That profile
-# captures a counter-burdened hot path (small SIMD functions dominate), and
-# PGO's inlining/layout decisions are made against that degraded view. The
-# final optimised binary over-inlines small functions into the delta-generation
-# hot path (push_threats_for_piece and friends), bloating those functions and
-# hurting icache behaviour. The regression is independent of binary size —
-# confirmed by testing without the embedded net (2.5MB binary regresses the
-# same amount as the 72MB one) and independent of which NNUE net is profiled
-# (v5 profile + v9 runtime regresses the same as v9 profile + v9 runtime).
+# History (2026-04-17, with codegen-units = 1):
+#   v5 on main:          +3-5% NPS. Worked.
+#   v9 on threat branch: -10 to -12% NPS regression. Broken.
 #
-# If we want profile-guided optimisation for v9 later, try AutoFDO (sampling
-# via perf record) instead — its profile reflects actual uncounted execution.
+# What changed: 2026-05-17 SMP investigation moved release profile from
+# `codegen-units = 1` to `codegen-units = 16`. The v9-era PGO regression
+# was full LTO + cgu=1 + 50 MB embedded net overwhelming LLVM's PGO-LTO
+# pass — over-inlining small functions (push_threats_for_piece and
+# friends) into delta-generation hot paths, bloating them and hurting
+# icache behaviour. cgu=16 splits the work and lets PGO make local
+# decisions per unit, restoring its win. See
+# docs/smp_scaling_investigation_2026-05-17.md.
 #
-# Requires: rustup component add llvm-tools-preview
+# Requires: rustup component add llvm-tools-preview; cargo install cargo-pgo
 TARGET_TUPLE := $(shell rustc --print host-tuple 2>/dev/null)
 pgo: check-rust net
 	CODA_EVALFILE=$(abspath $(EVALFILE)) cargo pgo instrument build -- --features embedded-net
