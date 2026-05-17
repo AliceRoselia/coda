@@ -88,6 +88,13 @@ impl History {
     /// time, so helpers don't start every search with empty ordering
     /// info. Arrays of POD types — compiles to memcpy on the heap, no
     /// stack alloc.
+    ///
+    /// `#[inline(never)]` (without `#[cold]`): blocks LTO from
+    /// inlining helper-only memcpy code into hot-path callers that
+    /// could perturb main thread codegen, while keeping the function
+    /// body itself fully optimized. Same pattern as
+    /// MovePicker::next_slow elsewhere in this file.
+    #[inline(never)]
     pub fn copy_from(&mut self, src: &History) {
         self.main = src.main;
         self.capture = src.capture;

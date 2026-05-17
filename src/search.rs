@@ -1200,6 +1200,15 @@ fn alloc_zeroed_box<T>() -> Box<T> {
 }
 
 /// Create a helper SearchInfo that shares TT and stop flag with the main thread.
+///
+/// `#[inline(never)]`: helper-only path, never reached at T=1. Blocks
+/// the function body from being inlined into helper-spawn closures,
+/// which prevents the LTO inlining cascade that perturbed main-thread
+/// codegen in the un-annotated bundle (#1272: -8.9 Elo at T=1).
+/// Notably NOT `#[cold]` — that hint reduces LLVM's optimization
+/// budget for the function body, costing ~53 Elo at T=4 (confirmed
+/// Bundle vs Cold head-to-head 2026-05-16).
+#[inline(never)]
 fn create_helper_info(main: &SearchInfo) -> SearchInfo {
     // Use the shared TT directly (avoids allocating a throwaway 1 MB TT
     // and the misleading "TT 1 MB" info string that prints before swap).
@@ -1446,6 +1455,15 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
 ///
 /// History is seeded from main in `create_helper_info` — see comment
 /// there. We deliberately do NOT clear it here.
+///
+/// `#[inline(never)]`: blocks LTO from inlining this function into
+/// the helper-spawn closure, which is the entry point that, without
+/// the attribute, causes inlining decisions to cascade and perturb
+/// the main thread's `search()` codegen at T=1. NOT `#[cold]` —
+/// cold would reduce LLVM's optimization budget for the body
+/// (everything search_helper calls into: negamax, MovePicker, eval)
+/// and cost ~53 Elo at T=4 (verified 2026-05-16).
+#[inline(never)]
 fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimits, _thread_id: usize) -> Move {
     init_feature_flags();
 
