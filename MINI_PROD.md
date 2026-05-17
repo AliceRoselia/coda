@@ -18,13 +18,20 @@ canonical refresh procedure.
 - **Last refresh**: 2026-05-17 — rebased onto main commit `1509806`
   (SMP bundle + cgu=16 + tune-1290 --core + Phase 3 ablation + core
   flag + binpack-stats anomaly-retention extension), then SPSA
-  refit via tune #1305 (56 core params, ~1300/1500 iter, against
-  baby-prod net). 52 of 56 defaults moved. Big movers:
-  NMP_KING_ZONE_MAX_10X +50%, HIST_PRUNE_DEPTH +30%, LMP_BASE +29%,
-  NMP_VERIFY_DEPTH -22%, LMR_HIST_DIV -23%.
-- **Canonical bench (post-retune)**: 3,899,886 (`make && ./coda bench`).
+  refit via tune #1301 (56 core params, 1500/1500 iter, against
+  baby-prod net). 50 of 56 defaults moved.
+- **Canonical bench (post-retune)**: 4,474,002 (`make && ./coda bench`).
 - **Pre-retune SHA for SPRT validation base**: `6cac070`
   (rebase-only, no SPSA values applied yet).
+- **Validation SPRT in flight**: #1308 — mini-prod (1a2a632) vs 6cac070
+  at [-3, 3], both running baby-prod net.
+- **Lesson banked**: initial commit (6fea6fb) mis-applied tune #1305
+  (fen-skip retune) instead of #1301 (baby-prod retune); test #1306
+  caught it before merge. The two tunes started from the same trunk
+  defaults but ran against DIFFERENT dev-networks, and 32 of 56 params
+  diverged in opposite directions — confirming net-dependent
+  calibration is real, and that the tune ID applied must always match
+  the branch's net.
 - **Previous refresh**: 2026-05-11 — established from main commit
   `6567cb8` with tune-#1092 outputs applied. Pre-rebase canonical
   bench was 4,006,126.
