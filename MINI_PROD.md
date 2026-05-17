@@ -11,18 +11,20 @@ the `tunables!` macro in `src/search.rs`.
 See `docs/mini_prod_branch_workflow.md` for full methodology + the
 canonical refresh procedure.
 
-## Current state (2026-05-17, pre-retune)
+## Current state (2026-05-17, post-retune)
 
 - **Baby-prod net (net.txt)**: `cal-day0-factor-w15-warm30-hlcrelu-s200.nnue`
   (SHA `61115E7F`) — unchanged from prior refresh.
 - **Last refresh**: 2026-05-17 — rebased onto main commit `1509806`
   (SMP bundle + cgu=16 + tune-1290 --core + Phase 3 ablation + core
-  flag + binpack-stats anomaly-retention extension). S200-calibrated
-  tunable values preserved from prior mini-prod for every tunable that
-  exists on both sides; 10 renamed tunables (`_10X` migration) had
-  values translated by ×10; 6 ablated tunables dropped. Focused --core
-  retune pending to reconcile residual drift from structural changes.
-- **Canonical bench (pre-retune)**: 4,307,652 (`make && ./coda bench`).
+  flag + binpack-stats anomaly-retention extension), then SPSA
+  refit via tune #1305 (56 core params, ~1300/1500 iter, against
+  baby-prod net). 52 of 56 defaults moved. Big movers:
+  NMP_KING_ZONE_MAX_10X +50%, HIST_PRUNE_DEPTH +30%, LMP_BASE +29%,
+  NMP_VERIFY_DEPTH -22%, LMR_HIST_DIV -23%.
+- **Canonical bench (post-retune)**: 3,899,886 (`make && ./coda bench`).
+- **Pre-retune SHA for SPRT validation base**: `6cac070`
+  (rebase-only, no SPSA values applied yet).
 - **Previous refresh**: 2026-05-11 — established from main commit
   `6567cb8` with tune-#1092 outputs applied. Pre-rebase canonical
   bench was 4,006,126.
