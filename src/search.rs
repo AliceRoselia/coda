@@ -131,8 +131,8 @@ tunables!(
     (QS_DELTA_MARGIN, 367, 100, 500, 20.0, true),
     (QS_SEE_THRESHOLD, -26, -200, 0, 10.0, false),
     (QS_MAX_CAPTURES, 24, 2, 32, 2.0, false),
-    (CORR_W_PAWN, 299, 100, 600, 25.0, true),
-    (CORR_W_NP, 63, 50, 400, 17.5, true),
+    (CORR_W_PAWN, 298, 100, 600, 25.0, true),
+    (CORR_W_NP, 66, 50, 400, 17.5, true),
     // 2026-05-18 audit outlier #3 deep-dive: minor_key/major_key are
     // strict subsets of non_pawn_key (minor_key ⊕ major_key = NP per
     // color, since both XOR the same piece-zobrists). So minor_corr +
@@ -143,7 +143,7 @@ tunables!(
     // they stay at 0 or find a tiny residual signal.
     (CORR_W_MINOR, 0, 0, 300, 13.5, true),
     (CORR_W_MAJOR, 0, 0, 300, 13.5, true),
-    (CORR_W_CONT, 33, 30, 400, 18.5, true),
+    (CORR_W_CONT, 32, 30, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
     (HIST_BONUS_MULT, 315, 50, 400, 17.5, true),
     (HIST_BONUS_MAX, 1936, 500, 3000, 125.0, true),
