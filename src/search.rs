@@ -105,7 +105,7 @@ tunables!(
     (FUT_BASE, 23, 20, 200, 9.0, true),
     (FUT_PER_DEPTH, 79, 40, 250, 10.5, true),
     (HIST_PRUNE_DEPTH_10X, 10, 10, 80, 15.0, true),
-    (HIST_PRUNE_MULT, 10410, 500, 50000, 2475.0, true),
+    (HIST_PRUNE_MULT, 9108, 500, 50000, 2475.0, true),
     (SEE_QUIET_MULT, 35, 5, 80, 3.75, true),
     (LMR_HIST_DIV, 7736, 2000, 100000, 4900.0, true),
     (LMR_C_QUIET, 140, 40, 300, 13.0, true),
