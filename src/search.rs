@@ -264,6 +264,14 @@ tunables!(
     (NMP_MIN_DEPTH_10X, 83, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
     (HINDSIGHT_MIN_DEPTH_10X, 33, 10, 200, 15.0, true),        // was hardcoded 2 (hindsight reduction gate)
     (TT_CUTOFF_HALFMOVE_MAX, 89, 50, 100, 3.0, false),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
+    // Tier 1 NMP gate cascade (2026-05-18, port from SF search.cpp:913):
+    //   gate: static_eval >= beta - NMP_GATE_DEPTH_K*depth - NMP_GATE_IMPROVING_K*improving + NMP_GATE_BASE
+    // SF/Reckless both require eval to exceed beta by a depth-dependent margin
+    // before firing NMP. Coda previously only required `static_eval >= beta`.
+    // Defaults match SF's current values (378 / 16 / 53).
+    (NMP_GATE_BASE, 378, 0, 800, 30.0, true),
+    (NMP_GATE_DEPTH_K, 16, 0, 40, 2.0, true),
+    (NMP_GATE_IMPROVING_K, 53, 0, 120, 5.0, true),
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -2565,9 +2573,13 @@ fn negamax(
     // to king-zone-pressure's cost.
     let undefended_count: i32 = {
         // Only bother computing when NMP might actually fire.
+        // Gate margin matches the full NMP gate below (SF-style).
         let nmp_gate_cheap = depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0
             && stm_non_pawn != 0 && beta - alpha == 1
-            && static_eval >= beta && !prev_was_null
+            && static_eval + tp(&NMP_GATE_DEPTH_K) * depth
+                + tp(&NMP_GATE_IMPROVING_K) * (improving as i32)
+                >= beta + tp(&NMP_GATE_BASE)
+            && !prev_was_null
             && beta.abs() < MATE_SCORE - 100
             && info.excluded_move[ply_u] == NO_MOVE;
         if nmp_gate_cheap && tp10(&NMP_UNDEFENDED_MAX_10X) > 0 {
@@ -2582,7 +2594,12 @@ fn negamax(
     };
 
     if depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0 && stm_non_pawn != 0
-        && beta - alpha == 1 && static_eval >= beta
+        && beta - alpha == 1
+        // Tier 1 NMP gate cascade: SF-style depth/improving-dependent margin
+        // (search.cpp:913). Replaces bare `static_eval >= beta` gate.
+        && static_eval + tp(&NMP_GATE_DEPTH_K) * depth
+            + tp(&NMP_GATE_IMPROVING_K) * (improving as i32)
+            >= beta + tp(&NMP_GATE_BASE)
         && !prev_was_null  // Prevent consecutive null moves
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
