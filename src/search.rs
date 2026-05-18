@@ -3178,7 +3178,15 @@ fn negamax(
                 // 2026-05-14 audit: Obsidian/Alexandria/Stormphrax/Halogen all
                 // use skipQuiets here — once a quiet is hist-pruned, all later
                 // ones at this node should be too (they're worse-ordered).
+                //
+                // 2026-05-18 LMP investigation: plumb skip_quiet into the picker
+                // so it stops generating/scoring quiets entirely (vs picker
+                // yielding them and search discarding via `continue`). Cuts
+                // wasted ordering work, and changes move_count seen by bad
+                // captures (they yield after quiets) — lower move_count for
+                // bad-cap LMR. SF/Obsidian both wire this into the picker.
                 skip_quiets = true;
+                picker.skip_quiet = true;
                 continue;
             }
         }
@@ -3226,6 +3234,7 @@ fn negamax(
             if move_count > lmp_limit {
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
+                picker.skip_quiet = true;
                 continue;
             }
         }
