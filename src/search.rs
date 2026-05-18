@@ -107,7 +107,7 @@ tunables!(
     (HIST_PRUNE_DEPTH_10X, 10, 10, 80, 15.0, true),
     (HIST_PRUNE_MULT, 10410, 500, 50000, 2475.0, true),
     (SEE_QUIET_MULT, 35, 5, 80, 3.75, true),
-    (LMR_HIST_DIV, 7736, 2000, 100000, 4900.0, true),
+    (LMR_HIST_DIV, 8324, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
     // continuous `hist_score / LMR_HIST_DIV`. Obsidian uses continuous
@@ -116,9 +116,9 @@ tunables!(
     // of quiet — single-source capt_hist needs smaller divisor for
     // equivalent reduction magnitude). Coda's quiet div is 7736; same
     // ratio gives ~4500. Defaulting 5000 as a starting point.
-    (LMR_HIST_DIV_CAP, 5000, 1000, 20000, 1500.0, true),
+    (LMR_HIST_DIV_CAP, 5551, 1000, 20000, 1500.0, true),
     (LMR_C_QUIET, 140, 40, 300, 13.0, true),
-    (LMR_C_CAP, 108, 80, 350, 12.5, true),
+    (LMR_C_CAP, 113, 80, 350, 12.5, true),
     // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv,
     // Reckless at >=5+ttPv. Coda's 4 fires SE at shallower depth where
     // singular_depth is too low to judge singularity reliably. Bumping
