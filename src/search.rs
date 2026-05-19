@@ -2844,6 +2844,14 @@ fn negamax(
 
     let mut best_move = NO_MOVE;
     let mut best_score = -INFINITY;
+    // Root-only: track captured material value of the current best move.
+    // Used to break ties among drawn root moves (prefer the one that
+    // captures more wood — qualitative-Lichess fix per game I4qJhfQw move
+    // 103, where score-tied draws led to non-recapture into harder
+    // defensive position). Only consulted when ply == 0 AND scores tie at
+    // draw value. NEVER perturbs scores — UCI eval and draw-acceptance
+    // wrapper see unchanged 0.
+    let mut best_captured_value: i32 = 0;
     let mut move_count = 0i32;
     // EXPERIMENT (Starzix T1 #1): track PVS fail-high cascades at this node.
     // Each child that triggers a re-search (LMR failed high → re-search at
@@ -3593,6 +3601,19 @@ fn negamax(
         if score > best_score {
             best_score = score;
             best_move = mv;
+            // Record captured material value for root-tiebreak. At this
+            // point the move has been unmade, so the destination square
+            // holds whatever was captured (if anything).
+            if ply == 0 {
+                let captured_pt_at_to = board.piece_type_at(move_to(mv));
+                best_captured_value = if captured_pt_at_to != NO_PIECE_TYPE {
+                    crate::eval::see_value(captured_pt_at_to)
+                } else if flags == FLAG_EN_PASSANT {
+                    crate::eval::see_value(PAWN)
+                } else {
+                    0
+                };
+            }
 
             if score > alpha {
                 alpha = score;
@@ -3762,6 +3783,45 @@ fn negamax(
                         }
                     }
                     break;
+                }
+            }
+        } else if ply == 0
+            && best_score == 0
+            && score == 0
+            && best_move != NO_MOVE
+        {
+            // ROOT-ONLY draw-tiebreak (qualitative-Lichess fix per game
+            // I4qJhfQw move 103). When two root moves both return exact 0
+            // (TB-drawn / IM-drawn / 50-MR / rep — all sources of "drawn
+            // with 0 confidence"), prefer the move that captures more
+            // material. Reasoning: among proven-drawn lines, take the one
+            // where opponent has less material left to play dangerous
+            // shots in subsequent moves. Hurts nothing because both paths
+            // are drawn; helps qualitative play in long endgames.
+            //
+            // No score is perturbed — best_score stays 0, UCI eval stays
+            // 0, draw-acceptance wrapper continues to fire normally.
+            let captured_pt_at_to = board.piece_type_at(move_to(mv));
+            let mv_captured_value = if captured_pt_at_to != NO_PIECE_TYPE {
+                crate::eval::see_value(captured_pt_at_to)
+            } else if flags == FLAG_EN_PASSANT {
+                crate::eval::see_value(PAWN)
+            } else {
+                0
+            };
+            if mv_captured_value > best_captured_value {
+                best_move = mv;
+                best_captured_value = mv_captured_value;
+                // Update PV table to point at the tiebreak winner —
+                // root reads info.pv_table[0][0] for its bestmove.
+                if ply_u <= MAX_PLY {
+                    info.pv_table[ply_u][0] = mv;
+                    let child_len = if ply_u + 1 <= MAX_PLY { info.pv_len[ply_u + 1] } else { 0 };
+                    let copy_len = child_len.min(MAX_PLY - ply_u);
+                    for i in 0..copy_len {
+                        info.pv_table[ply_u][1 + i] = info.pv_table[ply_u + 1][i];
+                    }
+                    info.pv_len[ply_u] = 1 + child_len;
                 }
             }
         }
