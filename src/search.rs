@@ -192,7 +192,6 @@ tunables!(
     (CORR_UPDATE_WEIGHT_MAX, 13, 4, 48, 2.2, true),
     (CORR_BONUS_CAP_DIV_10X, 32, 10, 160, 15.0, false),
     (CORR_HIST_GRAIN_T, 14, 1, 32, 1.55, false),
-    (CORR_HIST_ERR_MAX_10X, 25, 10, 640, 5.0, false),
     // ESCAPE_BONUS_Q / _MINOR removed 2026-05-17: ablations #1256/#1255
     // H0 at [-3, 3]. Slightly load-bearing (central -0.6/-1.3 to ablate),
     // hardcoded at current SPSA values in movepicker.rs.
@@ -1053,8 +1052,14 @@ fn update_corr_entry(entry: &mut i32, err: i32, weight: i32, cap_div: i32) {
 
 /// Update all correction history tables.
 fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, raw_eval: i32, depth: i32) {
-    let err_max = tp10(&CORR_HIST_ERR_MAX_10X);
-    let err = (search_score - raw_eval).clamp(-err_max, err_max);
+    // Clamp at bonus, not err (SF pattern: search.cpp:1498-1500).
+    // Old behaviour clamped err to ±err_max BEFORE multiplying by weight,
+    // making the cap on the proportional gravity update functionally
+    // unreachable (err_max*weight_max << cap, so update magnitude was
+    // throttled by err_max to a tiny constant regardless of actual eval
+    // mismatch). New behaviour keeps the raw err signal and bounds only
+    // the final bonus = err*weight at the gravity-cap.
+    let err = search_score - raw_eval;
     let weight = (depth + 1).min(tp(&CORR_UPDATE_WEIGHT_MAX));
     let cap_div = tp10(&CORR_BONUS_CAP_DIV_10X);
     let stm = board.side_to_move as usize;
@@ -4806,7 +4811,7 @@ mod tests {
     /// 1. Direct entry check — after one update, the per-table slots
     ///    indexed by the test position must be non-zero, while a
     ///    reference position's slots remain zero. Independent of
-    ///    `CORR_HIST_ERR_MAX_10X` / `CORR_HIST_GRAIN_T` defaults.
+    ///    `CORR_HIST_GRAIN_T` default.
     /// 2. corrected_eval drift — after enough updates to escape
     ///    integer-division flooring, corrected_eval(test_pos) must
     ///    rise above raw, while corrected_eval(reference_pos) must
@@ -4857,10 +4862,9 @@ mod tests {
             "major_corr slot must be written");
 
         // Apply repeatedly to escape integer-division flooring at
-        // current default grain (CORR_HIST_GRAIN_T=11). Each call
+        // current default grain (CORR_HIST_GRAIN_T=14). Each call
         // bumps each slot by the gravity-clamped bonus; ~30 iterations
-        // is enough to push entries near steady-state given the small
-        // err clamp (CORR_HIST_ERR_MAX_10X=10, effective 1).
+        // is enough to push entries near steady-state.
         for _ in 0..50 {
             update_correction_history(&mut info, &board, raw + 400, raw, 20);
         }
