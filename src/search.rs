@@ -127,7 +127,7 @@ tunables!(
     // Reckless at >=5+ttPv. Coda's 4 fires SE at shallower depth where
     // singular_depth is too low to judge singularity reliably. Bumping
     // 4 → 6 first; ttPv add deferred to a follow-up if H1.
-    (SE_DEPTH_10X, 45, 40, 200, 20.0, true),
+    (SE_DEPTH_10X, 44, 40, 200, 20.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, false),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
@@ -137,7 +137,7 @@ tunables!(
     (LMP_BASE, 9, 1, 15, 2.0, true),
     (LMP_DEPTH, 7, 4, 20, 2.0, true),
     (BAD_NOISY_MARGIN, 80, 30, 150, 6.0, true),
-    (PROBCUT_MARGIN, 185, 80, 300, 11.0, true),
+    (PROBCUT_MARGIN, 187, 80, 300, 11.0, true),
     (HINDSIGHT_THRESH, 169, 50, 400, 17.5, true),
     (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
     (SEE_MATERIAL_SCALE, 215, 30, 300, 13.5, false),
@@ -145,7 +145,7 @@ tunables!(
     (QS_SEE_THRESHOLD, -26, -200, 0, 10.0, false),
     (QS_MAX_CAPTURES, 24, 2, 32, 2.0, false),
     (CORR_W_PAWN, 299, 100, 600, 25.0, true),
-    (CORR_W_NP, 63, 50, 400, 17.5, true),
+    (CORR_W_NP, 61, 50, 400, 17.5, true),
     // 2026-05-18 audit outlier #3 deep-dive: minor_key/major_key are
     // strict subsets of non_pawn_key (minor_key ⊕ major_key = NP per
     // color, since both XOR the same piece-zobrists). So minor_corr +
@@ -159,7 +159,7 @@ tunables!(
     // Floor lifted from 30 → 0 (audit 2026-05-19): SPSA-converged to 33,
     // 1% from the floor. Lifting allows SPSA to find the true optimum,
     // including disabling cont-corr if it wants. Default unchanged.
-    (CORR_W_CONT, 33, 0, 400, 18.5, true),
+    (CORR_W_CONT, 30, 0, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
     (HIST_BONUS_MULT, 315, 50, 400, 17.5, true),
     (HIST_BONUS_MAX, 1936, 500, 3000, 125.0, true),
@@ -218,7 +218,7 @@ tunables!(
     (CORR_HIST_GRAIN_T, 14, 1, 32, 1.55, false),
     // Floor lifted from 10 → 0 (audit 2026-05-19): SPSA converged 25, ~2%
     // from the floor. Lifting allows exploration of looser clamps.
-    (CORR_HIST_ERR_MAX_10X, 25, 0, 640, 5.0, false),
+    (CORR_HIST_ERR_MAX_10X, 22, 0, 640, 5.0, false),
     // ESCAPE_BONUS_Q / _MINOR removed 2026-05-17: ablations #1256/#1255
     // H0 at [-3, 3]. Slightly load-bearing (central -0.6/-1.3 to ablate),
     // hardcoded at current SPSA values in movepicker.rs.
@@ -290,11 +290,11 @@ tunables!(
     // value to 20 (eff depth 2). With floor=20 SPSA can't explore below
     // depth 2; lifting to 5 (eff 0.5) lets SPSA find effective optimum,
     // including "fire at any depth ≥ 1".
-    (IIR_MIN_DEPTH_10X, 20, 5, 100, 15.0, true),          // was hardcoded 4; tune #743 converged to 2 (strong signal)
+    (IIR_MIN_DEPTH_10X, 18, 5, 100, 15.0, true),          // was hardcoded 4; tune #743 converged to 2 (strong signal)
     // ProbCut floor lifted from 30 → 10 (audit 2026-05-19): SPSA at 32,
     // ~2% from floor. Lifting to 10 (eff 1) allows exploration of more
     // aggressive ProbCut activation.
-    (PROBCUT_MIN_DEPTH_10X, 32, 10, 120, 15.0, true),     // was hardcoded 5 (ProbCut activation gate)
+    (PROBCUT_MIN_DEPTH_10X, 25, 10, 120, 15.0, true),     // was hardcoded 5 (ProbCut activation gate)
     (SEE_CAP_DEPTH, 6, 3, 15, 1.5, true),         // was hardcoded 6 (SEE capture prune depth cap)
     (FUT_LMR_DEPTH, 15, 5, 20, 1.5, false),        // was hardcoded 10; tune #743 → 9
     (BAD_NOISY_DEPTH, 8, 4, 15, 1.5, true),       // was hardcoded 4 (BNFP depth cap)
