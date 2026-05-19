@@ -166,6 +166,7 @@ tunables!(
     // dext_margin = DEXT_MARGIN_PV   * is_pv
     //             - DEXT_MARGIN_QUIET * is_tt_quiet
     //             - DEXT_MARGIN_CORR * |corr| / 128
+    //             + DEXT_MARGIN_TT_HIST * tt_move_main_hist / 16384
     //             + DEXT_MARGIN_BASE
     //
     // BASE term is Coda-specific: pure Reckless has dext_margin=-16 at
@@ -177,6 +178,11 @@ tunables!(
     // CORR modulator reduces threshold when correction history has been
     // correcting — extend less on uncertain evals.
     //
+    // TT_HIST modulator (SF search.cpp:1153 port): when TT move has high
+    // main history, it's likely a regular good move with competitive
+    // siblings — DE harder. When history is low, the move is unusual
+    // (signature of true singularity) — DE easier. Direction matches SF.
+    //
     // TRIPLE extension intentionally not included here. Original test
     // (#787 H0, SPSA #792 no basin) showed signal-not-there for Coda's
     // regime; bundling it into #815 dragged the result negative. Tested
@@ -184,6 +190,7 @@ tunables!(
     (DEXT_MARGIN_PV, 155, 50, 400, 15.0, true),
     (DEXT_MARGIN_QUIET, 4, 0, 100, 4.0, true),
     (DEXT_MARGIN_CORR, 21, 0, 64, 3.0, true),
+    (DEXT_MARGIN_TT_HIST, 40, 0, 200, 5.0, true),
     (DEXT_MARGIN_BASE, 44, -50, 150, 6.0, true),
     (DEXT_CAP, 14, 4, 32, 2.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
@@ -2995,9 +3002,13 @@ fn negamax(
                     // explores the equilibrium where pruning compensates.
                     let is_tt_quiet = !is_cap && !is_promo;
                     let corr_abs = correction_value(info, board).abs();
+                    let tt_from = move_from(tt_move);
+                    let tt_to = move_to(tt_move);
+                    let tt_main_hist = info.history.main_score(tt_from, tt_to, enemy_attacks);
                     let dext_margin = tp(&DEXT_MARGIN_PV) * is_pv as i32
                                     - tp(&DEXT_MARGIN_QUIET) * is_tt_quiet as i32
                                     - tp(&DEXT_MARGIN_CORR) * corr_abs / 128
+                                    + tp(&DEXT_MARGIN_TT_HIST) * tt_main_hist / 16384
                                     + tp(&DEXT_MARGIN_BASE);
 
                     singular_extension = 1;
