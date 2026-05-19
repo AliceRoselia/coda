@@ -519,6 +519,10 @@ pub struct SearchInfo {
     static_evals: [i32; MAX_PLY + 1],
     /// LMR reduction applied at each ply (for hindsight reduction gating)
     reductions: [i32; MAX_PLY + 1],
+    /// Minimum ply at which NMP is allowed (SF/Reckless pattern). Set by
+    /// NMP verification to disable recursive NMP in the verification subtree;
+    /// reset to 0 after verification completes. Default 0 (always allowed).
+    nmp_min_ply: i32,
     /// Excluded move for singular extension verification search (always NoMove when disabled)
     pub excluded_move: [Move; MAX_PLY + 1],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
@@ -590,6 +594,7 @@ impl SearchInfo {
             completed_depth: 0,
             static_evals: [0; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
+            nmp_min_ply: 0,
             excluded_move: [NO_MOVE; MAX_PLY + 1],
             double_ext_count: [0; MAX_PLY + 1],
             moved_piece_stack: [0; MAX_PLY + 1],
@@ -2612,6 +2617,7 @@ fn negamax(
         && beta - alpha == 1 && static_eval >= beta
         && !prev_was_null  // Prevent consecutive null moves
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
+        && ply >= info.nmp_min_ply  // SF/Reckless: disable NMP in verification subtree
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && king_zone_pressure < tp10(&NMP_KING_ZONE_MAX_10X)  // New gate
         && any_threat_count < 3  // S7-style: skip NMP when many of our pieces are under threat
@@ -2664,11 +2670,16 @@ fn negamax(
             // Clamp mate scores to beta to avoid inflated mate distance
             let nmp_score = if null_score.abs() > MATE_SCORE - 100 { beta } else { null_score };
 
-            // Verification search at high depths to guard against zugzwang
+            // Verification search at high depths to guard against zugzwang.
+            // SF/Reckless pattern: disable recursive NMP inside the
+            // verification subtree by raising nmp_min_ply, then reset.
             if depth >= tp10(&NMP_VERIFY_DEPTH_10X) {
                 info.stats.nmp_verify += 1;
+                let save_nmp_min_ply = info.nmp_min_ply;
+                info.nmp_min_ply = ply + 3 * (depth - r) / 4;
                 // Verification re-searches current position (no move made), so ply stays same
                 let v_score = negamax(board, info, beta - 1, beta, depth - r, ply, false);
+                info.nmp_min_ply = save_nmp_min_ply;
                 if v_score >= beta {
                     info.stats.nmp_cutoffs += 1;
                     return nmp_score;
