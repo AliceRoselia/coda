@@ -230,7 +230,12 @@ tunables!(
     // subtracted from singular_beta → easier to judge singular → more
     // extensions for tactically significant moves.
     (SE_XRAY_BLOCKER_MARGIN_10X, 47, 0, 400, 20.0, true),
-    (MVV_CAP_MULT, 28, 4, 64, 3.0, false),
+    // MVV multiplier in capture ordering: score = MVV_CAP_MULT*victim + capt_hist.
+    // Cross-engine consensus is ~7-16 (SF=7, Reckless/Obsidian/Alexandria/Hobbes
+    // cluster ~16). Coda's SPSA-converged 28 is a 2× outlier — heavily favors
+    // material over capt-hist signal, which can mis-order on tactical refutes.
+    // Audit 2026-05-18: align with consensus, let capt_hist drive more.
+    (MVV_CAP_MULT, 16, 4, 64, 3.0, false),
     (CONT_HIST_MULT_10X, 10, 10, 80, 15.0, true),
     (KNIGHT_FORK_BONUS, 8722, 0, 20000, 1000.0, false),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
