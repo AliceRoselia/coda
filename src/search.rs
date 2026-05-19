@@ -107,6 +107,14 @@ tunables!(
     (HIST_PRUNE_DEPTH_10X, 10, 10, 80, 15.0, true),
     (HIST_PRUNE_MULT, 10410, 500, 50000, 2475.0, true),
     (SEE_QUIET_MULT, 35, 5, 80, 3.75, true),
+    // SEE quiet threshold history modulator (SF/Reckless port).
+    // Positive main-history makes the threshold more negative (easier to
+    // pass — quiet moves with good history get a more lenient SEE gate).
+    // Negative history tightens the threshold (more aggressive pruning).
+    // Coda main_score range is [-16384, 16384]; DIV=128 puts max
+    // contribution at ±128 cp of threshold shift, comparable to depth²*MULT
+    // at typical lmr_d=2..3.
+    (SEE_QUIET_HIST_DIV, 128, 32, 512, 16.0, true),
     (LMR_HIST_DIV, 7736, 2000, 100000, 4900.0, true),
     (LMR_C_QUIET, 140, 40, 300, 13.0, true),
     (LMR_C_CAP, 108, 80, 350, 12.5, true),
@@ -2924,7 +2932,9 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
-            let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
+            let see_hist = info.history.main_score(from, to, enemy_attacks);
+            let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d
+                                    - see_hist / tp(&SEE_QUIET_HIST_DIV);
             if !see_ge(board, mv, see_quiet_threshold) {
                 info.stats.see_prunes += 1;
                 continue;
