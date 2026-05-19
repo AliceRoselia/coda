@@ -20,6 +20,34 @@ const MAX_HISTORY: i32 = 16384;
 /// Bitboard type alias for threat computation.
 pub type Threats = u64;
 
+/// Heap-zero-allocate a 5.5 MB cont_hist table to avoid stack overflow
+/// from the array literal form. Mirrors search.rs::alloc_zeroed_box.
+pub(crate) fn alloc_zeroed_cont_hist() -> Box<[[[[[[i16; 64]; 13]; 64]; 13]; 2]; 2]> {
+    unsafe {
+        type T = [[[[[[i16; 64]; 13]; 64]; 13]; 2]; 2];
+        let layout = std::alloc::Layout::new::<T>();
+        let ptr = std::alloc::alloc_zeroed(layout) as *mut T;
+        if ptr.is_null() { std::alloc::handle_alloc_error(layout); }
+        Box::from_raw(ptr)
+    }
+}
+
+/// Construct a zero-initialised `Box<History>` without putting the full
+/// struct on the stack. Heap-allocates and zeroes the outer struct, then
+/// fixes up the inner Box<...> field (which would otherwise be a null
+/// pointer — UB to read).
+pub(crate) fn alloc_zeroed_history() -> Box<History> {
+    unsafe {
+        let layout = std::alloc::Layout::new::<History>();
+        let ptr = std::alloc::alloc_zeroed(layout) as *mut History;
+        if ptr.is_null() { std::alloc::handle_alloc_error(layout); }
+        // Initialise the Box<cont_hist> field BEFORE creating Box<History>,
+        // so the destructor never sees an uninitialised Box pointer.
+        std::ptr::write(&raw mut (*ptr).cont_hist, alloc_zeroed_cont_hist());
+        Box::from_raw(ptr)
+    }
+}
+
 /// History tables shared across the search.
 pub struct History {
     /// Main history: [from_threatened][to_threatened][from][to]
@@ -35,9 +63,15 @@ pub struct History {
     /// Counter-move: [piece 1-12][to]
     /// piece uses 1-12 indexing (slot 0 unused).
     pub counter: [[Move; 64]; 13],
-    /// Continuation history: [piece 1-12][to][piece 1-12][to]
+    /// Continuation history: [parent_in_check][parent_was_capture][piece 1-12][to][piece 1-12][to]
     /// piece uses 1-12 indexing (slot 0 unused).
-    pub cont_hist: [[[[i16; 64]; 13]; 64]; 13],
+    ///
+    /// Parent bucketing (SF pattern): the two leading dimensions partition
+    /// cont-hist by the context in which the PARENT move was made:
+    /// - `parent_in_check`: was the side-to-move at the parent node in check?
+    /// - `parent_was_capture`: was the parent move a capture?
+    /// Heap-allocated via Box to avoid stack-allocating 5.5 MB on History::new().
+    pub cont_hist: Box<[[[[[[i16; 64]; 13]; 64]; 13]; 2]; 2]>,
 }
 
 impl History {
@@ -71,7 +105,7 @@ impl History {
             capture: [[[0i16; 7]; 64]; 13],
             killers: [[NO_MOVE; 2]; crate::search::MAX_PLY],
             counter: [[NO_MOVE; 64]; 13],
-            cont_hist: [[[[0; 64]; 13]; 64]; 13],
+            cont_hist: alloc_zeroed_cont_hist(),
         }
     }
 
@@ -80,7 +114,12 @@ impl History {
         self.capture = [[[0i16; 7]; 64]; 13];
         self.killers = [[NO_MOVE; 2]; crate::search::MAX_PLY];
         self.counter = [[NO_MOVE; 64]; 13];
-        self.cont_hist = [[[[0; 64]; 13]; 64]; 13];
+        // Zero cont_hist in-place to avoid stack-allocating 5.5 MB literal.
+        unsafe {
+            let ptr = self.cont_hist.as_mut() as *mut _ as *mut u8;
+            let size = std::mem::size_of_val::<[[[[[[i16; 64]; 13]; 64]; 13]; 2]; 2]>(&*self.cont_hist);
+            std::ptr::write_bytes(ptr, 0, size);
+        }
     }
 
     /// Copy all table contents from `src`. Used to seed Lazy SMP
@@ -93,7 +132,8 @@ impl History {
         self.capture = src.capture;
         self.killers = src.killers;
         self.counter = src.counter;
-        self.cont_hist = src.cont_hist;
+        // Box<T>::clone would put the inner on the stack; copy in place instead.
+        *self.cont_hist = *src.cont_hist;
     }
 
     /// Age all history tables by multiplying by factor/divisor (e.g. 4/5 = 0.80).
@@ -112,10 +152,14 @@ impl History {
                 for v in row.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
             }
         }
-        for plane0 in self.cont_hist.iter_mut() {
-            for plane1 in plane0.iter_mut() {
-                for row in plane1.iter_mut() {
-                    for v in row.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
+        for plane_ic in self.cont_hist.iter_mut() {
+            for plane_cap in plane_ic.iter_mut() {
+                for plane0 in plane_cap.iter_mut() {
+                    for plane1 in plane0.iter_mut() {
+                        for row in plane1.iter_mut() {
+                            for v in row.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
+                        }
+                    }
                 }
             }
         }
@@ -252,6 +296,8 @@ impl MovePicker {
         xray_blockers: Bitboard,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
+        was_in_check_stack: &[bool],
+        was_capture_stack: &[bool],
     ) -> Self {
         let killers = if ply < 64 {
             history.killers[ply]
@@ -281,8 +327,10 @@ impl MovePicker {
             if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
+                let prior_ic = was_in_check_stack.get(ply - off).copied().unwrap_or(false) as usize;
+                let prior_cap = was_capture_stack.get(ply - off).copied().unwrap_or(false) as usize;
                 if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
-                    cont_hist_subs[i] = Some(&history.cont_hist[prior_piece][prior_to] as *const [[i16; 64]; 13]);
+                    cont_hist_subs[i] = Some(&history.cont_hist[prior_ic][prior_cap][prior_piece][prior_to] as *const [[i16; 64]; 13]);
                 }
             }
         }
@@ -388,6 +436,8 @@ impl MovePicker {
         threats: Threats,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
+        was_in_check_stack: &[bool],
+        was_capture_stack: &[bool],
     ) -> Self {
         // Build cont-hist pointers for evasion (same as main picker).
         // Also guard the upper bound: qsearch can deepen past MAX_PLY via
@@ -399,8 +449,10 @@ impl MovePicker {
             if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
+                let prior_ic = was_in_check_stack.get(ply - off).copied().unwrap_or(false) as usize;
+                let prior_cap = was_capture_stack.get(ply - off).copied().unwrap_or(false) as usize;
                 if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
-                    cont_hist_subs[i] = Some(&history.cont_hist[prior_piece][prior_to] as *const [[i16; 64]; 13]);
+                    cont_hist_subs[i] = Some(&history.cont_hist[prior_ic][prior_cap][prior_piece][prior_to] as *const [[i16; 64]; 13]);
                 }
             }
         }

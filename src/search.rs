@@ -525,9 +525,16 @@ pub struct SearchInfo {
     double_ext_count: [i32; MAX_PLY + 1],
     /// Per-ply moved piece (go_piece index 1-12, 0=none). Set before make_move.
     /// Used for correct cont hist lookups at ply-2+ (avoids stale board.piece_at).
-    moved_piece_stack: [u8; MAX_PLY + 1],
+    pub moved_piece_stack: [u8; MAX_PLY + 1],
     /// Per-ply move destination square. Used alongside moved_piece_stack.
-    moved_to_stack: [u8; MAX_PLY + 1],
+    pub moved_to_stack: [u8; MAX_PLY + 1],
+    /// Per-ply parent-in-check flag: was the side-to-move at this ply in check
+    /// before making its move? Indexes the [in_check] dim of cont_hist (SF
+    /// parent-bucketing pattern). Set alongside moved_piece_stack on push.
+    pub was_in_check_stack: [bool; MAX_PLY + 1],
+    /// Per-ply parent-was-capture flag: was the move made at this ply a capture?
+    /// Indexes the [was_capture] dim of cont_hist (SF parent-bucketing pattern).
+    pub was_capture_stack: [bool; MAX_PLY + 1],
     /// Pawn history: [pawn_hash & (PAWN_HIST_SIZE - 1)][piece 1-12][to_square] (slot 0 unused)
     pawn_hist: Box<[[[i16; 64]; 13]; PAWN_HIST_SIZE]>,
     /// Pawn correction history: [stm][pawn_hash % size]
@@ -563,7 +570,7 @@ impl SearchInfo {
             stats: PruneStats::default(),
             stats_tt_static_eval_hits: 0,
             tt,
-            history: alloc_zeroed_box(),
+            history: crate::movepicker::alloc_zeroed_history(),
             stop: std::sync::Arc::new(AtomicBool::new(false)),
             start_time: Instant::now(),
             time_limit: 0,
@@ -594,6 +601,8 @@ impl SearchInfo {
             double_ext_count: [0; MAX_PLY + 1],
             moved_piece_stack: [0; MAX_PLY + 1],
             moved_to_stack: [0; MAX_PLY + 1],
+            was_in_check_stack: [false; MAX_PLY + 1],
+            was_capture_stack: [false; MAX_PLY + 1],
             pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
             pv_len: [0; MAX_PLY + 1],
             pawn_hist: alloc_zeroed_box(),
@@ -1482,6 +1491,8 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
     info.moved_to_stack = [0; MAX_PLY + 1];
+    info.was_in_check_stack = [false; MAX_PLY + 1];
+    info.was_capture_stack = [false; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
     info.nodes = 0;
@@ -1608,6 +1619,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
     info.moved_to_stack = [0; MAX_PLY + 1];
+    info.was_in_check_stack = [false; MAX_PLY + 1];
+    info.was_capture_stack = [false; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
     // Clear TM state
@@ -2311,13 +2324,17 @@ fn negamax(
                             let our_gp = info.moved_piece_stack[ply_u - 2] as usize;
                             let opp_to = info.moved_to_stack[ply_u - 1] as usize;
                             let our_to = info.moved_to_stack[ply_u - 2] as usize;
+                            // Parent bucket dims: context of OUR move (ply_u - 2)
+                            // because the cont_hist is indexed by [our_gp][our_to].
+                            let our_ic = info.was_in_check_stack[ply_u - 2] as usize;
+                            let our_cap = info.was_capture_stack[ply_u - 2] as usize;
                             if opp_gp > 0 && opp_gp < 13
                                 && our_gp > 0 && our_gp < 13
                                 && opp_to < 64 && our_to < 64
                             {
                                 let malus = -((155 * depth).min(385));
                                 History::update_cont_history(
-                                    &mut info.history.cont_hist[our_gp][our_to][opp_gp][opp_to],
+                                    &mut info.history.cont_hist[our_ic][our_cap][our_gp][our_to][opp_gp][opp_to],
                                     malus,
                                 );
                             }
@@ -2649,6 +2666,8 @@ fn negamax(
         if ply_u <= MAX_PLY {
             info.moved_piece_stack[ply_u] = 0;
             info.moved_to_stack[ply_u] = 0;
+            info.was_in_check_stack[ply_u] = false;
+            info.was_capture_stack[ply_u] = false;
         }
         let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
@@ -2802,8 +2821,12 @@ fn negamax(
     let safe_ply = ply_u.min(MAX_PLY - 1);
     let mut prev_piece_for_cont: usize = 0; // go_piece index (1-12), 0 = none
     let mut prev_to_for_cont: u8 = 0;
+    let mut prev_ic_for_cont: usize = 0;    // parent bucket dim (in_check)
+    let mut prev_cap_for_cont: usize = 0;   // parent bucket dim (was_capture)
     let mut prev2_piece_for_cont: usize = 0; // ply-2 (grandparent move)
     let mut prev2_to_for_cont: u8 = 0;
+    let mut prev2_ic_for_cont: usize = 0;
+    let mut prev2_cap_for_cont: usize = 0;
 
     // Ply-1: parent's move (for continuation history)
     if ply_u >= 1 {
@@ -2812,6 +2835,8 @@ fn negamax(
         if gp != 0 {
             prev_piece_for_cont = gp;
             prev_to_for_cont = to_sq;
+            prev_ic_for_cont = info.was_in_check_stack[ply_u - 1] as usize;
+            prev_cap_for_cont = info.was_capture_stack[ply_u - 1] as usize;
         }
     }
 
@@ -2822,6 +2847,8 @@ fn negamax(
         if gp2 != 0 {
             prev2_piece_for_cont = gp2;
             prev2_to_for_cont = to_sq2;
+            prev2_ic_for_cont = info.was_in_check_stack[ply_u - 2] as usize;
+            prev2_cap_for_cont = info.was_capture_stack[ply_u - 2] as usize;
         }
     }
 
@@ -2836,9 +2863,13 @@ fn negamax(
     };
     let pawn_hist_ref = Some(&info.pawn_hist[ph_idx] as &[[i16; 64]; 13]);
     let mut picker = if in_check {
-        MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, enemy_attacks,
+            &info.moved_piece_stack, &info.moved_to_stack,
+            &info.was_in_check_stack, &info.was_capture_stack)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new(board, tt_move, safe_ply, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers,
+            &info.moved_piece_stack, &info.moved_to_stack,
+            &info.was_in_check_stack, &info.was_capture_stack)
     };
     picker.threat_sq = threat_sq;
 
@@ -3032,6 +3063,10 @@ fn negamax(
         if moved_piece != NO_PIECE && ply_u <= MAX_PLY {
             info.moved_piece_stack[ply_u] = go_piece(moved_piece) as u8;
             info.moved_to_stack[ply_u] = to;
+            // SF parent-bucketing context for cont_hist:
+            //   was the side-to-move in check before this move? Was it a capture?
+            info.was_in_check_stack[ply_u] = in_check;
+            info.was_capture_stack[ply_u] = is_cap;
         }
         let captured_pt = if is_cap {
             if flags == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(to) }
@@ -3065,8 +3100,10 @@ fn negamax(
                     if ply_u >= off {
                         let p = info.moved_piece_stack[ply_u - off] as usize;
                         let pt = info.moved_to_stack[ply_u - off] as usize;
+                        let pic = info.was_in_check_stack[ply_u - off] as usize;
+                        let pcap = info.was_capture_stack[ply_u - off] as usize;
                         if p > 0 && p < 13 && pt < 64 {
-                            hist_prune_score += info.history.cont_hist[p][pt][gp][to as usize] as i32;
+                            hist_prune_score += info.history.cont_hist[pic][pcap][p][pt][gp][to as usize] as i32;
                         }
                     }
                 }
@@ -3101,8 +3138,10 @@ fn negamax(
                     if ply_u >= off {
                         let p = info.moved_piece_stack[ply_u - off] as usize;
                         let pt = info.moved_to_stack[ply_u - off] as usize;
+                        let pic = info.was_in_check_stack[ply_u - off] as usize;
+                        let pcap = info.was_capture_stack[ply_u - off] as usize;
                         if p > 0 && p < 13 && pt < 64 {
-                            let v = info.history.cont_hist[p][pt][gp][to as usize] as i32;
+                            let v = info.history.cont_hist[pic][pcap][p][pt][gp][to as usize] as i32;
                             let abs_v = v.unsigned_abs() as u64;
                             let mb = if abs_v < 200 { 0 }
                                 else if abs_v < 1000 { 1 }
@@ -3139,8 +3178,10 @@ fn negamax(
                     if ply_u >= off {
                         let p = info.moved_piece_stack[ply_u - off] as usize;
                         let pt = info.moved_to_stack[ply_u - off] as usize;
+                        let pic = info.was_in_check_stack[ply_u - off] as usize;
+                        let pcap = info.was_capture_stack[ply_u - off] as usize;
                         if p > 0 && p < 13 && pt < 64 {
-                            conts[i] = info.history.cont_hist[p][pt][gp][to as usize] as i32;
+                            conts[i] = info.history.cont_hist[pic][pcap][p][pt][gp][to as usize] as i32;
                         }
                     }
                 }
@@ -3399,10 +3440,10 @@ fn negamax(
                 if moved_piece != NO_PIECE {
                     let gp = go_piece(moved_piece);
                     if prev_piece_for_cont != 0 {
-                        hist_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize] as i32;
+                        hist_score += info.history.cont_hist[prev_ic_for_cont][prev_cap_for_cont][prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize] as i32;
                     }
                     if prev2_piece_for_cont != 0 {
-                        hist_score += info.history.cont_hist[prev2_piece_for_cont][prev2_to_for_cont as usize][gp][to as usize] as i32 / 2;
+                        hist_score += info.history.cont_hist[prev2_ic_for_cont][prev2_cap_for_cont][prev2_piece_for_cont][prev2_to_for_cont as usize][gp][to as usize] as i32 / 2;
                     }
                     // Pawn history: pawn-structure-aware move quality (SF/Alexandria pattern)
                     let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
@@ -3540,12 +3581,14 @@ fn negamax(
                             if ply_u >= off {
                                 let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                 let prior_to = info.moved_to_stack[ply_u - off] as usize;
+                                let pic = info.was_in_check_stack[ply_u - off] as usize;
+                                let pcap = info.was_capture_stack[ply_u - off] as usize;
                                 if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                                     let ch_b = if off <= 1 { nudge_bonus } else { nudge_bonus / 2 };
-                                    let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
+                                    let cur_cont = info.history.cont_hist[pic][pcap][prior_piece][prior_to][gp_mv][to as usize] as i32;
                                     let base = cur_cont + main_score_v / 2;
                                     History::update_cont_history_with_base(
-                                        &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
+                                        &mut info.history.cont_hist[pic][pcap][prior_piece][prior_to][gp_mv][to as usize],
                                         base,
                                         ch_b,
                                     );
@@ -3646,12 +3689,14 @@ fn negamax(
                                 if ply_u >= off {
                                     let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                     let prior_to = info.moved_to_stack[ply_u - off] as usize;
+                                    let pic = info.was_in_check_stack[ply_u - off] as usize;
+                                    let pcap = info.was_capture_stack[ply_u - off] as usize;
                                     if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                                         let ch_bonus = if off <= 1 { bonus } else { bonus / 2 };
-                                        let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
+                                        let cur_cont = info.history.cont_hist[pic][pcap][prior_piece][prior_to][gp_mv][to as usize] as i32;
                                         let base = cur_cont + main_score_v / 2;
                                         History::update_cont_history_with_base(
-                                            &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
+                                            &mut info.history.cont_hist[pic][pcap][prior_piece][prior_to][gp_mv][to as usize],
                                             base,
                                             ch_bonus,
                                         );
@@ -3693,12 +3738,14 @@ fn negamax(
                                         if ply_u >= off {
                                             let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                             let prior_to = info.moved_to_stack[ply_u - off] as usize;
+                                            let pic = info.was_in_check_stack[ply_u - off] as usize;
+                                            let pcap = info.was_capture_stack[ply_u - off] as usize;
                                             if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                                                 let ch_pen = if off <= 1 { -bonus } else { -bonus / 2 };
-                                                let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize] as i32;
+                                                let cur_cont = info.history.cont_hist[pic][pcap][prior_piece][prior_to][gp_q][qt as usize] as i32;
                                                 let base = cur_cont + q_main_score / 2;
                                                 History::update_cont_history_with_base(
-                                                    &mut info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize],
+                                                    &mut info.history.cont_hist[pic][pcap][prior_piece][prior_to][gp_q][qt as usize],
                                                     base,
                                                     ch_pen,
                                                 );
@@ -4020,6 +4067,7 @@ fn quiescence_with_depth(
             tt_move, qs_safe_ply, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
             qs_enemy_attacks,
             &info.moved_piece_stack, &info.moved_to_stack,
+            &info.was_in_check_stack, &info.was_capture_stack,
         );
         let mut best_score = -INFINITY;
         let mut best_move = NO_MOVE;
