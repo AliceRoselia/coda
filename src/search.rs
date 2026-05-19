@@ -2844,6 +2844,20 @@ fn negamax(
 
     let mut best_move = NO_MOVE;
     let mut best_score = -INFINITY;
+    // Root-only: track captured material value for tiebreak among drawn
+    // root moves at LOW PIECE COUNT only. v1 of this patch (1350) gated
+    // only on score==0 and regressed -43 Elo because mid-game positions
+    // where the search returns 0 are not necessarily drawn — aspiration
+    // window centring / NNUE ≈ 0 / near-50MR can all yield 0 in
+    // unrelated mid-game positions. Narrowing to ≤ 6 pieces restricts
+    // tiebreak to genuine TB/IM territory where score==0 reliably means
+    // "proven drawn", which is the only place the qualitative-Lichess
+    // recapture bug fires.
+    let mut best_captured_value: i32 = 0;
+    // 6-piece cap covers all of Syzygy 6-piece TB + all FIDE IM cases.
+    const ROOT_TIEBREAK_PIECE_COUNT_MAX: u32 = 6;
+    let root_few_pieces = ply == 0
+        && crate::bitboard::popcount(board.occupied()) as u32 <= ROOT_TIEBREAK_PIECE_COUNT_MAX;
     let mut move_count = 0i32;
     // EXPERIMENT (Starzix T1 #1): track PVS fail-high cascades at this node.
     // Each child that triggers a re-search (LMR failed high → re-search at
@@ -3593,6 +3607,18 @@ fn negamax(
         if score > best_score {
             best_score = score;
             best_move = mv;
+            // Record captured material value for low-piece-count root
+            // tiebreak. Only fires when root_few_pieces is set.
+            if root_few_pieces {
+                let captured_pt_at_to = board.piece_type_at(move_to(mv));
+                best_captured_value = if captured_pt_at_to != NO_PIECE_TYPE {
+                    crate::eval::see_value(captured_pt_at_to)
+                } else if flags == FLAG_EN_PASSANT {
+                    crate::eval::see_value(PAWN)
+                } else {
+                    0
+                };
+            }
 
             if score > alpha {
                 alpha = score;
@@ -3762,6 +3788,42 @@ fn negamax(
                         }
                     }
                     break;
+                }
+            }
+        } else if root_few_pieces
+            && best_score == 0
+            && score == 0
+            && best_move != NO_MOVE
+        {
+            // ROOT-ONLY draw-tiebreak, gated to ≤ 6 pieces (Syzygy TB +
+            // FIDE IM territory). Qualitative-Lichess fix per game
+            // I4qJhfQw move 103: among proven-drawn root lines, prefer
+            // the move that captures more material. No score perturbation
+            // — UCI eval stays 0, draw-acceptance wrapper unaffected.
+            //
+            // v2 of this patch: v1 (#1350) gated only on score==0 and
+            // regressed -43 Elo because the score==0 signal was unreliable
+            // in mid-game positions. Narrowing to ≤ 6 pieces restricts
+            // firing to genuine TB-drawn endgames.
+            let captured_pt_at_to = board.piece_type_at(move_to(mv));
+            let mv_captured_value = if captured_pt_at_to != NO_PIECE_TYPE {
+                crate::eval::see_value(captured_pt_at_to)
+            } else if flags == FLAG_EN_PASSANT {
+                crate::eval::see_value(PAWN)
+            } else {
+                0
+            };
+            if mv_captured_value > best_captured_value {
+                best_move = mv;
+                best_captured_value = mv_captured_value;
+                if ply_u <= MAX_PLY {
+                    info.pv_table[ply_u][0] = mv;
+                    let child_len = if ply_u + 1 <= MAX_PLY { info.pv_len[ply_u + 1] } else { 0 };
+                    let copy_len = child_len.min(MAX_PLY - ply_u);
+                    for i in 0..copy_len {
+                        info.pv_table[ply_u][1 + i] = info.pv_table[ply_u + 1][i];
+                    }
+                    info.pv_len[ply_u] = 1 + child_len;
                 }
             }
         }
