@@ -114,7 +114,7 @@ tunables!(
     // widened min from 10 → 0 so future SPSA can also explore lmr_d=0
     // (disable) and small values without re-hitting the floor.
     (HIST_PRUNE_DEPTH_10X, 50, 0, 80, 15.0, true),
-    (HIST_PRUNE_MULT, 10410, 500, 50000, 2475.0, true),
+    (HIST_PRUNE_MULT, 9174, 500, 50000, 2475.0, true),
     (SEE_QUIET_MULT, 35, 5, 80, 3.75, true),
     (LMR_HIST_DIV, 7736, 2000, 100000, 4900.0, true),
     (LMR_C_QUIET, 140, 40, 300, 13.0, true),
@@ -146,8 +146,8 @@ tunables!(
     (CORR_W_MAJOR, 96, 30, 300, 13.5, true),
     (CORR_W_CONT, 33, 30, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
-    (HIST_BONUS_MULT, 315, 50, 400, 17.5, true),
-    (HIST_BONUS_MAX, 1936, 500, 3000, 125.0, true),
+    (HIST_BONUS_MULT, 310, 50, 400, 17.5, true),
+    (HIST_BONUS_MAX, 1955, 500, 3000, 125.0, true),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
     // history bonus adopts Stockfish/cap-hist offset shape:
     //   old: min(MAX, MULT * d)
@@ -157,7 +157,7 @@ tunables!(
     // wider depth discrimination. cap-history already uses the offset
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 18, 0, 400, 25.0, false),
+    (HIST_BONUS_OFFSET, 13, 0, 400, 25.0, false),
     (CAP_HIST_MULT, 289, 50, 400, 17.5, true),
     (CAP_HIST_BASE, 42, 0, 200, 10.0, false),
     (CAP_HIST_MAX, 1881, 500, 3000, 125.0, true),
