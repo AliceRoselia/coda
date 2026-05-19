@@ -104,7 +104,16 @@ tunables!(
     // where Reckless prunes confidently. SPSA retune-on-branch expected.
     (FUT_BASE, 23, 20, 200, 9.0, true),
     (FUT_PER_DEPTH, 79, 40, 250, 10.5, true),
-    (HIST_PRUNE_DEPTH_10X, 10, 10, 80, 15.0, true),
+    // Hist-prune depth gate: fires when `lmr_d <= tp10(HIST_PRUNE_DEPTH_10X)`.
+    // Coda's SPSA-converged 10 (= lmr_d ≤ 1) is far tighter than consensus:
+    // Stormphrax fires at lmr_d ≤ 5, SF at lmr_d ≤ 6, Obsidian at lmr_d ≤ 5.
+    // The historical SPSA pin at min=10 hints the gate-threshold pair is
+    // jointly miscalibrated — at the converged threshold, deeper firing
+    // over-prunes, but at a higher threshold (retune-on-branch) it should
+    // pay. Audit 2026-05-18: relax to Stormphrax's lmr_d ≤ 5 (tp10=50);
+    // widened min from 10 → 0 so future SPSA can also explore lmr_d=0
+    // (disable) and small values without re-hitting the floor.
+    (HIST_PRUNE_DEPTH_10X, 50, 0, 80, 15.0, true),
     (HIST_PRUNE_MULT, 10410, 500, 50000, 2475.0, true),
     (SEE_QUIET_MULT, 35, 5, 80, 3.75, true),
     (LMR_HIST_DIV, 7736, 2000, 100000, 4900.0, true),
