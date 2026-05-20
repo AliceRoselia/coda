@@ -93,25 +93,25 @@ tunables!(
     //   NMP_UNDEFENDED_MAX float-converged at 0.6 (int rounds to 1, no
     //     change); two consecutive tunes have drifted this toward feature-
     //     disable. Candidate for ablation SPRT (set to 0).
-    (NMP_BASE_R_10X, 69, 20, 80, 15.0, true),
-    (NMP_DEPTH_DIV_10X, 55, 10, 60, 15.0, true),
+    (NMP_BASE_R_10X, 76, 20, 80, 15.0, true),
+    (NMP_DEPTH_DIV_10X, 53, 10, 60, 15.0, true),
     (NMP_EVAL_DIV, 126, 50, 400, 17.5, true),
-    (NMP_EVAL_MAX_10X, 24, 10, 60, 5.0, true),
-    (NMP_VERIFY_DEPTH_10X, 113, 40, 200, 20.0, true),
-    (RFP_DEPTH, 17, 2, 20, 2.0, true),
-    (RFP_MARGIN_IMP, 40, 30, 150, 6.0, true),
-    (RFP_MARGIN_NOIMP, 55, 50, 200, 7.5, true),
+    (NMP_EVAL_MAX_10X, 22, 10, 60, 5.0, true),
+    (NMP_VERIFY_DEPTH_10X, 89, 40, 200, 20.0, true),
+    (RFP_DEPTH, 18, 2, 20, 2.0, true),
+    (RFP_MARGIN_IMP, 49, 30, 150, 6.0, true),
+    (RFP_MARGIN_NOIMP, 53, 50, 200, 7.5, true),
     // Futility margin reduced to Reckless scale. At lmr_d=5:
     //   Old: 78 + 160*5 = 878 (Coda 2.4× wider than Reckless 364)
     //   New: 40 + 65*5 = 365 (matches Reckless)
     // Force-more-pruning experiment: Coda was under-pruning at mid-depth
     // where Reckless prunes confidently. SPSA retune-on-branch expected.
-    (FUT_BASE, 23, 20, 200, 9.0, true),
-    (FUT_PER_DEPTH, 79, 40, 250, 10.5, true),
-    (HIST_PRUNE_DEPTH_10X, 10, 10, 80, 15.0, true),
-    (HIST_PRUNE_MULT, 10410, 500, 50000, 2475.0, true),
+    (FUT_BASE, 31, 20, 200, 9.0, true),
+    (FUT_PER_DEPTH, 81, 40, 250, 10.5, true),
+    (HIST_PRUNE_DEPTH_10X, 15, 10, 80, 15.0, true),
+    (HIST_PRUNE_MULT, 6774, 500, 50000, 2475.0, true),
     (SEE_QUIET_MULT, 35, 5, 80, 3.75, true),
-    (LMR_HIST_DIV, 7736, 2000, 100000, 4900.0, true),
+    (LMR_HIST_DIV, 9366, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
     // continuous `hist_score / LMR_HIST_DIV`. Obsidian uses continuous
@@ -120,32 +120,32 @@ tunables!(
     // of quiet — single-source capt_hist needs smaller divisor for
     // equivalent reduction magnitude). Coda's quiet div is 7736; same
     // ratio gives ~4500. Defaulting 5000 as a starting point.
-    (LMR_HIST_DIV_CAP, 5000, 1000, 20000, 1500.0, true),
-    (LMR_C_QUIET, 140, 40, 300, 13.0, true),
-    (LMR_C_CAP, 108, 80, 350, 12.5, true),
+    (LMR_HIST_DIV_CAP, 4869, 1000, 20000, 1500.0, true),
+    (LMR_C_QUIET, 137, 40, 300, 13.0, true),
+    (LMR_C_CAP, 109, 80, 350, 12.5, true),
     // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv,
     // Reckless at >=5+ttPv. Coda's 4 fires SE at shallower depth where
     // singular_depth is too low to judge singularity reliably. Bumping
     // 4 → 6 first; ttPv add deferred to a follow-up if H1.
-    (SE_DEPTH_10X, 45, 40, 200, 20.0, true),
+    (SE_DEPTH_10X, 41, 40, 200, 20.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, false),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
     // use LMP_BASE=3 with the same `(BASE + d²)/(2 - improving)` formula.
     // Coda's 9 is 3× consensus at d=1: allows 5-10 quiets vs SF's 2-4.
     // Bisecting 9 → 5 first.
-    (LMP_BASE, 9, 1, 15, 2.0, true),
-    (LMP_DEPTH, 7, 4, 20, 2.0, true),
-    (BAD_NOISY_MARGIN, 80, 30, 150, 6.0, true),
-    (PROBCUT_MARGIN, 185, 80, 300, 11.0, true),
-    (HINDSIGHT_THRESH, 169, 50, 400, 17.5, true),
+    (LMP_BASE, 8, 1, 15, 2.0, true),
+    (LMP_DEPTH, 6, 4, 20, 2.0, true),
+    (BAD_NOISY_MARGIN, 78, 30, 150, 6.0, true),
+    (PROBCUT_MARGIN, 178, 80, 300, 11.0, true),
+    (HINDSIGHT_THRESH, 160, 50, 400, 17.5, true),
     (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
     (SEE_MATERIAL_SCALE, 215, 30, 300, 13.5, false),
-    (QS_DELTA_MARGIN, 367, 100, 500, 20.0, true),
+    (QS_DELTA_MARGIN, 372, 100, 500, 20.0, true),
     (QS_SEE_THRESHOLD, -26, -200, 0, 10.0, false),
     (QS_MAX_CAPTURES, 24, 2, 32, 2.0, false),
-    (CORR_W_PAWN, 299, 100, 600, 25.0, true),
-    (CORR_W_NP, 63, 50, 400, 17.5, true),
+    (CORR_W_PAWN, 312, 100, 600, 25.0, true),
+    (CORR_W_NP, 60, 50, 400, 17.5, true),
     // 2026-05-18 audit outlier #3 deep-dive: minor_key/major_key are
     // strict subsets of non_pawn_key (minor_key ⊕ major_key = NP per
     // color, since both XOR the same piece-zobrists). So minor_corr +
@@ -155,11 +155,11 @@ tunables!(
     // and widens range to [0, 300] so a follow-up SPSA can confirm
     // they stay at 0 or find a tiny residual signal.
     (CORR_W_MINOR, 0, 0, 300, 13.5, true),
-    (CORR_W_MAJOR, 0, 0, 300, 13.5, true),
-    (CORR_W_CONT, 33, 30, 400, 18.5, true),
+    (CORR_W_MAJOR, 7, 0, 300, 13.5, true),
+    (CORR_W_CONT, 38, 30, 400, 18.5, true),
     (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
-    (HIST_BONUS_MULT, 315, 50, 400, 17.5, true),
-    (HIST_BONUS_MAX, 1936, 500, 3000, 125.0, true),
+    (HIST_BONUS_MULT, 309, 50, 400, 17.5, true),
+    (HIST_BONUS_MAX, 2084, 500, 3000, 125.0, true),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
     // history bonus adopts Stockfish/cap-hist offset shape:
     //   old: min(MAX, MULT * d)
@@ -170,9 +170,9 @@ tunables!(
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
     (HIST_BONUS_OFFSET, 18, 0, 400, 25.0, false),
-    (CAP_HIST_MULT, 289, 50, 400, 17.5, true),
+    (CAP_HIST_MULT, 262, 50, 400, 17.5, true),
     (CAP_HIST_BASE, 42, 0, 200, 10.0, false),
-    (CAP_HIST_MAX, 1881, 500, 3000, 125.0, true),
+    (CAP_HIST_MAX, 1777, 500, 3000, 125.0, true),
     // BONUS_BOOST_AT removed 2026-05-17: ablation #1277 at [0, 3] H0
     // (+0.3 ±1.0, CI [-0.7, +1.3] at 136K games). Depth-boost trigger
     // confirmed neutral; both call sites updated to drop the +1 clause.
@@ -202,15 +202,15 @@ tunables!(
     // (#787 H0, SPSA #792 no basin) showed signal-not-there for Coda's
     // regime; bundling it into #815 dragged the result negative. Tested
     // alone in this branch.
-    (DEXT_MARGIN_PV, 155, 50, 400, 15.0, true),
-    (DEXT_MARGIN_QUIET, 4, 0, 100, 4.0, true),
-    (DEXT_MARGIN_CORR, 21, 0, 64, 3.0, true),
-    (DEXT_MARGIN_BASE, 44, -50, 150, 6.0, true),
-    (DEXT_CAP, 14, 4, 32, 2.0, true),
+    (DEXT_MARGIN_PV, 168, 50, 400, 15.0, true),
+    (DEXT_MARGIN_QUIET, 5, 0, 100, 4.0, true),
+    (DEXT_MARGIN_CORR, 17, 0, 64, 3.0, true),
+    (DEXT_MARGIN_BASE, 41, -50, 150, 6.0, true),
+    (DEXT_CAP, 15, 4, 32, 2.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
     (LMR_COMPLEXITY_DIV, 152, 30, 500, 23.5, false),
-    (CORR_HIST_DIV, 1559, 256, 4096, 192.0, true),
-    (CORR_UPDATE_WEIGHT_MAX, 13, 4, 48, 2.2, true),
+    (CORR_HIST_DIV, 1747, 256, 4096, 192.0, true),
+    (CORR_UPDATE_WEIGHT_MAX, 17, 4, 48, 2.2, true),
     (CORR_BONUS_CAP_DIV_10X, 32, 10, 160, 15.0, false),
     (CORR_HIST_GRAIN_T, 14, 1, 32, 1.55, false),
     (CORR_HIST_ERR_MAX_10X, 25, 10, 640, 5.0, false),
@@ -225,15 +225,15 @@ tunables!(
     // NMP — opponent's free tempo is very likely to exploit the hanger.
     // Fits Titan's W2 pattern (binary signal gating a pruning decision).
     // Default 1 = skip NMP whenever any piece is hanging.
-    (NMP_UNDEFENDED_MAX_10X, 17, 0, 50, 10.0, true),
+    (NMP_UNDEFENDED_MAX_10X, 11, 0, 50, 10.0, true),
     // T2.3 (next_ideas_2026-04-21): mobility-delta quiet-ordering weight.
     // Bonus applied in movepicker quiets = (to_mobility - from_mobility) × this.
     // Default 32 = ±256 typical range, additive to history (~1000s scale).
     (MOBILITY_DELTA_WEIGHT, 34, 0, 256, 8.0, false),
-    (PROBCUT_KING_ZONE_MAX_10X, 58, 20, 90, 15.0, true),
-    (LMR_THREAT_DIV_10X, 38, 10, 50, 15.0, true),
-    (LMR_KING_PRESSURE_DIV_10X, 68, 20, 90, 15.0, true),
-    (FUT_THREATS_MARGIN, 23, 0, 200, 10.0, true),
+    (PROBCUT_KING_ZONE_MAX_10X, 68, 20, 90, 15.0, true),
+    (LMR_THREAT_DIV_10X, 34, 10, 50, 15.0, true),
+    (LMR_KING_PRESSURE_DIV_10X, 82, 20, 90, 15.0, true),
+    (FUT_THREATS_MARGIN, 18, 0, 200, 10.0, true),
     (DISCOVERED_ATTACK_BONUS, 3534, 0, 30000, 1500.0, false),
     // BATTERY_BONUS removed 2026-05-17: ablation #1278 at [0, 3] H0
     // (+0.2 ±1.1, CI [-0.9, +1.3] at 114K games). Feature confirmed
@@ -250,14 +250,14 @@ tunables!(
     // Signal already delivered +52 in movepicker (#502). Flat bonus
     // subtracted from singular_beta → easier to judge singular → more
     // extensions for tactically significant moves.
-    (SE_XRAY_BLOCKER_MARGIN_10X, 47, 0, 400, 20.0, true),
+    (SE_XRAY_BLOCKER_MARGIN_10X, 55, 0, 400, 20.0, true),
     (MVV_CAP_MULT, 28, 4, 64, 3.0, false),
     // 2026-05-19 audit: floor was pinned at 10 (=1.0 effective), preventing
     // SPSA from exploring below 1× even though SPSA had repeatedly driven
     // the value to the floor across tunes. Widened to allow 0× (full disable)
     // so SPSA can find the genuine optimum. CLAUDE.md previously claimed
     // "3× in move ordering" — stale; corrected to "1× current SPSA basin".
-    (CONT_HIST_MULT_10X, 10, 0, 80, 15.0, true),
+    (CONT_HIST_MULT_10X, 20, 0, 80, 15.0, true),
     (KNIGHT_FORK_BONUS, 8722, 0, 20000, 1000.0, false),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
@@ -282,15 +282,15 @@ tunables!(
     // eval+pruning co-tune; expect meaningful movement as net quality
     // changes.
     (IIR_MIN_DEPTH_10X, 20, 20, 100, 15.0, true),         // was hardcoded 4; tune #743 converged to 2 (strong signal)
-    (PROBCUT_MIN_DEPTH_10X, 32, 30, 120, 15.0, true),     // was hardcoded 5 (ProbCut activation gate)
-    (SEE_CAP_DEPTH, 6, 3, 15, 1.5, true),         // was hardcoded 6 (SEE capture prune depth cap)
+    (PROBCUT_MIN_DEPTH_10X, 33, 30, 120, 15.0, true),     // was hardcoded 5 (ProbCut activation gate)
+    (SEE_CAP_DEPTH, 7, 3, 15, 1.5, true),         // was hardcoded 6 (SEE capture prune depth cap)
     (FUT_LMR_DEPTH, 15, 5, 20, 1.5, false),        // was hardcoded 10; tune #743 → 9
     (BAD_NOISY_DEPTH, 8, 4, 15, 1.5, true),       // was hardcoded 4 (BNFP depth cap)
     // Second pass — additional gates exposed for the feature-utility
     // audit tune. Widened ranges allow SPSA to reach disable-endpoint
     // values where appropriate (per feedback_spsa_as_feature_utility_diagnostic).
-    (NMP_MIN_DEPTH_10X, 59, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
-    (HINDSIGHT_MIN_DEPTH_10X, 25, 10, 200, 15.0, true),        // was hardcoded 2 (hindsight reduction gate)
+    (NMP_MIN_DEPTH_10X, 60, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
+    (HINDSIGHT_MIN_DEPTH_10X, 34, 10, 200, 15.0, true),        // was hardcoded 2 (hindsight reduction gate)
     (TT_CUTOFF_HALFMOVE_MAX, 89, 50, 100, 3.0, false),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
 );
 
