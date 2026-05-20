@@ -286,10 +286,21 @@ tunables!(
     (MVV_CAP_MULT, 28, 4, 64, 3.0, false),
     // 2026-05-19 audit: floor was pinned at 10 (=1.0 effective), preventing
     // SPSA from exploring below 1× even though SPSA had repeatedly driven
-    // the value to the floor across tunes. Widened to allow 0× (full disable)
-    // so SPSA can find the genuine optimum. CLAUDE.md previously claimed
-    // "3× in move ordering" — stale; corrected to "1× current SPSA basin".
-    (CONT_HIST_MULT_10X, 19, 0, 80, 15.0, true),
+    // Cont-hist move-ordering weights per parent-ply offset (replaces the
+    // previously-linked CONT_HIST_MULT_10X). Defaults are FIXED-POINT
+    // (stored = effective × 10); movepicker reads as `(stored * sub) / 10`,
+    // NOT tp10 — using tp10 would round sub-integer SPSA exploration
+    // (e.g. 19 vs 24 both → eff 2), making the per-offset split SPSA-
+    // invisible. Defaults [20, 20, 10, 10] match the prior linked behavior
+    // [2, 2, 1, 1] from CONT_HIST_MULT_10X = 19 (tp10 rounded to 2).
+    // core: false — applied-tune SPRT (#1394) was H0 at +0.2 ±1.1 / 100K
+    // games despite strong SPSA gradients per-offset. Textbook loose knob
+    // — SPSA finds gradients with no corresponding Elo change. Keep out
+    // of --core so future tunes don't burn iter budget on these.
+    (CONT_HIST_MULT_1_10X, 20, 0, 80, 15.0, false),
+    (CONT_HIST_MULT_2_10X, 20, 0, 80, 15.0, false),
+    (CONT_HIST_MULT_4_10X, 10, 0, 80, 10.0, false),
+    (CONT_HIST_MULT_6_10X, 10, 0, 80, 10.0, false),
     // Pawn-history weight in quiet move ordering. Was hardcoded at 1×;
     // making tunable lets SPSA find the right pawn-structure weighting
     // relative to main/cont/etc. Default 10 = eff 1× (bench-neutral).
