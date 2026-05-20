@@ -269,10 +269,10 @@ tunables!(
     // the per-offset split SPSA-invisible.
     // Defaults [20, 20, 10, 10] match the prior linked behavior of
     // [2, 2, 1, 1] from CONT_HIST_MULT_10X = 19 (tp10 rounded to 2).
-    (CONT_HIST_MULT_1_10X, 20, 0, 80, 15.0, true),
-    (CONT_HIST_MULT_2_10X, 20, 0, 80, 15.0, true),
-    (CONT_HIST_MULT_4_10X, 10, 0, 80, 10.0, true),
-    (CONT_HIST_MULT_6_10X, 10, 0, 80, 10.0, true),
+    (CONT_HIST_MULT_1_10X, 17, 0, 80, 15.0, true),
+    (CONT_HIST_MULT_2_10X, 18, 0, 80, 15.0, true),
+    (CONT_HIST_MULT_4_10X, 14, 0, 80, 10.0, true),
+    (CONT_HIST_MULT_6_10X, 8, 0, 80, 10.0, true),
     (KNIGHT_FORK_BONUS, 8722, 0, 20000, 1000.0, false),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where
