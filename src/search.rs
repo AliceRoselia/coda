@@ -135,7 +135,7 @@ tunables!(
     // Floor lifted from 40 → 0 (audit 2026-05-20): SPSA-converged 45 at 3%
     // from floor. SE gates at lmr_d >= eff depth; lifting lets SPSA explore
     // shallower SE activation.
-    (SE_DEPTH_10X, 45, 0, 200, 20.0, true),
+    (SE_DEPTH_10X, 51, 0, 200, 20.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, false),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
@@ -261,7 +261,7 @@ tunables!(
     // Signal already delivered +52 in movepicker (#502). Flat bonus
     // subtracted from singular_beta → easier to judge singular → more
     // extensions for tactically significant moves.
-    (SE_XRAY_BLOCKER_MARGIN_10X, 47, 0, 400, 20.0, true),
+    (SE_XRAY_BLOCKER_MARGIN_10X, 44, 0, 400, 20.0, true),
     (MVV_CAP_MULT, 28, 4, 64, 3.0, false),
     // 2026-05-19 audit: floor was pinned at 10 (=1.0 effective), preventing
     // SPSA from exploring below 1× even though SPSA had repeatedly driven
@@ -309,7 +309,7 @@ tunables!(
     // values where appropriate (per feedback_spsa_as_feature_utility_diagnostic).
     (NMP_MIN_DEPTH_10X, 59, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
     // Floor lifted from 10 → 0 (audit 2026-05-20): pinned at 25, 8% from floor.
-    (HINDSIGHT_MIN_DEPTH_10X, 23, 0, 200, 15.0, true),        // was hardcoded 2 (hindsight reduction gate)
+    (HINDSIGHT_MIN_DEPTH_10X, 27, 0, 200, 15.0, true),        // was hardcoded 2 (hindsight reduction gate)
     (TT_CUTOFF_HALFMOVE_MAX, 89, 50, 100, 3.0, false),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
 );
 
