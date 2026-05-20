@@ -132,7 +132,10 @@ tunables!(
     // Reckless at >=5+ttPv. Coda's 4 fires SE at shallower depth where
     // singular_depth is too low to judge singularity reliably. Bumping
     // 4 → 6 first; ttPv add deferred to a follow-up if H1.
-    (SE_DEPTH_10X, 45, 40, 200, 20.0, true),
+    // Floor lifted from 40 → 0 (audit 2026-05-20): SPSA-converged 45 at 3%
+    // from floor. SE gates at lmr_d >= eff depth; lifting lets SPSA explore
+    // shallower SE activation.
+    (SE_DEPTH_10X, 45, 0, 200, 20.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, false),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
