@@ -1367,18 +1367,25 @@ pub fn compute_tm_budgets(
     //      catastrophe.
     if movestogo == 0 {
         let estimated_spm_ms = time_left / 25;
-        // TC-aware hard multiplier × 10 (integer math). Conservative
-        // initial values; SPSA-tunable later.
-        let hard_mult_x10: u64 = if estimated_spm_ms < 2000 { 20 }       // bullet 2.0×
-                                 else if estimated_spm_ms < 5000 { 25 }   // blitz 2.5×
-                                 else if estimated_spm_ms < 15000 { 30 }  // rapid 3.0×
-                                 else { 40 };                              // classical 4.0×
-        // Max-single-move percentage of remaining clock. Aligned with
-        // doc design table — bullet/blitz tight, rapid/classical loose.
-        let max_single_pct: u64 = if estimated_spm_ms < 2000 { 8 }        // bullet 8%
-                                  else if estimated_spm_ms < 5000 { 9 }    // blitz 9%
-                                  else if estimated_spm_ms < 15000 { 12 }  // rapid 12%
-                                  else { 15 };                              // classical 15%
+        // Phase 3 (widen blitz/rapid for lichess variance, 2026-05-20):
+        // Phase 2 SPRT'd +4.5 Elo at 40+0.4 but lichess move-time
+        // graphs show Coda's per-move spend tracing a perfect
+        // pct_cap × time_remaining decay line — no SF-style variance.
+        // Diagnosis: the multiplier product (bmc × nodes × stability
+        // × score) is so high on tactical positions (~4-7×) that it
+        // saturates pct_cap on every non-ponderhit move. Widening
+        // blitz/rapid gives multipliers room to express variance
+        // without forcing every spend to the same ceiling. Bullet
+        // bracket stays conservative (SPRT-validated #1378, SPSA
+        // #1387 in flight). Reserve floor remains the safety.
+        let hard_mult_x10: u64 = if estimated_spm_ms < 2000 { 20 }       // bullet 2.0× (unchanged)
+                                 else if estimated_spm_ms < 5000 { 35 }   // blitz 3.5× (was 2.5)
+                                 else if estimated_spm_ms < 15000 { 45 }  // rapid 4.5× (was 3.0)
+                                 else { 60 };                              // classical 6.0× (was 4.0)
+        let max_single_pct: u64 = if estimated_spm_ms < 2000 { 8 }        // bullet 8% (unchanged)
+                                  else if estimated_spm_ms < 5000 { 16 }   // blitz 16% (was 9)
+                                  else if estimated_spm_ms < 15000 { 22 }  // rapid 22% (was 12)
+                                  else { 25 };                              // classical 25% (was 15)
 
         let mult_cap = base_soft * hard_mult_x10 / 10;
         let pct_cap = time_left * max_single_pct / 100;
