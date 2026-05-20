@@ -616,7 +616,25 @@ impl MovePicker {
             // Dynamic SEE threshold: captures with strong history get a more
             // forgiving threshold. Use captHist only (not MVV) to avoid inflation.
             let capt_hist = capt_hist_score_static(board, history, m);
-            let cap_score = mvv_lva(board, m) + capt_hist;
+            // SF/Reckless/Obsidian pattern: include cont-hist (ply-1 + ply-2)
+            // in capture ordering. Refute-style captures (responding well to
+            // recent opponent context) get prioritised among same-victim
+            // captures. Half-weight to avoid drowning MVV signal.
+            let to = move_to(m);
+            let from = move_from(m);
+            let piece = board.piece_at(from);
+            let cont_capt = if piece != NO_PIECE {
+                let gp = go_piece(piece);
+                let mut s = 0i32;
+                for i in 0..2 {  // ply-1 and ply-2 only
+                    if let Some(sub_ptr) = self.cont_hist_subs[i] {
+                        let sub = unsafe { &*sub_ptr };
+                        s += sub[gp][to as usize] as i32;
+                    }
+                }
+                s / 2  // half-weight
+            } else { 0 };
+            let cap_score = mvv_lva(board, m) + capt_hist + cont_capt;
             let see_threshold = -capt_hist / 18;
             if !see_ge(board, m, see_threshold) {
                 // Bad capture.
