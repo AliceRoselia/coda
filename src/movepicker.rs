@@ -658,16 +658,22 @@ impl MovePicker {
 
             let mut score = history.main_score(from, to, self.threats);
 
-            // Continuation history: plies 1,2 at CONT_HIST_MULT weight, plies 4,6 at 1x weight.
-            // Matches Obsidian/Alexandria/Berserk pattern (default 3).
+            // Continuation history weights per parent-ply offset, fixed-point
+            // (stored value / 10 = effective weight). Reading as raw stored
+            // value × sub_val / 10 preserves sub-integer SPSA precision.
             if piece != NO_PIECE {
+                use std::sync::atomic::Ordering;
                 let gp = go_piece(piece);
-                let cm = crate::search::tp10(&crate::search::CONT_HIST_MULT_10X);
-                let weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
+                let weights = [
+                    crate::search::CONT_HIST_MULT_1_10X.load(Ordering::Relaxed),
+                    crate::search::CONT_HIST_MULT_2_10X.load(Ordering::Relaxed),
+                    crate::search::CONT_HIST_MULT_4_10X.load(Ordering::Relaxed),
+                    crate::search::CONT_HIST_MULT_6_10X.load(Ordering::Relaxed),
+                ];
                 for (i, &w) in weights.iter().enumerate() {
                     if let Some(sub_ptr) = self.cont_hist_subs[i] {
                         let sub = unsafe { &*sub_ptr };
-                        score += w * sub[gp][to as usize] as i32;
+                        score += (w * sub[gp][to as usize] as i32) / 10;
                     }
                 }
             }
@@ -863,13 +869,18 @@ impl MovePicker {
                 let mut s = history.main_score(from, to, self.threats);
 
                 if piece != NO_PIECE {
+                    use std::sync::atomic::Ordering;
                     let gp = go_piece(piece);
-                    let cm = crate::search::tp10(&crate::search::CONT_HIST_MULT_10X);
-                    let weights = [cm, cm, 1i32, 1];
+                    let weights = [
+                        crate::search::CONT_HIST_MULT_1_10X.load(Ordering::Relaxed),
+                        crate::search::CONT_HIST_MULT_2_10X.load(Ordering::Relaxed),
+                        crate::search::CONT_HIST_MULT_4_10X.load(Ordering::Relaxed),
+                        crate::search::CONT_HIST_MULT_6_10X.load(Ordering::Relaxed),
+                    ];
                     for (i, &w) in weights.iter().enumerate() {
                         if let Some(sub_ptr) = self.cont_hist_subs[i] {
                             let sub = unsafe { &*sub_ptr };
-                            s += w * sub[gp][to as usize] as i32;
+                            s += (w * sub[gp][to as usize] as i32) / 10;
                         }
                     }
                 }
