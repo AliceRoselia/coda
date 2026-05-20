@@ -127,7 +127,9 @@ tunables!(
     // ratio gives ~4500. Defaulting 5000 as a starting point.
     (LMR_HIST_DIV_CAP, 5000, 1000, 20000, 1500.0, true),
     (LMR_C_QUIET, 140, 40, 300, 13.0, true),
-    (LMR_C_CAP, 108, 80, 350, 12.5, true),
+    // Floor lifted from 80 → 0 (audit 2026-05-20): SPSA-converged 108,
+    // ~10% from floor. Lifting allows SPSA to find true optimum.
+    (LMR_C_CAP, 108, 0, 350, 12.5, true),
     // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv,
     // Reckless at >=5+ttPv. Coda's 4 fires SE at shallower depth where
     // singular_depth is too low to judge singularity reliably. Bumping
