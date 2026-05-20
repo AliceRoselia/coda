@@ -308,6 +308,17 @@ tunables!(
     // Floor lifted from 10 → 0 (audit 2026-05-20): pinned at 25, 8% from floor.
     (HINDSIGHT_MIN_DEPTH_10X, 23, 0, 200, 15.0, true),        // was hardcoded 2 (hindsight reduction gate)
     (TT_CUTOFF_HALFMOVE_MAX, 89, 50, 100, 3.0, false),  // was hardcoded 90 (TT cutoff halfmove gate, 5 sites)
+    // --- TM Phase 2 (TC-aware hard cap + reserve floor) ---
+    // Phase 2 self-play passed (0 forfeits all TCs) and SPRT #1378 ran
+    // +3.5-4.2 Elo at 40+0.4 LTC. Constants were chosen conservatively;
+    // these expose them for SPSA-tuning at the SPRT TC. Only the BULLET
+    // bracket fires at 40+0.4 (spm = 1600ms < 2000), so blitz/rapid/
+    // classical brackets stay as `const` until separately tuned at
+    // matching TC.
+    (TM_HARD_MULT_BULLET_X10, 20, 15, 35, 2.0, false),   // base_soft × this/10 = mult_cap; 2.0× default
+    (TM_MAX_SINGLE_PCT_BULLET, 8, 4, 15, 1.0, false),    // % of time_left allowed per single move
+    (TM_RESERVE_INC_MULT, 5, 2, 12, 1.0, false),         // reserve floor: max(this×inc, ABS_MS)
+    (TM_RESERVE_ABS_MS, 2000, 500, 4000, 200.0, false),  // reserve floor: max(INC_MULT×inc, this)
 );
 
 /// Get a tunable parameter value (inline for hot paths)
@@ -1367,30 +1378,31 @@ pub fn compute_tm_budgets(
     //      catastrophe.
     if movestogo == 0 {
         let estimated_spm_ms = time_left / 25;
-        // TC-aware hard multiplier × 10 (integer math). Conservative
-        // initial values; SPSA-tunable later.
-        let hard_mult_x10: u64 = if estimated_spm_ms < 2000 { 20 }       // bullet 2.0×
-                                 else if estimated_spm_ms < 5000 { 25 }   // blitz 2.5×
-                                 else if estimated_spm_ms < 15000 { 30 }  // rapid 3.0×
-                                 else { 40 };                              // classical 4.0×
-        // Max-single-move percentage of remaining clock. Aligned with
-        // doc design table — bullet/blitz tight, rapid/classical loose.
-        let max_single_pct: u64 = if estimated_spm_ms < 2000 { 8 }        // bullet 8%
-                                  else if estimated_spm_ms < 5000 { 9 }    // blitz 9%
-                                  else if estimated_spm_ms < 15000 { 12 }  // rapid 12%
-                                  else { 15 };                              // classical 15%
+        // TC-aware hard multiplier × 10 (integer math). Bullet bracket is
+        // SPSA-tunable (TM_HARD_MULT_BULLET_X10); other brackets stay as
+        // const until separately tuned at matching TC.
+        let hard_mult_x10: u64 = if estimated_spm_ms < 2000 {
+            tp(&TM_HARD_MULT_BULLET_X10) as u64                              // bullet, SPSA
+        } else if estimated_spm_ms < 5000 { 25 }                              // blitz 2.5×
+          else if estimated_spm_ms < 15000 { 30 }                             // rapid 3.0×
+          else { 40 };                                                         // classical 4.0×
+        // Max-single-move percentage of remaining clock. Bullet bracket
+        // SPSA-tunable; others const.
+        let max_single_pct: u64 = if estimated_spm_ms < 2000 {
+            tp(&TM_MAX_SINGLE_PCT_BULLET) as u64                              // bullet, SPSA
+        } else if estimated_spm_ms < 5000 { 9 }                                // blitz 9%
+          else if estimated_spm_ms < 15000 { 12 }                              // rapid 12%
+          else { 15 };                                                          // classical 15%
 
         let mult_cap = base_soft * hard_mult_x10 / 10;
         let pct_cap = time_left * max_single_pct / 100;
         let new_hard = mult_cap.min(pct_cap);
 
         // Minimum-reserve floor: never spend such that remaining clock
-        // drops below max(TM_RESERVE_INC × inc, TM_RESERVE_ABS_MS).
-        // K_ABS = 2s is below the doc's 3s proposal to avoid strangling
-        // short STC games (10+0.1 would lose 30% of its clock otherwise).
-        const TM_RESERVE_INC_MULT: u64 = 5;
-        const TM_RESERVE_ABS_MS: u64 = 2000;
-        let min_reserve = (TM_RESERVE_INC_MULT * our_inc).max(TM_RESERVE_ABS_MS);
+        // drops below max(TM_RESERVE_INC_MULT × inc, TM_RESERVE_ABS_MS).
+        // Both SPSA-tunable.
+        let min_reserve = (tp(&TM_RESERVE_INC_MULT) as u64 * our_inc)
+            .max(tp(&TM_RESERVE_ABS_MS) as u64);
         let max_consumable = time_left.saturating_sub(min_reserve);
         let new_hard = new_hard.min(max_consumable);
 
