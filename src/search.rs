@@ -125,7 +125,7 @@ tunables!(
     // of quiet — single-source capt_hist needs smaller divisor for
     // equivalent reduction magnitude). Coda's quiet div is 7736; same
     // ratio gives ~4500. Defaulting 5000 as a starting point.
-    (LMR_HIST_DIV_CAP, 5000, 1000, 20000, 1500.0, true),
+    (LMR_HIST_DIV_CAP, 5229, 1000, 20000, 1500.0, true),
     (LMR_C_QUIET, 140, 40, 300, 13.0, true),
     (LMR_C_CAP, 108, 80, 350, 12.5, true),
     // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv,
@@ -141,7 +141,7 @@ tunables!(
     // Bisecting 9 → 5 first.
     (LMP_BASE, 9, 1, 15, 2.0, true),
     (LMP_DEPTH, 7, 4, 20, 2.0, true),
-    (BAD_NOISY_MARGIN, 80, 30, 150, 6.0, true),
+    (BAD_NOISY_MARGIN, 83, 30, 150, 6.0, true),
     (PROBCUT_MARGIN, 185, 80, 300, 11.0, true),
     (HINDSIGHT_THRESH, 169, 50, 400, 17.5, true),
     (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
@@ -176,9 +176,9 @@ tunables!(
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
     (HIST_BONUS_OFFSET, 24, 0, 400, 25.0, false),
-    (CAP_HIST_MULT, 289, 50, 400, 17.5, true),
-    (CAP_HIST_BASE, 42, 0, 200, 10.0, false),
-    (CAP_HIST_MAX, 1881, 500, 3000, 125.0, true),
+    (CAP_HIST_MULT, 290, 50, 400, 17.5, true),
+    (CAP_HIST_BASE, 45, 0, 200, 10.0, false),
+    (CAP_HIST_MAX, 1860, 500, 3000, 125.0, true),
     // BONUS_BOOST_AT removed 2026-05-17: ablation #1277 at [0, 3] H0
     // (+0.3 ±1.0, CI [-0.7, +1.3] at 136K games). Depth-boost trigger
     // confirmed neutral; both call sites updated to drop the +1 clause.
@@ -259,7 +259,7 @@ tunables!(
     // subtracted from singular_beta → easier to judge singular → more
     // extensions for tactically significant moves.
     (SE_XRAY_BLOCKER_MARGIN_10X, 47, 0, 400, 20.0, true),
-    (MVV_CAP_MULT, 28, 4, 64, 3.0, false),
+    (MVV_CAP_MULT, 29, 4, 64, 3.0, false),
     // 2026-05-19 audit: floor was pinned at 10 (=1.0 effective), preventing
     // SPSA from exploring below 1× even though SPSA had repeatedly driven
     // the value to the floor across tunes. Widened to allow 0× (full disable)
@@ -300,7 +300,7 @@ tunables!(
     (PROBCUT_MIN_DEPTH_10X, 32, 10, 120, 15.0, true),     // was hardcoded 5 (ProbCut activation gate)
     (SEE_CAP_DEPTH, 6, 3, 15, 1.5, true),         // was hardcoded 6 (SEE capture prune depth cap)
     (FUT_LMR_DEPTH, 15, 5, 20, 1.5, false),        // was hardcoded 10; tune #743 → 9
-    (BAD_NOISY_DEPTH, 8, 4, 15, 1.5, true),       // was hardcoded 4 (BNFP depth cap)
+    (BAD_NOISY_DEPTH, 9, 4, 15, 1.5, true),       // was hardcoded 4 (BNFP depth cap)
     // Second pass — additional gates exposed for the feature-utility
     // audit tune. Widened ranges allow SPSA to reach disable-endpoint
     // values where appropriate (per feedback_spsa_as_feature_utility_diagnostic).
