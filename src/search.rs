@@ -923,6 +923,50 @@ impl SearchInfo {
 /// which unlike the previous `(200 - hm) / 200` actually reaches zero
 /// at the draw cliff rather than topping out at 0.5×.
 #[inline]
+/// Threat-escape extension eligibility check. Must be called BEFORE
+/// `board.make_move(mv)` so `see_ge` evaluates from the moving side's
+/// perspective.
+///
+/// Triggers `extension += 1` when ALL of:
+///   - move is non-capture, non-promotion (tactical paths handled separately)
+///   - depth >= 6 (shallow depths just inflate nodes)
+///   - moved piece is ROOK or QUEEN (heavy pieces only — minor escapes are
+///     cheap signal that doesn't justify the depth cost)
+///   - from-square is in enemy attacks (piece IS threatened)
+///   - to-square is NOT in enemy attacks (genuinely safe destination)
+///   - SEE(mv, 0) ≥ 0 (move doesn't sacrifice material — losing trades
+///     aren't escapes, they're sacrifices and SE/SE-margin handles them)
+///
+/// Coda-novel: peer engines without explicit threat bitboards can't cheaply
+/// compute the from-threatened/to-safe predicate. The escape pattern is
+/// already a move-ordering bonus (ESCAPE_BONUS_Q/R) but ordering only
+/// reorders; this gives the line depth credit so search resolves whether
+/// the alternative (stay and drop the piece) is actually worse.
+fn extension_eligible_for_threat_escape(
+    board: &Board,
+    mv: Move,
+    depth: i32,
+    moved_pt: u8,
+    is_cap: bool,
+    is_promo: bool,
+    enemy_attacks: u64,
+    from: u8,
+    to: u8,
+) -> bool {
+    if is_cap || is_promo || depth < 6 {
+        return false;
+    }
+    if moved_pt != QUEEN {
+        return false;
+    }
+    let from_bb = 1u64 << from;
+    let to_bb = 1u64 << to;
+    if (enemy_attacks & from_bb) == 0 || (enemy_attacks & to_bb) != 0 {
+        return false;
+    }
+    see_ge(board, mv, 0)
+}
+
 fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
     // Leave sentinel scores untouched so downstream comparisons with
     // `-INFINITY` / `MATE_SCORE - ply` keep their absolute magnitudes.
@@ -3435,6 +3479,13 @@ fn negamax(
             continue;
         }
 
+        // Threat-escape extension eligibility (must check pre-make_move so
+        // see_ge sees the right STM). The extension itself is applied after
+        // make_move below where the rest of the extension chain lives.
+        let threat_escape_eligible = extension_eligible_for_threat_escape(
+            board, mv, depth, moved_pt, is_cap, is_promo, enemy_attacks, from, to,
+        );
+
         // Build NNUE dirty piece info BEFORE make_move
         let dirty = if let Some(net) = info.nnue_net.as_deref() {
             build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt, net)
@@ -3496,6 +3547,15 @@ fn negamax(
             if on_seventh {
                 extension = 1;
             }
+        }
+        // Threat-escape extension (Coda novel, v9-threats-specific).
+        // Eligibility was computed pre-make_move above. Apply only if no
+        // other extension fired; FEAT_EXTENSIONS gates with the rest.
+        if extension == 0
+            && threat_escape_eligible
+            && FEAT_EXTENSIONS.load(Ordering::Relaxed)
+        {
+            extension = 1;
         }
 
         let mut new_depth = depth - 1 + extension + singular_extension;
