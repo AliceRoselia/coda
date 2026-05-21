@@ -3856,9 +3856,14 @@ fn negamax(
             || move_flags(best_move) == FLAG_EN_PASSANT
             || is_promotion(best_move)
     };
+    // Alexandria #590 (PGG106, 2026-01-18): corrhist is updated during SE
+    // verification searches too — the verification's best_score is a valid
+    // training signal for corrhist (best alternative under tt_move
+    // exclusion). Previously gated on `excluded_move == NO_MOVE`, which
+    // discarded that signal. TT-store stays SE-gated (separate concern);
+    // only corrhist is broadened.
     if !in_check && best_move != NO_MOVE
         && !best_move_noisy
-        && info.excluded_move[ply_u] == NO_MOVE
         && best_score > alpha_orig
         && best_score > -(MATE_SCORE - 100) && best_score < MATE_SCORE - 100
         && scaled_eval > -(MATE_SCORE - 100)
