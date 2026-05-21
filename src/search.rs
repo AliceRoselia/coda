@@ -2124,6 +2124,20 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Factor 1: Node fraction (Obsidian pattern)
             // How concentrated is the search on the best move?
             // High fraction → confident → use less time. Low fraction → uncertain → use more.
+            // Phase 5e (2026-05-21): lower the floor on nodes_factor.
+            // The autocorrelation analysis (scripts/tm_autocorrelation.py)
+            // showed Coda's residual autocorrelation = 0.6+ vs SF/Reckless
+            // ~0.01 — Coda's spend follows a smooth curve, no position-aware
+            // burst behavior. Phase 5a/b/c/d all tried RAISING upward
+            // signals (caps); the actual fix is LOWERING downward signals
+            // so trivial-position moves emit fast, creating bimodal contrast.
+            //
+            // Old: 0.63 + (1-frac) × 2.0 → range [0.63, 2.23], floor 0.63
+            // New: 0.20 + (1-frac) × 2.0 → range [0.20, 2.20], floor 0.20
+            //
+            // Effect on frac=1.0 (totally concentrated, easy decision):
+            //   Old: 0.63 (still 63% of soft)
+            //   New: 0.20 (20% of soft — actually emit fast)
             let nodes_factor = if depth > 9 && best_move != NO_MOVE {
                 let bm_from = move_from(best_move) as usize;
                 let bm_to = move_to(best_move) as usize;
@@ -2131,9 +2145,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 let total = info.nodes;
                 if total > 0 {
                     let frac = best_nodes as f64 / total as f64;
-                    // Obsidian: 0.63 + (1.0 - frac) * 2.0
-                    // frac=0.9 → 0.83, frac=0.5 → 1.63, frac=0.2 → 2.23
-                    0.63 + (1.0 - frac) * 2.0
+                    0.20 + (1.0 - frac) * 2.0
                 } else {
                     1.25  // default when no data (Clarity pattern)
                 }
@@ -2141,10 +2153,22 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 1.25  // early depths: use default multiplier
             };
 
-            // Factor 2: Best-move stability (Obsidian linear pattern)
-            // Each stable iteration reduces time by 8%
-            // 0 stable: 1.71x, 5 stable: 1.31x, 10 stable: 0.91x
-            let stability_factor = (1.71 - info.tm_best_stable as f64 * 0.08).max(0.5);
+            // Phase 5e: Viridithas-style stability lookup table replacing
+            // the linear `1.71 - 0.08·stab` falloff. Viridithas reaches
+            // stable-detected in 2 iterations (table [2.50, 1.20, 0.90,
+            // 0.80, 0.75]); Coda's linear took 10+. Faster convergence to
+            // low values lets stable positions emit MUCH faster, producing
+            // the bimodal contrast with tactical positions.
+            //
+            // Table values [1.5, 1.0, 0.75, 0.6, 0.5, 0.4, 0.3] for stab
+            // 0..=6, clamp at 0.3 for stab >= 6. More aggressive low end
+            // than Viridithas (0.30 floor vs their 0.75) — pairs with
+            // lowered nodes_factor to enable true bimodal.
+            let stability_factor = {
+                const STAB_TABLE: [f64; 7] = [1.5, 1.0, 0.75, 0.6, 0.5, 0.4, 0.3];
+                let idx = (info.tm_best_stable as usize).min(STAB_TABLE.len() - 1);
+                STAB_TABLE[idx]
+            };
 
             // Factor 3: Score trend (Obsidian pattern, simplified)
             // Dropping score → use more time. Rising score → slightly less.
