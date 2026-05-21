@@ -1887,6 +1887,40 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             info.soft_limit = soft_remaining;
             info.hard_limit = hard_remaining;
             info.soft_floor = floor;
+
+            // Thread B (Optimistic ponderhit emit, 2026-05-21):
+            // If the ponder search already produced a sufficiently-deep
+            // and substantially-elapsed result, emit immediately instead
+            // of verifying. Matches SF/Reckless/Viridithas pattern of
+            // banking ponder time when the result is trustworthy.
+            //
+            // Gates (ALL must be true):
+            //   1. depth >= TM_PONDER_EMIT_MIN_DEPTH (ponder result mature)
+            //   2. ponder_elapsed >= soft × TM_PONDER_EMIT_SOFT_FRAC / 100
+            //      (substantial ponder time, scaled to soft target)
+            //   3. best_move is known (not NO_MOVE — startup race guard)
+            //
+            // OR (override on time pressure):
+            //   4. hard_remaining < TM_PONDER_EMIT_PRESSURE_MS
+            //      (clock about to expire — survival over depth)
+            //
+            // Skipping when any gate fails → falls through to verify
+            // mode as before (existing behavior).
+            //
+            // Defaults chosen conservatively for first SPRT:
+            //   MIN_DEPTH = 12 (~6-8 ply less than typical full search)
+            //   SOFT_FRAC = 60 (ponder consumed >60% of would-be soft)
+            //   PRESSURE_MS = 3000 (3s buffer triggers emit-on-fume)
+            let ponder_elapsed = now;
+            let trust_depth = depth >= 12;
+            let trust_duration = ponder_elapsed >= soft_remaining * 60 / 100;
+            let have_best = best_move != NO_MOVE;
+            let time_pressure = hard_remaining < 3000;
+            let optimistic_emit = have_best
+                && ((trust_depth && trust_duration) || time_pressure);
+            if optimistic_emit {
+                break;
+            }
         }
         let iter_start = std::time::Instant::now();
 
