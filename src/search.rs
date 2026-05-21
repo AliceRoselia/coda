@@ -3851,11 +3851,17 @@ fn negamax(
     // Training on noisy bestmoves pollutes the tables. Matches Stockfish
     // (search.cpp:1495: `!(bestMove && pos.capture(bestMove))`) and Reckless
     // (search.rs:1085: `|| best_move.is_noisy()`).
-    let best_move_noisy = best_move != NO_MOVE && {
+    // Viridithas #420 (Cosmo, 2026-03-04): carve out losing captures from
+    // the corrhist-skip. A losing tactical (SEE<0) has its `best_score -
+    // raw_eval` driven by positional factors (we sacrificed material), so
+    // the signal IS valid for corrhist. Only WINNING tacticals dominate
+    // the delta with material gain and pollute training.
+    let best_move_tactical = best_move != NO_MOVE && {
         board.piece_type_at(move_to(best_move)) != NO_PIECE_TYPE
             || move_flags(best_move) == FLAG_EN_PASSANT
             || is_promotion(best_move)
     };
+    let best_move_noisy = best_move_tactical && see_ge(board, best_move, 0);
     if !in_check && best_move != NO_MOVE
         && !best_move_noisy
         && info.excluded_move[ply_u] == NO_MOVE
