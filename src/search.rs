@@ -2090,11 +2090,24 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // flips between iterations since search start, reset at `go`.
             let bmc_factor = (1.0 + info.tm_best_move_changes as f64 / 4.0).min(2.5);
 
-            // Combined: all four factors multiply against the soft limit.
-            // adjusted_soft is downstream-clamped to hard_limit, so this
-            // factor pushes us toward the existing hard cap on tactical
-            // positions but cannot exceed it.
-            let scale = nodes_factor * stability_factor * score_factor * bmc_factor;
+            // Factor 5: Opening-discipline scaling (Phase 4 TM, 2026-05-21).
+            // Coda's `soft = time/25 + 0.8*inc` formula gives ~5.6s target
+            // at 120+1 move 1 — but SF's empirical opening avg is ~3.6s
+            // (78% clock at move 10 vs Coda 35-50%, 4-engine RR data).
+            // Multiplicative phase factor suppresses spend in opening,
+            // ramping to 1.0 by move 15 where multipliers can fully
+            // express position-complexity signal. Linear approximation of
+            // SF's optScale power-law growth.
+            //
+            // fm=1: 0.58, fm=5: 0.70, fm=10: 0.85, fm=15: 1.00, fm=20+: 1.00
+            let fm = board.fullmove as f64;
+            let opening_factor = (0.55 + fm / 33.0).min(1.0);
+
+            // Combined: all five factors multiply against the soft limit.
+            // adjusted_soft is downstream-clamped to hard_limit, so factors
+            // push toward the existing hard cap on tactical positions but
+            // cannot exceed it.
+            let scale = nodes_factor * stability_factor * score_factor * bmc_factor * opening_factor;
 
             // Check if we should stop at the soft limit.
             // Floor at soft_floor (≈ increment) so stability cuts in stable
