@@ -188,7 +188,7 @@ tunables!(
     (NFH_CAP_10X, 31, 10, 60, 10.0, false),
     // Was 47 (tp10→5). Now consumed as FIXED-POINT (stored/10) so SPSA's
     // sub-integer precision is preserved. Default 50 → eff 5.0 ≡ old behavior.
-    (NFH_DIV_10X, 50, 20, 120, 10.0, false),
+    (NFH_DIV_10X, 49, 20, 120, 10.0, false),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -220,7 +220,7 @@ tunables!(
     (CORR_HIST_DIV, 1559, 256, 4096, 192.0, true),
     (CORR_UPDATE_WEIGHT_MAX, 13, 4, 48, 2.2, true),
     // Was 32 (tp10→3). Now FIXED-POINT. Default 30 → eff 3.0 ≡ old behavior.
-    (CORR_BONUS_CAP_DIV_10X, 30, 10, 160, 15.0, false),
+    (CORR_BONUS_CAP_DIV_10X, 29, 10, 160, 15.0, false),
     (CORR_HIST_GRAIN_T, 14, 1, 32, 1.55, false),
     // Floor lifted from 10 → 0 (audit 2026-05-19): SPSA converged 25, ~2%
     // from the floor. Lifting allows exploration of looser clamps.
@@ -243,7 +243,7 @@ tunables!(
     (MOBILITY_DELTA_WEIGHT, 34, 0, 256, 8.0, false),
     (PROBCUT_KING_ZONE_MAX_10X, 58, 20, 90, 15.0, true),
     // Was 38 (tp10→4). Now FIXED-POINT. Default 40 → eff 4.0 ≡ old behavior.
-    (LMR_THREAT_DIV_10X, 40, 10, 50, 15.0, true),
+    (LMR_THREAT_DIV_10X, 35, 10, 50, 15.0, true),
     // Was 68 (tp10→7). Now FIXED-POINT. Default 70 → eff 7.0 ≡ old behavior.
     (LMR_KING_PRESSURE_DIV_10X, 70, 20, 90, 15.0, true),
     (FUT_THREATS_MARGIN, 23, 0, 200, 10.0, true),
