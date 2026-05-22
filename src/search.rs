@@ -2124,6 +2124,15 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Factor 1: Node fraction (Obsidian pattern)
             // How concentrated is the search on the best move?
             // High fraction → confident → use less time. Low fraction → uncertain → use more.
+            // Phase 5f (2026-05-22): gentle downward-floor reduction.
+            // Phase 5e (floor 0.20 + table to 0.30) regressed -42 Elo at
+            // 111 games. Phase 5f tries half the magnitude: floor 0.45
+            // + stability table to 0.55 floor. Goal: shift autocorr
+            // toward SF (0.03) from current Coda (0.09) without breaking
+            // Elo. Smaller bites at the same lever.
+            //
+            // Old: 0.63 + (1-frac) × 2.0,  range [0.63, 2.23]
+            // New: 0.45 + (1-frac) × 2.0,  range [0.45, 2.45]
             let nodes_factor = if depth > 9 && best_move != NO_MOVE {
                 let bm_from = move_from(best_move) as usize;
                 let bm_to = move_to(best_move) as usize;
@@ -2131,9 +2140,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 let total = info.nodes;
                 if total > 0 {
                     let frac = best_nodes as f64 / total as f64;
-                    // Obsidian: 0.63 + (1.0 - frac) * 2.0
-                    // frac=0.9 → 0.83, frac=0.5 → 1.63, frac=0.2 → 2.23
-                    0.63 + (1.0 - frac) * 2.0
+                    0.45 + (1.0 - frac) * 2.0
                 } else {
                     1.25  // default when no data (Clarity pattern)
                 }
@@ -2141,10 +2148,16 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 1.25  // early depths: use default multiplier
             };
 
-            // Factor 2: Best-move stability (Obsidian linear pattern)
-            // Each stable iteration reduces time by 8%
-            // 0 stable: 1.71x, 5 stable: 1.31x, 10 stable: 0.91x
-            let stability_factor = (1.71 - info.tm_best_stable as f64 * 0.08).max(0.5);
+            // Phase 5f: gentler stability table (vs 5e's [1.5,1.0,0.75,
+            // 0.6,0.5,0.4,0.3] which regressed). New floor 0.55 still
+            // faster convergence than the linear `1.71 - 0.08·stab` but
+            // not aggressive enough to break play on subtly-tactical
+            // stable positions.
+            let stability_factor = {
+                const STAB_TABLE: [f64; 7] = [1.6, 1.25, 1.0, 0.85, 0.75, 0.65, 0.55];
+                let idx = (info.tm_best_stable as usize).min(STAB_TABLE.len() - 1);
+                STAB_TABLE[idx]
+            };
 
             // Factor 3: Score trend (Obsidian pattern, simplified)
             // Dropping score → use more time. Rising score → slightly less.
