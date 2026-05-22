@@ -2141,10 +2141,31 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 1.25  // early depths: use default multiplier
             };
 
-            // Factor 2: Best-move stability (Obsidian linear pattern)
-            // Each stable iteration reduces time by 8%
-            // 0 stable: 1.71x, 5 stable: 1.31x, 10 stable: 0.91x
-            let stability_factor = (1.71 - info.tm_best_stable as f64 * 0.08).max(0.5);
+            // Factor 2: Best-move stability — Viridithas-style lookup table.
+            //
+            // Phase 5g (2026-05-22): port Viridithas's stability table
+            // verbatim. Coda's prior linear `1.71 - 0.08·stab` (floor
+            // 0.50 at stab=15) was slow-converging vs Viridithas's
+            // table converging by stab=4. Phase 5e/5f tried floors of
+            // 0.30/0.55 and regressed 42-49 Elo — those values were
+            // more aggressive than any peer engine. Viridithas's 0.75
+            // is a known-working production value for a similar-
+            // strength engine.
+            //
+            // Differences vs Coda's linear:
+            //   stab=0: 2.50 vs 1.71 — MORE time on freshly-unstable
+            //   stab=1: 1.20 vs 1.63 — faster drop
+            //   stab=4+: 0.75 vs 1.39 → 0.50 (eventually)
+            //
+            // Net: more bimodal — taller peaks on instability AND
+            // sooner emit on stability. Single-axis change:
+            // nodes_factor unchanged (Coda's 0.63 floor is already
+            // more aggressive than Viridithas's 0.87).
+            let stability_factor = {
+                const STAB_TABLE: [f64; 5] = [2.50, 1.20, 0.90, 0.80, 0.75];
+                let idx = (info.tm_best_stable as usize).min(STAB_TABLE.len() - 1);
+                STAB_TABLE[idx]
+            };
 
             // Factor 3: Score trend (Obsidian pattern, simplified)
             // Dropping score → use more time. Rising score → slightly less.
