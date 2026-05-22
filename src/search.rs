@@ -558,6 +558,14 @@ pub struct SearchInfo {
     /// (which tracks CONSECUTIVE stable iterations and reduces time);
     /// this tracks TOTAL changes and increases time.
     tm_best_move_changes: u32,
+    /// Cumulative count of aspiration fail-low events in the current search,
+    /// reset at search start. Drives a Viridithas-style upward multiplier
+    /// (Phase 5h TM redesign). Different from `tm_best_move_changes` because
+    /// fail-lows are EPISODIC search events (aspiration window probed too
+    /// narrow, score crashed below alpha) — they fire bursty and decorrelate
+    /// from the smoothly-evolving stability/nodes/score signals. This is the
+    /// event-driven signal Coda was missing that top engines achieve via bmc.
+    tm_fail_low_count: u32,
     tm_has_data: bool,
     soft_limit: u64,  // ms — can be extended/shortened dynamically
     hard_limit: u64,  // ms — absolute maximum
@@ -654,6 +662,7 @@ impl SearchInfo {
             move_overhead: 100,
             tm_prev_best: NO_MOVE,
             tm_best_move_changes: 0,
+            tm_fail_low_count: 0,
             tm_prev_score: 0,
             tm_best_stable: 0,
             tm_has_data: false,
@@ -1640,6 +1649,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.tm_has_data = false;
     info.tm_best_stable = 0;
     info.tm_best_move_changes = 0;
+    info.tm_fail_low_count = 0;
 
     // Mirror search()'s threat setup — helpers must evaluate consistently
     // with main or shared-TT entries disagree and search diverges at T>1.
@@ -1768,6 +1778,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.tm_prev_score = 0;
     info.tm_best_stable = 0;
     info.tm_best_move_changes = 0;
+    info.tm_fail_low_count = 0;
     info.tm_has_data = false;
     // Reset per-root-move node counts
     for v in info.root_move_nodes.iter_mut() { *v = 0; }
@@ -1818,6 +1829,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.tm_has_data = false;
         info.tm_best_stable = 0;
         info.tm_best_move_changes = 0;
+        info.tm_fail_low_count = 0;
     } else if !limits.infinite {
         // No clock info (e.g. `go depth N` or `go nodes N`). Already zeroed
         // above; explicit reset kept for clarity.
@@ -1916,6 +1928,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // Fail low: contract beta aggressively toward alpha, widen alpha
                     beta = (3 * alpha + 5 * beta) / 8;
                     alpha = (result - delta).max(-INFINITY);
+                    // Phase 5h (2026-05-22): track aspiration fail-low events
+                    // for TM. Event-driven signal that decorrelates from the
+                    // smoothly-evolving stability/nodes/score multipliers —
+                    // Coda's missing "this position surprised us" indicator
+                    // (Viridithas pattern).
+                    info.tm_fail_low_count = info.tm_fail_low_count.saturating_add(1);
                 } else if result >= beta {
                     // Fail high: contract alpha toward beta, widen beta
                     alpha = (5 * alpha + 3 * beta) / 8;
@@ -2184,11 +2202,25 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // flips between iterations since search start, reset at `go`.
             let bmc_factor = (1.0 + info.tm_best_move_changes as f64 / 4.0).min(2.5);
 
+            // Factor 5: Aspiration fail-low boost (Phase 5h, 2026-05-22).
+            // Viridithas pattern: when aspiration windows fail low during
+            // the search, give extra time. Event-driven signal that fires
+            // EPISODICALLY when the position surprises the engine — distinct
+            // from the smoothly-evolving stability/nodes/score signals.
+            // Coda's bmc rarely fires; fail-lows fire more often on
+            // genuinely-surprising positions, providing the decorrelating
+            // event signal that top engines achieve via similar mechanisms.
+            //
+            // Formula: 1.0 + count × 0.34 (Viridithas's value). With 2 fail-
+            // lows → 1.68× scale. Capped at 2.5 to prevent runaway on
+            // pathological positions.
+            let fail_low_factor = (1.0 + info.tm_fail_low_count as f64 * 0.34).min(2.5);
+
             // Combined: all four factors multiply against the soft limit.
             // adjusted_soft is downstream-clamped to hard_limit, so this
             // factor pushes us toward the existing hard cap on tactical
             // positions but cannot exceed it.
-            let scale = nodes_factor * stability_factor * score_factor * bmc_factor;
+            let scale = nodes_factor * stability_factor * score_factor * bmc_factor * fail_low_factor;
 
             // Check if we should stop at the soft limit.
             // Floor at soft_floor (≈ increment) so stability cuts in stable
