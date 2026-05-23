@@ -597,15 +597,26 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             external_stop.store(true, Ordering::Relaxed);
                             stop_flag.store(true, Ordering::Relaxed);
                         } else {
-                            // Store hard deadline (absolute) for the should_stop
-                            // grace check. Also publish the soft deadline + floor
-                            // so the ID loop can arm dynamic TM — without that,
-                            // it burns the full hard budget (~5s at 60+2) even on
-                            // positions where 2-3s would suffice.
-                            let deadline = elapsed + hard.max(10);
-                            let soft_deadline = elapsed + soft.max(10).min(hard.max(10));
-                            ponderhit_flag.store(deadline, Ordering::Relaxed);
-                            ponderhit_soft_flag.store(soft_deadline, Ordering::Relaxed);
+                            // SF-model (TM Phase 7, 2026-05-23): store soft/hard
+                            // as FULL budget durations measured from the original
+                            // `go ponder` start, NOT as "elapsed + budget"
+                            // deadlines. Ponder elapsed time then counts as
+                            // already-spent budget — if we pondered for ~soft,
+                            // we emit near-immediately on ponderhit; if we
+                            // pondered briefly, we still get most of soft to
+                            // think post-ponderhit.
+                            //
+                            // The dynamic TM block compares `elapsed` (from
+                            // search start, includes ponder) against these
+                            // budgets directly. The floor is a separate
+                            // post-ponderhit minimum think time (cycle-bug
+                            // protection at positive-inc TCs).
+                            //
+                            // Suppress unused-var warning — `elapsed` no
+                            // longer used to construct the deadline.
+                            let _ = elapsed;
+                            ponderhit_flag.store(hard.max(10), Ordering::Relaxed);
+                            ponderhit_soft_flag.store(soft.max(10).min(hard.max(10)), Ordering::Relaxed);
                             ponderhit_floor_flag.store(floor, Ordering::Relaxed);
                         }
                     } else if pl.movetime > 0 {

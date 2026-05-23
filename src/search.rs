@@ -1915,14 +1915,21 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         let ph_soft = info.ponderhit_soft.load(std::sync::atomic::Ordering::Relaxed);
         if ph_soft > 0 && info.soft_limit == 0 {
             let now = info.start_time.elapsed().as_millis() as u64;
-            let soft_remaining = ph_soft.saturating_sub(now).max(1);
-            let hard_remaining = if ph > now { ph - now } else { soft_remaining };
-            let hard_remaining = hard_remaining.max(soft_remaining);
-            let floor = info.ponderhit_floor.load(std::sync::atomic::Ordering::Relaxed)
-                .min(soft_remaining);
+            // SF-model (TM Phase 7, 2026-05-23): ph_soft / ph are the FULL
+            // budget durations measured from search start (NOT post-
+            // ponderhit remainders). The dynamic TM block compares
+            // `elapsed` (from search start, includes ponder) against
+            // these. Effect: if pondered for ~soft, near-immediate emit;
+            // if pondered briefly, get most of soft post-ponderhit.
+            //
+            // tm_baseline = now (= elapsed-at-ponderhit) is retained
+            // SOLELY for floor measurement — the floor is a minimum
+            // post-ponderhit think time to protect mutual-ponderhit
+            // cycles at positive-inc TCs.
+            let floor = info.ponderhit_floor.load(std::sync::atomic::Ordering::Relaxed);
             info.tm_baseline = now;
-            info.soft_limit = soft_remaining;
-            info.hard_limit = hard_remaining;
+            info.soft_limit = ph_soft;
+            info.hard_limit = ph;
             info.soft_floor = floor;
         }
         let iter_start = std::time::Instant::now();
@@ -2294,17 +2301,20 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // positions but cannot exceed it.
             let scale = nodes_factor * stability_factor * score_factor * bmc_factor * forced_factor;
 
-            // Check if we should stop at the soft limit.
-            // Floor at soft_floor (≈ increment) so stability cuts in stable
-            // endgames can't produce clock-growing instant emits.
+            // SF-model (TM Phase 7): adjusted_soft is the FULL budget from
+            // search start. For non-ponder games tm_baseline=0, so elapsed
+            // == elapsed_since_ponderhit and behaviour matches Phase 6. For
+            // post-ponderhit, elapsed (from search start) includes ponder
+            // time — once elapsed >= adjusted_soft we've spent the budget
+            // (even if mostly during ponder). The post-ponderhit floor
+            // (`elapsed_since_ponderhit >= soft_floor`) protects the
+            // mutual-ponderhit cycle: even when ponder time has consumed
+            // the whole soft, we still spend at least floor (~half-inc)
+            // post-ponderhit before emitting.
             let adjusted_soft = (info.soft_limit as f64 * scale) as u64;
             let adjusted_soft = adjusted_soft.max(info.soft_floor).min(info.hard_limit);
-            // Subtract tm_baseline so soft is measured from the TM-start
-            // moment, not search start. tm_baseline is 0 for normal `go`
-            // (unchanged behaviour); set to elapsed-at-ponderhit when
-            // post-ponderhit dynamic TM arms above.
-            let elapsed_since_tm = elapsed.saturating_sub(info.tm_baseline);
-            if elapsed_since_tm >= adjusted_soft {
+            let elapsed_since_ponderhit = elapsed.saturating_sub(info.tm_baseline);
+            if elapsed >= adjusted_soft && elapsed_since_ponderhit >= info.soft_floor {
                 break;
             }
 
