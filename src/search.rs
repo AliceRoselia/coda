@@ -2369,16 +2369,29 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // verifiably worse. Tying time-spend to position-intrinsic
             // shape decorrelates adjacent-move spend (the autocorrelation
             // gap to top engines).
-            // Factor 6: Aspiration-fail-low threshold (Phase 9, 2026-05-23).
-            // Fires ONLY when accumulated asp_fl exceeds the threshold —
-            // empirical analysis (358-move 30+0.5 RR) showed asp_fl > 14
-            // identifies top-decile difficulty positions largely
-            // orthogonal to bmc. The cumulative count fires on 75% of
-            // moves so we MUST threshold to keep selectivity (else we'd
-            // just push every move toward hard_limit). Naive use of this
-            // signal in Phase 5h regressed; this thresholded version
-            // targets the same intent more carefully.
-            let asp_factor = if info.tm_asp_fail_low > tp(&TM_ASP_THRESHOLD) as u32 {
+            // Factor 6: Aspiration-fail-low threshold (Phase 9c, bmc-gated).
+            //
+            // Phase 9b (unconditional asp_fl threshold, SPRT #1468) measured
+            // ~0 Elo at defaults and SPSA tune #1474 found no detectable
+            // gradient over 284 LTC iterations — the unconditional form
+            // already sits at its local optimum, with the optimum at ~0.
+            //
+            // Signal correlation analysis (739 instrumented moves) showed
+            // that of asp_fl>=14 firings, 71% co-fire with bmc<3 (the
+            // genuine misallocation: TM reads "easy" via bmc but score is
+            // crashing) while 29% co-fire with bmc>=3 (positions bmc was
+            // already expanding via Factor 4). The unconditional Phase 9
+            // multiplier stacked on those 29%, plausibly overspending and
+            // washing out the gain on the 71%.
+            //
+            // Phase 9c gate: fire asp_factor ONLY when bmc is low (<3).
+            // Hits the gap class; doesn't double-boost positions bmc
+            // already handles. Threshold of 3 matches the data-derived
+            // split. If this lands, the 3 can be SPSA-tunable in a
+            // follow-up (non-core).
+            let asp_factor = if info.tm_asp_fail_low > tp(&TM_ASP_THRESHOLD) as u32
+                && info.tm_best_move_changes < 3
+            {
                 tp(&TM_ASP_MULT_10X) as f64 / 10.0
             } else {
                 1.0
