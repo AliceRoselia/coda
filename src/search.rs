@@ -1524,15 +1524,20 @@ pub fn compute_tm_budgets(
     // and try to spend more than the absolute cap.
     if soft > hard { soft = hard; }
 
-    // Soft floor: prevents instant-emit stockpile in stable endgames
-    // (lichess PZ7pCyrx) without crushing downward variance. Set at
-    // half the increment (overhead-adjusted) so dynamic stability cuts
-    // can take spend down to ~50% of inc, but no further. The old
-    // full-inc floor (`our_inc - overhead`) collapsed the variance band
-    // at high-inc TCs — 1m+5s was floored at 4.9s and capped near 5.4s,
-    // leaving no room for position-aware variance. Capped at hard.
-    // Zero when (inc - overhead) ≤ 1.
-    let soft_floor = (our_inc.saturating_sub(overhead) / 2).min(hard);
+    // Soft floor — Phase 8a (less aggressive than Phase 8). Capped at
+    // the smaller of (inc/3, soft/4) so the floor allows real low-tail
+    // emits while still preventing instant-emit stockpile. Phase 8 used
+    // inc/4 and soft/8 — too aggressive, caused engine to emit too soon
+    // on positions that needed more think (-173 Elo gap in 30+0.5 RR).
+    // Phase 8a is the modest version: smaller-than-Phase-6 floor
+    // (which was inc/2) but not as aggressive as Phase 8.
+    //
+    // Reference values at 60+1: inc/3 = 300ms; soft/4 = 800ms;
+    // floor = min(300, 800) = 300ms. At 1m+5s: inc/3 = 1633ms;
+    // soft/4 = 1600ms; floor = 1600ms.
+    let inc_third = our_inc.saturating_sub(overhead) / 3;
+    let soft_quarter = soft / 4;
+    let soft_floor = inc_third.min(soft_quarter).min(hard);
 
     (soft, hard, soft_floor)
 }
@@ -2268,7 +2273,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             //
             // tm_best_move_changes is the cumulative count of root best-move
             // flips between iterations since search start, reset at `go`.
-            let bmc_factor = (1.0 + info.tm_best_move_changes as f64 / 4.0).min(2.5);
+            // Phase 8a: cap raised 2.5 → 4.0 to widen the upper tail
+            // (top engines show 5-10× spread on tactical positions).
+            let bmc_factor = (1.0 + info.tm_best_move_changes as f64 / 4.0).min(4.0);
 
             // Factor 5: Forced-move downward boost (Viridithas pattern,
             // Phase 6 TM redesign). When the verification above has
