@@ -1524,15 +1524,24 @@ pub fn compute_tm_budgets(
     // and try to spend more than the absolute cap.
     if soft > hard { soft = hard; }
 
-    // Soft floor: prevents instant-emit stockpile in stable endgames
-    // (lichess PZ7pCyrx) without crushing downward variance. Set at
-    // half the increment (overhead-adjusted) so dynamic stability cuts
-    // can take spend down to ~50% of inc, but no further. The old
-    // full-inc floor (`our_inc - overhead`) collapsed the variance band
-    // at high-inc TCs — 1m+5s was floored at 4.9s and capped near 5.4s,
-    // leaving no room for position-aware variance. Capped at hard.
-    // Zero when (inc - overhead) ≤ 1.
-    let soft_floor = (our_inc.saturating_sub(overhead) / 2).min(hard);
+    // Soft floor — Phase 8 envelope widening. Cap at the SMALLER of
+    // (inc/4, soft/8) so the floor is loose enough to allow real
+    // near-zero emits on confident moves, while still preventing
+    // pathological instant-emit stockpile.
+    //
+    // Old (Phase 6): inc/2 — at high-inc TCs (1m+5s) this floored
+    //   spend at 2.45s with soft=6.4s, crushing the low tail.
+    // New (Phase 8): min(inc/4, soft/8) — at 1m+5s: min(1.225, 0.8) =
+    //   0.8s. Variance band widens to ~0.8–7.2s. At 60+0.6 (CCRL
+    //   Blitz): min(0.125, 0.36) = 0.125s. At 40+0.4 (LTC): min(75,
+    //   ~250) = 75ms. The soft/8 cap is what matters at high-inc; the
+    //   inc/4 cap is what matters at low-inc/no-inc.
+    //
+    // Net effect: the lower tail of the move-time distribution can
+    // now stretch to real near-zero territory matching top engines.
+    let inc_quarter = our_inc.saturating_sub(overhead) / 4;
+    let soft_eighth = soft / 8;
+    let soft_floor = inc_quarter.min(soft_eighth).min(hard);
 
     (soft, hard, soft_floor)
 }
@@ -2248,10 +2257,28 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 1.25  // early depths: use default multiplier
             };
 
-            // Factor 2: Best-move stability (Obsidian linear pattern)
-            // Each stable iteration reduces time by 8%
-            // 0 stable: 1.71x, 5 stable: 1.31x, 10 stable: 0.91x
-            let stability_factor = (1.71 - info.tm_best_stable as f64 * 0.08).max(0.5);
+            // Factor 2: Best-move stability — Phase 8 widening, table-lookup
+            // form converging in ~5 iterations to the lower bound.
+            // Old: linear 1.71 - 0.08*stab, hit floor 0.5 at stab=15
+            //      (effective range mostly 0.9-1.7 in typical games)
+            // New: hits 0.3x at stab=8 — much more decisive emit on stable
+            // positions, opens up the lower tail of the distribution that
+            // top engines have (lots of near-zero bars in late-game when
+            // the best move is locked in).
+            //
+            // Table indexed by tm_best_stable, clamped at high values:
+            //   stab=0: 1.80 (unstable, slight boost up)
+            //   stab=1: 1.40
+            //   stab=2: 1.10
+            //   stab=3: 0.90
+            //   stab=4: 0.70
+            //   stab=5: 0.55
+            //   stab=6: 0.45
+            //   stab=7: 0.37
+            //   stab=8+: 0.30 (confidently emit)
+            let stab = info.tm_best_stable.max(0).min(8) as usize;
+            let stab_table = [1.80, 1.40, 1.10, 0.90, 0.70, 0.55, 0.45, 0.37, 0.30];
+            let stability_factor = stab_table[stab];
 
             // Factor 3: Score trend (Obsidian pattern, simplified)
             // Dropping score → use more time. Rising score → slightly less.
@@ -2268,7 +2295,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             //
             // tm_best_move_changes is the cumulative count of root best-move
             // flips between iterations since search start, reset at `go`.
-            let bmc_factor = (1.0 + info.tm_best_move_changes as f64 / 4.0).min(2.5);
+            // Phase 8: cap raised 2.5 → 4.0 to widen the upper tail. Top
+            // engines show sharp spikes on tactical positions reaching
+            // 5-10x typical spend; our prior 2.5x cap (combined with hard-
+            // limit cap) was limiting how high we could spike.
+            let bmc_factor = (1.0 + info.tm_best_move_changes as f64 / 4.0).min(4.0);
 
             // Factor 5: Forced-move downward boost (Viridithas pattern,
             // Phase 6 TM redesign). When the verification above has
