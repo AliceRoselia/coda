@@ -2385,7 +2385,19 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // the next `go` command when compute_tm_budgets re-sets it to
             // info.hard_limit. So spike relief cannot cascade across moves
             // even if multiple consecutive moves have bmc>=3.
-            let spike_active = info.tm_best_move_changes >= 3
+            // FORFEIT-SAFETY GATE: disable cap-relief entirely at sudden-death
+            // no-inc TCs. Initial Phase 10f v1 with soft_limit>=300 alone
+            // produced 2 Coda forfeits in 89-game local 30+0 gauntlet — the
+            // 1.5× relief stacks with the already-tight hotfix cap and
+            // sustained relief drains the clock. At inc-bearing TCs the
+            // inc replaces spent time, so relief is safe.
+            //
+            // Coda's lichess deployment plays no-inc TCs (3+0, 60+0, 180+0);
+            // gating on !tm_no_inc preserves the hotfix's forfeit
+            // protection on deployment while still allowing cap-relief at
+            // SPRT TC (10+0.1) and inc-bearing tournament TCs (60+1 etc).
+            let spike_active = !info.tm_no_inc
+                && info.tm_best_move_changes >= 3
                 && depth >= 12
                 && info.soft_limit >= 300;
             let cap_relief_hard = if spike_active {
