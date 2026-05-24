@@ -568,6 +568,13 @@ pub struct SearchInfo {
     // Dynamic time management state
     tm_prev_best: Move,
     tm_prev_score: i32,
+    /// Two-window score memory (Phase 10e, 2026-05-24): score from TWO ID
+    /// iterations ago. Stockfish/Obsidian/Integral all use a second-window
+    /// reference so the score-drop factor responds to PERSISTENT drops
+    /// (visible in both 1-iter and 2-iter-back perspectives) more than to
+    /// single-iter noise blips. Updated by shift each iteration:
+    ///   prev_prev = prev (BEFORE we overwrite prev with current score)
+    tm_prev_prev_score: i32,
     tm_best_stable: i32,
     /// Cumulative count of root best-move changes between iterations,
     /// reset at search start. Drives a Reckless/Stockfish-style upward
@@ -584,6 +591,11 @@ pub struct SearchInfo {
     /// Coda was missing (every other signal is search-progress-derived).
     tm_forced_state: ForcedState,
     tm_has_data: bool,
+    /// True once `tm_prev_prev_score` holds a real prior-iter score (set
+    /// at the start of iteration 2 onward, after the first shift).
+    /// Without this gate, the initial 0 sentinel in tm_prev_prev_score
+    /// would generate false drop_pp signal at iter 1.
+    tm_has_two_iters: bool,
     soft_limit: u64,  // ms — can be extended/shortened dynamically
     hard_limit: u64,  // ms — absolute maximum
     /// Minimum think time per move: the increment we're about to gain, minus
@@ -688,8 +700,10 @@ impl SearchInfo {
             tm_best_move_changes: 0,
             tm_forced_state: ForcedState::None,
             tm_prev_score: 0,
+            tm_prev_prev_score: 0,
             tm_best_stable: 0,
             tm_has_data: false,
+            tm_has_two_iters: false,
             soft_limit: 0,
             hard_limit: 0,
             soft_floor: 0,
@@ -1717,6 +1731,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.pv_len = [0; MAX_PLY + 1];
     info.nodes = 0;
     info.tm_has_data = false;
+    info.tm_has_two_iters = false;
     info.tm_best_stable = 0;
     info.tm_best_move_changes = 0;
     info.tm_forced_state = ForcedState::None;
@@ -1846,9 +1861,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // Clear TM state
     info.tm_prev_best = NO_MOVE;
     info.tm_prev_score = 0;
+    info.tm_prev_prev_score = 0;
     info.tm_best_stable = 0;
     info.tm_best_move_changes = 0;
     info.tm_forced_state = ForcedState::None;
+    info.tm_has_two_iters = false;
     info.tm_has_data = false;
     // Reset per-root-move node counts
     for v in info.root_move_nodes.iter_mut() { *v = 0; }
@@ -1899,6 +1916,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.tm_no_inc = our_inc == 0 && limits.movestogo == 0;
         info.time_limit = hard; // search uses hard as absolute limit
         info.tm_has_data = false;
+        info.tm_has_two_iters = false;
         info.tm_best_stable = 0;
         info.tm_best_move_changes = 0;
     } else if !limits.infinite {
@@ -2188,11 +2206,35 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     info.tm_best_move_changes = info.tm_best_move_changes.saturating_add(1);
                 }
             }
-            let drop = if info.tm_has_data && !is_mate_score(prev_score) && !is_mate_score(info.tm_prev_score) {
+            // Primary window: drop from previous iteration (1-iter-back).
+            let drop_prev = if info.tm_has_data && !is_mate_score(prev_score) && !is_mate_score(info.tm_prev_score) {
                 info.tm_prev_score - prev_score
             } else {
                 0
             };
+            // Secondary window (Phase 10e, 2026-05-24): drop from 2 iterations
+            // back. Gated by tm_has_two_iters so the initial 0 sentinel in
+            // tm_prev_prev_score doesn't generate false signal. .max(0) makes
+            // it asymmetric — only ADDS extension when the longer window also
+            // shows a drop; never subtracts. The combined drop downweights
+            // single-iter noise blips (where only drop_prev fires) relative to
+            // sustained drops (where both windows agree). Top engines
+            // (Obsidian, Integral, Stockfish) all use a similar 2-window
+            // weighting; this matches their pattern with primary weight 1.0
+            // and secondary weight 0.5.
+            let drop_pp = if info.tm_has_two_iters && !is_mate_score(prev_score) && !is_mate_score(info.tm_prev_prev_score) {
+                (info.tm_prev_prev_score - prev_score).max(0)
+            } else {
+                0
+            };
+            let drop = drop_prev + drop_pp / 2;
+            // Shift for next iter: copy prev → prev_prev BEFORE overwriting
+            // prev_score. Only shift when prev held real data — otherwise
+            // prev_prev would inherit the initial 0 sentinel.
+            if info.tm_has_data {
+                info.tm_prev_prev_score = info.tm_prev_score;
+                info.tm_has_two_iters = true;
+            }
             info.tm_prev_best = best_move;
             info.tm_prev_score = prev_score;
             info.tm_has_data = true;
