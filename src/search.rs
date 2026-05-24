@@ -2362,11 +2362,46 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // positions but cannot exceed it.
             let scale = nodes_factor * stability_factor * score_factor * bmc_factor * forced_factor;
 
+            // Phase 10f (2026-05-24): conditional hard-cap relief on
+            // strong-signal moves.
+            //
+            // Phase 10a banked +11 Elo by widening bmc_factor's range, but
+            // local 30+0.3 measurements showed peak spends clamped at the
+            // post-hotfix hard cap (Coda p95 1.40s vs top engines 2.20s).
+            // The cap is the binding constraint preventing further variation
+            // upside. SF/Reckless/Obsidian achieve their 4-5× p95/p50 ratios
+            // partly via much wider hard-cap headroom relative to soft.
+            //
+            // Relax cap to 1.5× when ALL hold:
+            //   - bmc >= 3:  genuine root instability (not noise) — fires on
+            //                ~5-10% of moves per Phase C diagnostic data
+            //   - depth >= 12: not early-iter false positives
+            //   - soft_limit >= 300: not in emergency low-time mode (this is
+            //                the forfeit safety guarantee — at <300ms soft
+            //                we're in late-game time pressure and cap relief
+            //                would recreate the pre-hotfix forfeit pattern)
+            //
+            // Per-MOVE only: info.time_limit is bumped here, but reverts at
+            // the next `go` command when compute_tm_budgets re-sets it to
+            // info.hard_limit. So spike relief cannot cascade across moves
+            // even if multiple consecutive moves have bmc>=3.
+            let spike_active = info.tm_best_move_changes >= 3
+                && depth >= 12
+                && info.soft_limit >= 300;
+            let cap_relief_hard = if spike_active {
+                info.hard_limit * 3 / 2
+            } else {
+                info.hard_limit
+            };
+            // Bump time_limit so should_stop() honors the relaxed cap during
+            // this move's remaining search.
+            info.time_limit = cap_relief_hard;
+
             // Check if we should stop at the soft limit.
             // Floor at soft_floor (≈ increment) so stability cuts in stable
             // endgames can't produce clock-growing instant emits.
             let adjusted_soft = (info.soft_limit as f64 * scale) as u64;
-            let adjusted_soft = adjusted_soft.max(info.soft_floor).min(info.hard_limit);
+            let adjusted_soft = adjusted_soft.max(info.soft_floor).min(cap_relief_hard);
             // Subtract tm_baseline so soft is measured from the TM-start
             // moment, not search start. tm_baseline is 0 for normal `go`
             // (unchanged behaviour); set to elapsed-at-ponderhit when
