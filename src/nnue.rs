@@ -2962,6 +2962,18 @@ impl NNUENet {
                     hidden32[i] += simd512_l1_int8_dot_vnni(&ntm_pw[..pw], ntm_w, pw);
                 }
             }
+        } else if self.has_avx_vnni && !self.l1_weights_sparse.is_empty() && l1 == 32 && pw % 4 == 0 {
+            // L1=32 AVX-VNNI specialisation. Two accumulator quads
+            // (8 YMM accumulators) instead of the L1=16 path's four
+            // accumulator pairs (8 YMM total but 4-way unrolled).
+            // Drops to 2-way unroll to stay within 16-YMM budget;
+            // VPDPBUSD throughput at 2/cycle still hides latency.
+            unsafe {
+                crate::sparse_l1::dense_l1_avx_vnni_l1_32(
+                    &stm_pw, &ntm_pw, pw, &self.l1_weights_sparse,
+                    &self.l1_biases[l1_off..], pw_scale, &mut hidden32,
+                );
+            }
         } else if self.has_avx_vnni && !self.l1_weights_sparse.is_empty() && l1 <= 16 && pw % 4 == 0 {
             // AVX-VNNI (YMM VPDPBUSD) — Alder Lake+, Zen 4+ without full AVX-512.
             unsafe {
@@ -3084,6 +3096,7 @@ impl NNUENet {
         #[cfg(target_arch = "x86_64")]
         if !(self.has_avx512_vnni && !self.l1_weights_sparse.is_empty() && l1 == 16 && pw % 4 == 0)
             && !(self.has_avx512_vnni && pw % 64 == 0 && !self.l1_weights_8t.is_empty())
+            && !(self.has_avx_vnni && !self.l1_weights_sparse.is_empty() && l1 == 32 && pw % 4 == 0)
             && !(self.has_avx_vnni && !self.l1_weights_sparse.is_empty() && l1 <= 16 && pw % 4 == 0)
             && !(self.has_avx512 && pw % 64 == 0 && !self.l1_weights_8t.is_empty())
             && !(self.has_avx2 && !self.l1_weights_sparse.is_empty() && l1 == 32 && pw % 4 == 0)
