@@ -607,6 +607,21 @@ pub struct SearchInfo {
     /// Coda was missing (every other signal is search-progress-derived).
     tm_forced_state: ForcedState,
     tm_has_data: bool,
+    /// Phase 10g (2026-05-25): game-elapsed pacing governor state.
+    ///
+    /// Tracks per-game cumulative clock consumption to detect when we're
+    /// "ahead of pace" (using clock too fast) and scale soft/hard down
+    /// accordingly. Addresses lichess vs SF (ponder-enabled) pattern where
+    /// Coda burnt 9+ minutes in first 25 moves at 10+1, leaving 1:34 vs
+    /// SF's 9:40 for tactical endgame depth.
+    ///
+    /// Reset at fullmove==1. Updated each call to compute_tm_budgets path:
+    ///   spend = tm_prev_clock + inc - our_time   (time spent on last move)
+    ///   tm_cumulative_spend_ms += spend
+    ///   tm_prev_clock_ms = our_time
+    pub tm_initial_clock_ms: u64,
+    pub tm_cumulative_spend_ms: u64,
+    pub tm_prev_clock_ms: u64,
     soft_limit: u64,  // ms — can be extended/shortened dynamically
     hard_limit: u64,  // ms — absolute maximum
     /// Minimum think time per move: the increment we're about to gain, minus
@@ -715,6 +730,9 @@ impl SearchInfo {
             tm_asp_fail_low: 0,
             tm_asp_fail_high: 0,
             tm_has_data: false,
+            tm_initial_clock_ms: 0,
+            tm_cumulative_spend_ms: 0,
+            tm_prev_clock_ms: 0,
             soft_limit: 0,
             hard_limit: 0,
             soft_floor: 0,
@@ -1922,13 +1940,79 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // it at 0 so they get exactly the movetime they asked for).
         info.soft_floor = limits.movetime_floor.min(limits.movetime);
     } else if our_time > 0 {
+        // Phase 10g (2026-05-25): game-elapsed pacing state update.
+        //
+        // Detect game start: tm_initial_clock_ms == 0 means either fresh
+        // engine or post-ucinewgame reset (uci.rs zeroes these). Use first
+        // call as the anchor. Subsequent calls compute spend on the previous
+        // move via the clock delta + inc credit.
+        //
+        // Edge case: if engine is started mid-game (e.g. position with
+        // moves played already), the first observed clock won't reflect
+        // initial-clock semantics, but the formula still self-consistently
+        // tracks spend from THAT point forward — pace governor just sees
+        // "no spend so far" until enough data accumulates. Mildly under-
+        // governs in this case (acceptable).
+        if info.tm_initial_clock_ms == 0 {
+            info.tm_initial_clock_ms = our_time;
+            info.tm_cumulative_spend_ms = 0;
+            info.tm_prev_clock_ms = our_time;
+        } else {
+            let spend_last = info.tm_prev_clock_ms
+                .saturating_add(our_inc)
+                .saturating_sub(our_time);
+            info.tm_cumulative_spend_ms = info.tm_cumulative_spend_ms
+                .saturating_add(spend_last);
+            info.tm_prev_clock_ms = our_time;
+        }
+
         let (soft, hard, soft_floor) =
             compute_tm_budgets(our_time, our_inc, limits.movestogo, info.move_overhead, board.fullmove);
-        info.soft_limit = soft;
-        info.hard_limit = hard;
-        info.soft_floor = soft_floor;
+
+        // Phase 10g pace governor: scale soft (and hard) DOWN if we've
+        // burnt clock faster than a steady-pace target. Never scales UP.
+        //
+        // Target: expected_total_moves=60 (heuristic for game length).
+        // pace_ratio_target = fullmove / expected_total_moves
+        // pace_ratio_actual = cumulative_spend / total_budget_so_far
+        //
+        // When actual > target, we're ahead of pace. Apply
+        //   pace_factor = max(0.5, target/actual)
+        // Floor at 0.5 prevents extreme cuts that would block essential
+        // thinking on critical moves.
+        //
+        // Only applies once we have enough game history to be meaningful
+        // (skip for first few moves where the ratio is noisy).
+        const EXPECTED_TOTAL_MOVES: u64 = 60;
+        const PACE_FACTOR_FLOOR: f64 = 0.5;
+        const PACE_MIN_MOVE: u16 = 6;  // skip first 5 moves
+        let pace_factor: f64 = if board.fullmove >= PACE_MIN_MOVE && info.tm_initial_clock_ms > 0 {
+            let pace_target = board.fullmove as f64 / EXPECTED_TOTAL_MOVES as f64;
+            // Total budget we've HAD access to so far = initial_clock + sum of inc
+            // we've received. For our side (white plays move N at fullmove N;
+            // black plays at fullmove N), we've received roughly (fullmove-1)
+            // inc credits by the time we're called at fullmove N.
+            let total_budget = info.tm_initial_clock_ms
+                + (board.fullmove.saturating_sub(1) as u64) * our_inc;
+            if total_budget > 0 {
+                let actual_spent = info.tm_cumulative_spend_ms as f64 / total_budget as f64;
+                if actual_spent > pace_target {
+                    (pace_target / actual_spent).max(PACE_FACTOR_FLOOR)
+                } else {
+                    1.0
+                }
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        };
+
+        info.soft_limit = ((soft as f64) * pace_factor) as u64;
+        info.hard_limit = ((hard as f64) * pace_factor) as u64;
+        info.soft_floor = soft_floor;  // floor is not scaled — minimum-think guard
         info.tm_no_inc = our_inc == 0 && limits.movestogo == 0;
-        info.time_limit = hard; // search uses hard as absolute limit
+        info.time_limit = info.hard_limit; // search uses hard as absolute limit
         info.tm_has_data = false;
         info.tm_best_stable = 0;
         info.tm_best_move_changes = 0;

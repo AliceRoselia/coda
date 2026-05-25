@@ -192,6 +192,12 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 info.clear_correction_history();
                 info.clear_pawn_hist(); // was missing — stale data leaked between games
                 if let Some(acc) = &mut info.nnue_acc { acc.reset(); }
+                // Phase 10g (2026-05-25): reset game-elapsed pacing state at
+                // ucinewgame so the governor starts from a clean slate every
+                // game.
+                info.tm_initial_clock_ms = 0;
+                info.tm_cumulative_spend_ms = 0;
+                info.tm_prev_clock_ms = 0;
                 // Clear Syzygy probe cache on new game (prevents stale entries
                 // from a prior game leaking into the new one's search).
                 if let Some(ref tb) = syzygy { tb.clear_cache(); }
