@@ -2436,10 +2436,28 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // factor-product climb this clip blocks. Starting at 0.5
             // (between Alexandria's tight clip and a generous upper bound);
             // SPSA-tunable later if H1.
-            const SOFT_VS_HARD_RATIO_NUM: u64 = 1;
-            const SOFT_VS_HARD_RATIO_DEN: u64 = 2;  // 0.5
-            let max_adjusted = info.hard_limit
-                .saturating_mul(SOFT_VS_HARD_RATIO_NUM) / SOFT_VS_HARD_RATIO_DEN;
+            // Phase 12 (2026-05-26): scale-gated cap relaxation.
+            //
+            // Diagnostic with TM_DIAG instrumentation on a 2+1 ponder game
+            // showed 65% of TM iterations clamped to the Phase 10h `hard×0.5`
+            // cap, blocking moves where the search produced scale=4-11× via
+            // legitimate signals (asp fail-low events, bmc>0, low stability).
+            // The cap was protecting against routine overspend (Phase 10h's
+            // intent) but ALSO blocking justified tactical thinking — exactly
+            // the moves where extending matters most.
+            //
+            // Phase 12 keeps the tight 0.5 cap when scale is moderate (≤2.5,
+            // covers routine middlegame where Phase 10h's protection is
+            // relevant) but relaxes to 0.8 when scale crosses 2.5 (factors
+            // are saying "this needs real thought"). The factors themselves
+            // are the criticality signal — no separate gate.
+            //
+            // Asymmetry by design: when TM wants LESS (scale<1), there's no
+            // cap interaction at all. When TM wants MORE, this widens the
+            // ceiling — reverses the current pattern where the cap blocks
+            // hard moves but lets easy moves emit at their natural value.
+            let cap_pct: u64 = if scale >= 2.5 { 80 } else { 50 };
+            let max_adjusted = info.hard_limit * cap_pct / 100;
             let adjusted_soft = (info.soft_limit as f64 * scale) as u64;
             let adjusted_soft = adjusted_soft.max(info.soft_floor).min(max_adjusted);
             // Subtract tm_baseline so soft is measured from the TM-start
