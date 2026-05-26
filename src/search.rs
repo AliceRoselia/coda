@@ -3920,7 +3920,12 @@ fn negamax(
                 //   score <= alpha: re-search confirmed move bad  → -malus
                 //   else (alpha < score < beta): PVS decides; no nudge here.
                 // Adds signal density beyond beta-cutoff updates. Quiet moves only.
-                if !is_cap && moved_piece != NO_PIECE {
+                //
+                // Audit 2026-05-23: re-search above can set info.stop mid-flight;
+                // lmr_score becomes a partial-tree value. Nudging cont-hist on
+                // that pollutes ordering across the rest of the game. Mirror the
+                // PVS-research gate below — skip nudge if stop fired.
+                if !is_cap && moved_piece != NO_PIECE && !info.stop.load(Ordering::Relaxed) {
                     let nudge_depth = (new_depth - 1).max(1);
                     let nudge_bonus = if lmr_score >= beta {
                         history_bonus(nudge_depth)
