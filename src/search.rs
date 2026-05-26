@@ -3459,7 +3459,12 @@ fn negamax(
             // Findings drive the next experiments; see
             // docs/history_prune_cont_hist_review_2026-05-08.md.
             info.stats.hist_prune_eligible += 1;
-            let threshold = tp(&HIST_PRUNE_MULT) * depth as i32;
+            // Threshold uses lmr_d (matching the gate at line 3428). The
+            // 2026-05-14 audit moved the GATE from `depth` to `lmr_d` per
+            // SF/Obsidian/Reckless consensus but left the THRESHOLD on raw
+            // `depth` — at high depth with collapsed lmr_d the threshold
+            // becomes effectively unreachable. Aligning both sides.
+            let threshold = tp(&HIST_PRUNE_MULT) * lmr_d as i32;
             if threshold > 0 {
                 let ratio_x100 = (hist_prune_score * 100) / threshold;
                 let bucket = if ratio_x100 >= 100 { 0 }       // >= +1.0 (positive)
@@ -3552,7 +3557,8 @@ fn negamax(
                 }
             }
 
-            if hist_prune_score < -tp(&HIST_PRUNE_MULT) * depth as i32 {
+            // Threshold uses lmr_d (matches the gate); see comment above.
+            if hist_prune_score < -tp(&HIST_PRUNE_MULT) * lmr_d as i32 {
                 info.stats.history_prunes += 1;
                 // 2026-05-14 audit: Obsidian/Alexandria/Stormphrax/Halogen all
                 // use skipQuiets here — once a quiet is hist-pruned, all later
