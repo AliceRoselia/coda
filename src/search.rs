@@ -3831,9 +3831,19 @@ fn negamax(
                 // from NMP/ProbCut gates — tactical king positions need depth.
                 reduction -= king_zone_pressure * 10 / LMR_KING_PRESSURE_DIV_10X.load(Ordering::Relaxed).max(1);
 
-                // Clamp: never extend (negative), never reduce past depth 1
-                if reduction < 0 {
-                    reduction = 0;
+                // LMR mini-extension (Reckless pattern, search.rs:829-832):
+                // when adjusted reduction is strongly negative AND we're early
+                // in the move list, allow lmr_depth to extend by 1 over
+                // new_depth instead of clamping to 0. Signal interpretation:
+                // history+complexity+threats+king-pressure all pulling deeper
+                // → likely tactical, worth a 1-ply look.
+                let lmr_ext = reduction <= -2 && move_count <= 3;
+
+                // Clamp: floor at -1 if mini-ext fires (lmr_depth = new+1),
+                // else 0; never reduce past depth 1.
+                let floor = if lmr_ext { -1 } else { 0 };
+                if reduction < floor {
+                    reduction = floor;
                 }
                 if reduction > new_depth - 1 {
                     reduction = new_depth - 1;
@@ -3887,15 +3897,18 @@ fn negamax(
         // Track nodes per root move for node-based time management
         let nodes_before = if ply == 0 { info.nodes } else { 0 };
 
-        if reduction > 0 {
+        if reduction != 0 {
             info.stats.lmr_searches += 1;
 
-            // LMR: reduced depth, zero window
+            // LMR: reduced depth (reduction>0) OR mini-extended (-1) zero window.
+            // lmr_depth = new_depth - reduction → new_depth+1 when reduction=-1.
             let lmr_depth = new_depth - reduction;
             let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
 
-            if lmr_score > alpha && !info.stop.load(Ordering::Relaxed) {
+            if reduction > 0 && lmr_score > alpha && !info.stop.load(Ordering::Relaxed) {
                 // LMR failed high: doDeeper/doShallower before re-search.
+                // Only fires for true reductions; mini-extensions (reduction<0)
+                // already searched at extended depth so no further re-search.
                 //
                 // Audit SPECULATIVE fix (v2 retry): `new_depth` (integer depth
                 // 5-20) was used as a cp margin — near-certain typo. #673 at
