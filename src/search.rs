@@ -622,6 +622,11 @@ pub struct SearchInfo {
     /// the forced-move detector at our SPRT TC, costing ~3 Elo at STC for
     /// reasons orthogonal to the lichess no-inc fix.
     tm_no_inc: bool,
+    /// Phase 11 (2026-05-26): legal move count at root, used as a cheap
+    /// proactive complexity signal. Distinguishes tactical positions (high
+    /// branching) from quiet endgames (low branching) BEFORE the search
+    /// produces stability/bmc signals. Snapshot taken at search start.
+    tm_root_legal: u32,
     /// Per-root-move node counts for node-based time management.
     /// Indexed by from_sq * 64 + to_sq. Reset each search.
     root_move_nodes: Box<[u64; 4096]>,
@@ -719,6 +724,7 @@ impl SearchInfo {
             hard_limit: 0,
             soft_floor: 0,
             tm_no_inc: false,
+            tm_root_legal: 0,
             root_move_nodes: alloc_zeroed_box(),
             ponderhit_time: std::sync::Arc::new(AtomicU64::new(0)),
             ponderhit_soft: std::sync::Arc::new(AtomicU64::new(0)),
@@ -1964,6 +1970,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     if root_legal.len > 0 {
         best_move = root_legal.get(0);
     }
+    // Phase 11: snapshot legal count for TM complexity factor. Cheap signal
+    // distinguishing tactical (high branching) from quiet (low branching)
+    // positions BEFORE search produces stability/bmc.
+    info.tm_root_legal = root_legal.len as u32;
 
     // Forced move: only one legal move, skip full search (just return it quickly).
     // Still search to depth 1 for a score to display, but cap time at 10ms.
@@ -2413,11 +2423,48 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 ForcedState::None   => 1.0,
             };
 
-            // Combined: all five factors multiply against the soft limit.
+            // Phase 11 (2026-05-26): proactive complexity factor from legal-move
+            // count at root. Top engines vary spend by ~3-5× between tactical
+            // and quiet positions (Q4/Q1 ratio); Coda was at 1.33× because all
+            // TM signals are REACTIVE (bmc/asp_fl/stability only fire after
+            // the search expresses surprise). Result: 35% of moves concentrate
+            // in a single 100ms bin (per lichess analysis of g1Q9t1lP-class
+            // games) — TM produces a deterministic `scale × soft` value with
+            // no position-dependent variation.
+            //
+            // Legal-move count at root is a cheap, continuous, position-
+            // dependent signal: quiet endgames ~15-25, normal middlegame
+            // ~30-40, rich tactical ~50-80+. Square-root scaling smooths the
+            // factor across the range and prevents runaway at extreme values.
+            // Centred at 35 (≈ middlegame baseline) so quiet positions emit
+            // slightly faster and tactical positions emit slightly longer.
+            //
+            // Formula:  factor = sqrt(legal / 35), clamped [0.70, 1.40]
+            //   legal=15  → 0.65 → clamped 0.70 (very quiet endgame, slight cut)
+            //   legal=25  → 0.85                (endgame)
+            //   legal=35  → 1.00                (baseline middlegame)
+            //   legal=50  → 1.20                (active middlegame)
+            //   legal=70  → 1.41 → clamped 1.40 (rich tactical)
+            //
+            // Local 2+1 ponder RR (240 games, 2026-05-26): +12 ±38 Elo over
+            // Coda.main. Distributions essentially identical — gain comes
+            // from BETTER MOVE CHOICE through complexity-aware allocation,
+            // not from changing aggregate distribution shape. v2 with wider
+            // [0.50, 2.0] clamp tested at -40 Elo regression at 131 games:
+            // the gentler range is necessary for the multiplicative product
+            // to stay sane. SPSA-tunable in a focused follow-up.
+            let complexity_factor = if info.tm_root_legal > 0 {
+                let raw = (info.tm_root_legal as f64 / 35.0).sqrt();
+                raw.clamp(0.70, 1.40)
+            } else {
+                1.0
+            };
+
+            // Combined: all six factors multiply against the soft limit.
             // adjusted_soft is downstream-clamped to hard_limit, so this
             // factor pushes us toward the existing hard cap on tactical
             // positions but cannot exceed it.
-            let scale = nodes_factor * stability_factor * score_factor * bmc_factor * forced_factor * asp_factor;
+            let scale = nodes_factor * stability_factor * score_factor * bmc_factor * forced_factor * asp_factor * complexity_factor;
 
             // Check if we should stop at the soft limit.
             // Floor at soft_floor (≈ increment) so stability cuts in stable
