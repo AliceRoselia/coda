@@ -2927,7 +2927,12 @@ fn negamax(
     // reduction. When parent reduced aggressively (>=3) but the combined
     // eval shows position has worsened (eval_sum <= 0), extend +1 ply to
     // find the threat we missed. Non-PV only (PV already searched fully).
-    if !in_check && ply >= 1 && ply_u >= 1
+    //
+    // Same `depth >= tp10(&HINDSIGHT_MIN_DEPTH_10X)` gate as the reduction
+    // above. Stormphrax gates the extension on depth too; Coda was
+    // asymmetric (audit 2026-05-23). At low depth the extension fires
+    // toward QS uselessly, burning nodes.
+    if !in_check && ply >= 1 && depth >= tp10(&HINDSIGHT_MIN_DEPTH_10X) && ply_u >= 1
         && !is_pv
         && prior_reduction >= 3
         && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
