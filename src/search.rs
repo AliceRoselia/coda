@@ -1601,23 +1601,23 @@ pub fn compute_tm_budgets(
     // at high-inc TCs — 1m+5s was floored at 4.9s and capped near 5.4s,
     // leaving no room for position-aware variance. Capped at hard.
     // Zero when (inc - overhead) ≤ 1.
-    // Phase 14 hotfix (2026-05-27): make soft_floor robust to high MoveOverhead.
+    // Phase 14 v2 hotfix (2026-05-27): make soft_floor robust to high
+    // MoveOverhead, but ONLY at inc >= 500ms (lichess deployment TCs).
     //
-    // Lichess-bot deployments commonly set MoveOverhead = 500-1500ms for
-    // network latency. At inc=1000, overhead=1000 the old `(inc-overhead)/2`
-    // gave soft_floor=0 — the stockpile-sleep gate (post-loop) became a
-    // no-op, allowing the PZ7pCyrx-style instant-emit pathology on ponder-
-    // heavy games. Observed in lichess B60rejK6 (10+1, m83-87 emitted at
-    // 0.00-0.12s) and e7WYaPIC (60+10, m42-47 at 0.00-0.32s) — both led
-    // to blunders.
+    // v1 applied max(50) unconditionally at our_inc > 0. SPRT #1569 H0'd
+    // at -35 Elo because at STC 10+0.1 (inc=100, overhead=100) the old
+    // formula gave 0 — a deliberate "no floor on bullet" behavior — while
+    // v1 introduced a 50ms floor. ~20% of moves are TT-cached <50ms; the
+    // added forced sleep cost ~800ms / 10s STC budget = the regression.
     //
-    // Fix: when inc > 0, enforce a minimum meaningful floor of 50ms even
-    // when overhead consumes the inc. Preserves no_inc=0 behavior.
-    let soft_floor = if our_inc > 0 {
+    // v2: only enforce the 50ms minimum at "real" time controls where
+    // lichess deployment has its high-MoveOverhead bug. Bullet STC keeps
+    // the original (possibly-zero) floor.
+    let soft_floor = if our_inc >= 500 {
         let raw = our_inc.saturating_sub(overhead) / 2;
         raw.max(50).min(hard)
     } else {
-        0
+        (our_inc.saturating_sub(overhead) / 2).min(hard)
     };
 
     (soft, hard, soft_floor)
