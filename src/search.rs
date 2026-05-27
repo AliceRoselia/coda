@@ -1601,7 +1601,24 @@ pub fn compute_tm_budgets(
     // at high-inc TCs — 1m+5s was floored at 4.9s and capped near 5.4s,
     // leaving no room for position-aware variance. Capped at hard.
     // Zero when (inc - overhead) ≤ 1.
-    let soft_floor = (our_inc.saturating_sub(overhead) / 2).min(hard);
+    // Phase 14 hotfix (2026-05-27): make soft_floor robust to high MoveOverhead.
+    //
+    // Lichess-bot deployments commonly set MoveOverhead = 500-1500ms for
+    // network latency. At inc=1000, overhead=1000 the old `(inc-overhead)/2`
+    // gave soft_floor=0 — the stockpile-sleep gate (post-loop) became a
+    // no-op, allowing the PZ7pCyrx-style instant-emit pathology on ponder-
+    // heavy games. Observed in lichess B60rejK6 (10+1, m83-87 emitted at
+    // 0.00-0.12s) and e7WYaPIC (60+10, m42-47 at 0.00-0.32s) — both led
+    // to blunders.
+    //
+    // Fix: when inc > 0, enforce a minimum meaningful floor of 50ms even
+    // when overhead consumes the inc. Preserves no_inc=0 behavior.
+    let soft_floor = if our_inc > 0 {
+        let raw = our_inc.saturating_sub(overhead) / 2;
+        raw.max(50).min(hard)
+    } else {
+        0
+    };
 
     (soft, hard, soft_floor)
 }

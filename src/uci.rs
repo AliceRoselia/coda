@@ -406,7 +406,18 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 } else {
                                     limits.binc
                                 };
-                                let floor = our_inc.saturating_sub(si.move_overhead);
+                                // Phase 14 hotfix (2026-05-27): robust to high MoveOverhead.
+                                // Lichess-bot deployments set MoveOverhead=500-1500ms for
+                                // network latency; with inc=1000 and overhead=1000 the old
+                                // `inc - overhead` gave floor=0, removing the post-ponderhit
+                                // minimum think time. Observed in lichess B60rejK6 / e7WYaPIC
+                                // as 0-think emits that led to blunders. Always enforce 50ms
+                                // minimum when inc > 0.
+                                let floor = if our_inc > 0 {
+                                    our_inc.saturating_sub(si.move_overhead).max(50)
+                                } else {
+                                    0
+                                };
                                 let fresh_limits = SearchLimits {
                                     infinite: false,
                                     movetime: remaining,
