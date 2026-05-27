@@ -381,18 +381,18 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         // — just as extra depth rather than instant emit.
                         let mut fresh_elapsed = std::time::Duration::ZERO;
                         if is_ponder_search && !ext_stop.load(std::sync::atomic::Ordering::Relaxed) {
-                            // Phase 14 v3 (2026-05-27): use the SOFT deadline (ponderhit_soft),
-                            // not the HARD deadline (ponderhit_time), for fresh-search budget.
-                            // ponderhit_soft = elapsed_at_ponderhit + post_min, where post_min
-                            // = max(MIN_POST, soft - elapsed). So fresh_movetime accounts for
-                            // ponder time already spent — short ponder → think more, long
-                            // ponder → think briefly to refresh.
+                            let our_inc = if search_board.side_to_move == crate::types::WHITE {
+                                limits.winc
+                            } else {
+                                limits.binc
+                            };
+                            // Phase 14 v4: at deployment TCs (inc>=500), use the soft
+                            // deadline (= ponder-aware post_min). At STC, fall back to
+                            // hard deadline + inc-overhead floor (original behavior).
                             let ph_soft_deadline = si.ponderhit_soft.load(std::sync::atomic::Ordering::Relaxed);
                             let ph_hard_deadline = si.ponderhit_time.load(std::sync::atomic::Ordering::Relaxed);
                             let now_elapsed = go_received.elapsed().as_millis() as u64;
-                            // Use the SOFT deadline as the target. Fall back to hard if soft
-                            // wasn't set (edge cases).
-                            let target_deadline = if ph_soft_deadline > 0 {
+                            let target_deadline = if our_inc >= 500 && ph_soft_deadline > 0 {
                                 ph_soft_deadline
                             } else {
                                 ph_hard_deadline
@@ -403,13 +403,17 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                                 si.ponderhit_time.store(0, std::sync::atomic::Ordering::Relaxed);
                                 si.ponderhit_soft.store(0, std::sync::atomic::Ordering::Relaxed);
                                 si.ponderhit_floor.store(0, std::sync::atomic::Ordering::Relaxed);
-                                // Movetime path (not full TM): we already computed the
-                                // ponder-aware target via post_min in the ponderhit handler.
-                                // Use it directly as both movetime and floor.
+                                let movetime_floor_val = if our_inc >= 500 {
+                                    // Deployment: full remaining as floor (ponder-aware target)
+                                    remaining
+                                } else {
+                                    // STC: original inc-overhead floor
+                                    our_inc.saturating_sub(si.move_overhead)
+                                };
                                 let fresh_limits = SearchLimits {
                                     infinite: false,
                                     movetime: remaining,
-                                    movetime_floor: remaining,  // same — enforce full target
+                                    movetime_floor: movetime_floor_val,
                                     ..SearchLimits::new()
                                 };
                                 let fresh_start = std::time::Instant::now();
@@ -597,37 +601,31 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             external_stop.store(true, Ordering::Relaxed);
                             stop_flag.store(true, Ordering::Relaxed);
                         } else {
-                            // Phase 14 v3 (2026-05-27): post-ponderhit budget accounts
-                            // for ponder time. The old formula `elapsed + soft` made
-                            // post-ponderhit search target = soft REGARDLESS of how
-                            // long we already pondered (total = ponder + soft). The
-                            // user-described "ponderhit cycle of death" was the
-                            // converse: short ponder + instant emit + clock-grow.
+                            // Phase 14 v4 (2026-05-27): ponder-aware budget gated to
+                            // deployment TCs (inc >= 500ms). STC bullet keeps the
+                            // original `elapsed + soft` total-budget pattern — v3's
+                            // unconditional change SPRT'd at -8 Elo because at STC
+                            // (inc=100, ~50% ponder-hit rate, 80 moves) the 50ms
+                            // forced floor compressed ~32% of the clock budget.
                             //
-                            // New: total search time across ponder + post-ponderhit
-                            // = max(soft, elapsed + MIN_POST). If ponder already met
-                            // the soft budget, we still do MIN_POST fresh search to
-                            // re-validate from a refreshed TT, then emit. If ponder
-                            // was brief, we think for `soft - elapsed` more.
-                            //
-                            // Similarly the floor is the post-ponderhit minimum: at
-                            // least MIN_POST, but as much as `soft - elapsed` to hit
-                            // the total target.
+                            // Deployment (lichess inc>=500ms): apply ponder-aware
+                            // total budget so total spend = soft (across ponder +
+                            // post). Fixes ponderhit cycle-of-death (B60rejK6,
+                            // e7WYaPIC). STC: preserve existing behavior.
                             const MIN_POST_PONDERHIT_MS: u64 = 50;
-                            let post_min = soft.saturating_sub(elapsed).max(MIN_POST_PONDERHIT_MS);
-                            let post_min = post_min.min(hard.max(10));
-                            // Total search budget = elapsed (ponder time so far) + post_min.
-                            // This is what we'll spend overall from search start.
-                            let deadline = elapsed + hard.max(10);
-                            let soft_deadline = elapsed + post_min;
-                            // floor passed to search.rs becomes the post-ponderhit
-                            // minimum think — already accounts for ponder credit.
-                            let _ = floor;  // discard the inc-overhead-based floor
+                            let (deadline, soft_deadline, store_floor) = if our_inc >= 500 {
+                                let post_min = soft.saturating_sub(elapsed).max(MIN_POST_PONDERHIT_MS);
+                                let post_min = post_min.min(hard.max(10));
+                                (elapsed + hard.max(10), elapsed + post_min, post_min)
+                            } else {
+                                // STC: original logic
+                                (elapsed + hard.max(10),
+                                 elapsed + soft.max(10).min(hard.max(10)),
+                                 floor)
+                            };
                             ponderhit_flag.store(deadline, Ordering::Relaxed);
                             ponderhit_soft_flag.store(soft_deadline, Ordering::Relaxed);
-                            // Floor enforced post-ponderhit = post_min (computed above).
-                            // search.rs reads ponderhit_floor and applies as info.soft_floor.
-                            ponderhit_floor_flag.store(post_min, Ordering::Relaxed);
+                            ponderhit_floor_flag.store(store_floor, Ordering::Relaxed);
                         }
                     } else if pl.movetime > 0 {
                         // C8 audit LIKELY #33: `go ponder movetime X` (no
