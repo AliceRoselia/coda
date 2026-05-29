@@ -410,14 +410,33 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                         } else {
                             limits.btime
                         };
+                        let our_inc_ms = if board.side_to_move == crate::types::WHITE {
+                            limits.winc
+                        } else {
+                            limits.binc
+                        };
+                        // Phase 14 v5 (2026-05-29): scale the pondermiss floor
+                        // with `opt` so on healthy-clock games where ponder ran
+                        // on the WRONG position, the fresh search has a
+                        // meaningful think budget (not just 200ms which yields
+                        // ~depth 5 on a fast host — wej9jERO / 0aqvUj3w /
+                        // 6i0oofdE / japBj4f9 pattern). Compute opt directly
+                        // via compute_tm_budgets so the heuristic matches
+                        // normal-move pacing.
+                        let (opt, _hard, _max, _floor_unused) = crate::search::compute_tm_budgets(
+                            our_time_ms, our_inc_ms, limits.movestogo, info.move_overhead,
+                            board.fullmove);
                         const MIN_POST_PONDERMISS_MS: u64 = 200;
                         // 2% of clock OR 20ms, whichever is larger
                         let safety_cap = (our_time_ms / 50).max(20);
-                        let floor = MIN_POST_PONDERMISS_MS.min(safety_cap);
+                        // Target = max(MIN, opt/2). Capped at safety so a
+                        // time-pressure endgame can't burn the clock.
+                        let target = MIN_POST_PONDERMISS_MS.max(opt / 2);
+                        let floor = target.min(safety_cap);
                         limits.min_think_ms = floor;
                         eprintln!(
-                            "PONDER_MISS_FLOOR applied floor={}ms our_time={}ms cap={}ms",
-                            floor, our_time_ms, safety_cap);
+                            "PONDER_MISS_FLOOR applied floor={}ms opt={}ms our_time={}ms cap={}ms",
+                            floor, opt, our_time_ms, safety_cap);
                     }
                     pondermiss_pending = false; // consumed
                 }
@@ -737,9 +756,25 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                             // (inc<500ms) preserve original `elapsed + soft` total.
                             // At deployment: post=max(50, soft-elapsed) ensures total
                             // ~= soft target (across ponder + post-ponderhit).
+                            //
+                            // Phase 14 v5 (2026-05-29): scale the post-ponderhit
+                            // floor with `opt` so that on healthy-clock games
+                            // where ponder ate the entire soft budget, Coda
+                            // still gets a meaningful fresh-think window post-
+                            // ponderhit. Lichess endgame ponder-cycle bug:
+                            // jap4Bj4f9 m108, 0aqvUj3w m88, 6i0oofdE m63 —
+                            // Coda's clock GROWS over 5-10+ moves (spends
+                            // 40-300ms each) emitting ponder-hit results from
+                            // shallow analysis until one move causes a 3-fold
+                            // repetition or other tactic that needs depth ≥6
+                            // to see. With 1-2s of opt budget the engine was
+                            // emitting at ≤50ms; scaled floor (opt/2) forces
+                            // ~1s+ think on each ponder-hit so the engine
+                            // catches the repetition trap.
                             const MIN_POST_PONDERHIT_MS: u64 = 50;
+                            let opt_half_floor = (soft / 2).max(MIN_POST_PONDERHIT_MS);
                             let (deadline, soft_deadline, store_floor) = if our_inc >= 500 {
-                                let post_min = soft.saturating_sub(elapsed).max(MIN_POST_PONDERHIT_MS);
+                                let post_min = soft.saturating_sub(elapsed).max(opt_half_floor);
                                 let post_min = post_min.min(hard.max(10));
                                 (elapsed + hard.max(10), elapsed + post_min, post_min)
                             } else {
