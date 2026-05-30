@@ -2386,6 +2386,19 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 multiplier = multiplier.min(2.5);
             }
 
+            // Won-endgame conversion guard (2026-05-30): when clearly winning,
+            // do NOT bank below the full soft budget. The stability multiplier
+            // collapses to ~0.75x on a stable winning eval, so Coda was spending
+            // ~the increment in won endgames (150-game lichess sweep: 100% of
+            // blunders in endgames, clock GROWING, ~89ms/move on a 10s clock) and
+            // lacked the depth to find conversion technique → threw won games to
+            // draws. Flooring the multiplier at 1.0 when winning makes Coda spend
+            // at least its soft budget to convert, without touching the
+            // legitimate banking on equal/unclear positions.
+            if !is_mate_score(prev_score) && prev_score >= 300 {
+                multiplier = multiplier.max(1.0);
+            }
+
             // Phase 13: adjusted_soft = soft × multiplier, clamped to max_time
             // (the ONLY cap — no separate hard×0.5). Viridithas pattern.
             let adjusted_soft_raw = (info.soft_limit as f64 * multiplier) as u64;
