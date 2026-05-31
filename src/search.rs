@@ -872,7 +872,19 @@ impl SearchInfo {
         if self.stop.load(Ordering::Relaxed) {
             return true;
         }
-        if self.max_nodes > 0 && self.nodes >= self.max_nodes {
+        // Node-limit check uses the shared global counter so multi-threaded
+        // `go nodes N` doesn't multiply by thread count. global_nodes is
+        // updated by every thread via fetch_add(4096) at 4096-aligned ticks
+        // (see lines below), so its grain is 4096 per thread but its
+        // ceiling reflects the aggregate. Falls back to per-thread
+        // self.nodes for single-thread precision when global hasn't yet
+        // flushed (self.nodes catches the limit between flush points).
+        // 2026-05-31 audit: previously checked self.nodes (per-thread) so
+        // helpers' work didn't count and N-thread overshoot was ~N×.
+        if self.max_nodes > 0
+            && (self.global_nodes.load(Ordering::Relaxed) >= self.max_nodes
+                || self.nodes >= self.max_nodes)
+        {
             return true;
         }
         // Flush local node count to global counter every 4096 nodes
@@ -1591,6 +1603,10 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
     // before the search thread starts).
     info.global_nodes.store(0, Ordering::Relaxed); // Reset before helpers start
 
+    // Capture for helper move-closures: each helper inherits main's
+    // max_nodes so should_stop's global_nodes check fires on every thread.
+    let helper_max_nodes = limits.nodes;
+
     // Spawn helper threads
     let mut handles = Vec::new();
     for thread_id in 1..threads {
@@ -1626,6 +1642,12 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
                 helper.hard_limit = 0;
                 helper.soft_floor = 0;
                 helper.max_depth = helper_limits.depth;
+                // Inherit max_nodes so helpers also enforce `go nodes N` via
+                // should_stop's global_nodes check. Without this, only main
+                // observes the limit and helpers continue until main
+                // broadcasts info.stop — overshoot was ~N× the limit.
+                // 2026-05-31 audit.
+                helper.max_nodes = helper_max_nodes;
 
                 let mv = search_helper(&mut helper_board, &mut helper, &helper_limits, thread_id);
                 // Return (nodes, best_move, score, depth) for vote aggregation
