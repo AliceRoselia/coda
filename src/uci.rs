@@ -902,9 +902,10 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                     match info.load_nnue(tokens[1]) {
                         Ok(_) => println!("info string NNUE loaded"),
                         Err(e) => {
+                            // Recoverable: keep the current net rather than
+                            // killing the engine on a bad interactive path.
                             eprintln!("ERROR: Failed to load NNUE from {}: {}", tokens[1], e);
                             println!("info string ERROR: Failed to load NNUE from {}: {}", tokens[1], e);
-                            std::process::exit(1);
                         }
                     }
                 }
@@ -1001,13 +1002,21 @@ fn parse_position(tokens: &[&str], board: &mut Board) {
     if idx < tokens.len() && tokens[idx] == "moves" {
         idx += 1;
         while idx < tokens.len() {
+            // Every move in the list is relative to the board state produced by
+            // all preceding moves. If one fails to parse or apply, continuing to
+            // the rest would make them relative to the WRONG position, silently
+            // desyncing us from the GUI. Stop at the first failure instead.
             if let Some(mv) = parse_uci_move(board, tokens[idx]) {
                 if !board.make_move(mv) {
-                    eprintln!("info string WARNING: make_move failed for UCI move {} (parsed as {})",
+                    eprintln!("info string WARNING: make_move failed for UCI move {} (parsed as {}); \
+                        ignoring this and any further moves",
                         tokens[idx], crate::types::move_to_uci(mv));
+                    break;
                 }
             } else {
-                eprintln!("info string WARNING: failed to parse UCI move: {}", tokens[idx]);
+                eprintln!("info string WARNING: failed to parse UCI move: {}; \
+                    ignoring this and any further moves", tokens[idx]);
+                break;
             }
             idx += 1;
         }
@@ -1095,8 +1104,15 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
     }
     if name_idx == 0 || value_idx == 0 || value_idx >= tokens.len() { return; }
 
-    let name = tokens[name_idx];
-    let value = tokens[value_idx];
+    // The value runs from after "value" to the end of the line: file paths and
+    // book names legitimately contain spaces (`value /my nets/foo.nnue`), so
+    // taking only tokens[value_idx] would silently truncate and load the wrong
+    // path. Name spans name_idx..(the "value" keyword); current option names
+    // are single-token, but join for spec-correctness.
+    let name = tokens[name_idx..value_idx - 1].join(" ");
+    let value = tokens[value_idx..].join(" ");
+    let name = name.as_str();
+    let value = value.as_str();
 
     match name {
         "Hash" => {
@@ -1108,9 +1124,11 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
             match info.load_nnue(value) {
                 Ok(_) => {}
                 Err(e) => {
+                    // Report and keep the currently-loaded net. A bad NNUEFile
+                    // path is recoverable user/GUI input — exiting the process
+                    // mid-UCI kills the engine and forfeits the game.
                     eprintln!("ERROR: Failed to load NNUE from {}: {}", value, e);
                     println!("info string ERROR: Failed to load NNUE from {}: {}", value, e);
-                    std::process::exit(1);
                 }
             }
         }

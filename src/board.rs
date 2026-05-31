@@ -372,8 +372,14 @@ impl Board {
                         'k' => (BLACK, KING),
                         _ => continue,
                     };
-                    let sq = (rank * 8 + file) as u8;
-                    self.put_piece_no_hash(color, pt, sq);
+                    // Malformed FEN (too many files on a rank, or too many
+                    // ranks) can drive file/rank out of [0,7]; placing at the
+                    // resulting square would index mailbox/bitboards OOB and
+                    // panic in release. Skip out-of-board glyphs instead.
+                    if (0..8).contains(&rank) && (0..8).contains(&file) {
+                        let sq = (rank * 8 + file) as u8;
+                        self.put_piece_no_hash(color, pt, sq);
+                    }
                     file += 1;
                 }
             }
@@ -400,7 +406,15 @@ impl Board {
         self.ep_square = NO_SQUARE;
         if parts.len() > 3 && parts[3] != "-" {
             let bytes = parts[3].as_bytes();
-            if bytes.len() == 2 {
+            // Validate file a-h and rank to a legal EP rank (3 or 6). An
+            // unvalidated `bytes[0] - b'a'` underflows (u8 wraps in release)
+            // for junk input and yields an off-board ep_square, which then
+            // aliases into the Zobrist EP key and corrupts the hash. Only
+            // ranks 3/6 can ever be EP targets, so reject anything else.
+            if bytes.len() == 2
+                && (b'a'..=b'h').contains(&bytes[0])
+                && (bytes[1] == b'3' || bytes[1] == b'6')
+            {
                 let f = bytes[0] - b'a';
                 let r = bytes[1] - b'1';
                 self.ep_square = square(f, r);

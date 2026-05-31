@@ -375,15 +375,23 @@ pub fn generate_quiets(board: &Board) -> MoveList {
 // ---------------------------------------------------------------------------
 
 fn generate_castling(board: &Board, list: &mut MoveList, us: Color, occ: Bitboard) {
+    // Castling rights can be set by FEN without the king/rook actually being
+    // on their home squares (e.g. `4k3/8/8/8/8/8/8/4K3 w K -`). Generating a
+    // castle move in that case emits a from-square the king isn't on, which
+    // make/unmake then mishandles → "empty undo stack" panic. Verify the
+    // king and the relevant rook are home before trusting the rights bit.
+    let home = |sq: u8, pt: u8| board.piece_type_at(sq) == pt && board.color_at(sq) == us;
     if us == WHITE {
         // Kingside: f1 and g1 must be empty, e1/f1/g1 not attacked
         if board.castling & CASTLE_WK != 0
+            && home(4, KING) && home(7, ROOK)
             && occ & 0x60 == 0
                 && !is_attacked(board, 4, BLACK) && !is_attacked(board, 5, BLACK) && !is_attacked(board, 6, BLACK) {
                     list.push(make_move(4, 6, FLAG_CASTLE));
                 }
         // Queenside: b1, c1, d1 must be empty, e1/d1/c1 not attacked
         if board.castling & CASTLE_WQ != 0
+            && home(4, KING) && home(0, ROOK)
             && occ & 0x0E == 0
                 && !is_attacked(board, 4, BLACK) && !is_attacked(board, 3, BLACK) && !is_attacked(board, 2, BLACK) {
                     list.push(make_move(4, 2, FLAG_CASTLE));
@@ -391,12 +399,14 @@ fn generate_castling(board: &Board, list: &mut MoveList, us: Color, occ: Bitboar
     } else {
         // Kingside
         if board.castling & CASTLE_BK != 0
+            && home(60, KING) && home(63, ROOK)
             && occ & (0x60u64 << 56) == 0
                 && !is_attacked(board, 60, WHITE) && !is_attacked(board, 61, WHITE) && !is_attacked(board, 62, WHITE) {
                     list.push(make_move(60, 62, FLAG_CASTLE));
                 }
         // Queenside
         if board.castling & CASTLE_BQ != 0
+            && home(60, KING) && home(56, ROOK)
             && occ & (0x0Eu64 << 56) == 0
                 && !is_attacked(board, 60, WHITE) && !is_attacked(board, 59, WHITE) && !is_attacked(board, 58, WHITE) {
                     list.push(make_move(60, 58, FLAG_CASTLE));
