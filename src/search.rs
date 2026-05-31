@@ -1774,8 +1774,28 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
 
         if info.stop.load(Ordering::Relaxed) { break; }
 
+        // Validate pv_table[0][0] against root_legal — same shape as
+        // search() at lines ~2050-2063. Without this guard a TT collision
+        // that injected an illegal-at-root move can ride pv_table[0] out
+        // through the SMP vote (search.rs:1671-1677) and emit as the
+        // UCI bestmove. Main thread validated; helpers did not. Match
+        // from/to/flags (the latter only for promotions) so any legal
+        // move with the same target is accepted.
+        // 2026-05-31 audit.
         if info.pv_len[0] > 0 {
-            best_move = info.pv_table[0][0];
+            let pv_move = info.pv_table[0][0];
+            let pv_from = move_from(pv_move);
+            let pv_to = move_to(pv_move);
+            let pv_flags = move_flags(pv_move);
+            for i in 0..root_legal.len {
+                let m = root_legal.get(i);
+                if move_from(m) == pv_from && move_to(m) == pv_to
+                    && (!is_promotion(pv_move) || move_flags(m) == pv_flags)
+                {
+                    best_move = m;
+                    break;
+                }
+            }
         }
         prev_score = score;
         info.last_score = score;
