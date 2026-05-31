@@ -1115,7 +1115,16 @@ impl Board {
         }
 
         fen.push(' ');
-        if self.ep_square == NO_SQUARE {
+        // EP square gated on capture availability — mirrors the Zobrist
+        // ep_key gate (board.rs:320, 806) and avoids handing shakmaty-syzygy
+        // (tb::board_to_shakmaty) a spurious EP target that doesn't exist
+        // in the game-theoretic sense. Without this, two positions with
+        // identical material + STM but different ep_square fields serialise
+        // to different FENs even when no enemy pawn can capture — the TB
+        // probe then sees a fake EP child and can return a different WDL.
+        if self.ep_square == NO_SQUARE
+            || !ep_capture_available(&self.pieces, &self.colors, self.side_to_move, self.ep_square)
+        {
             fen.push('-');
         } else {
             fen.push_str(&square_name(self.ep_square));
@@ -1187,16 +1196,31 @@ mod tests {
     #[test]
     fn test_fen_roundtrip() {
         init();
+        // Round-trips: positions where the EP field is either absent OR
+        // backed by a real capturer (the X-FEN convention to_fen() emits).
         let fens = [
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
             "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
             "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            // EP target with a real capturer (black pawn on f4 can take e3).
+            "4k3/8/8/8/4Pp2/8/8/4K3 b - e3 0 1",
         ];
         for fen in &fens {
             let b = Board::from_fen(fen);
             assert_eq!(b.to_fen(), *fen, "FEN roundtrip failed for: {}", fen);
         }
+    }
+
+    #[test]
+    fn test_fen_ep_canonicalised_when_no_capturer() {
+        init();
+        // After 1.e4 from startpos: spec FEN has `e3`, but no black pawn on
+        // d4 or f4 can capture en passant. to_fen() must canonicalise to `-`
+        // so shakmaty-syzygy doesn't see a spurious EP child.
+        let fen_in = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
+        let fen_out_expected = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
+        let b = Board::from_fen(fen_in);
+        assert_eq!(b.to_fen(), fen_out_expected);
     }
 
     #[test]
