@@ -2024,6 +2024,20 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             info.soft_limit = soft_remaining;
             info.hard_limit = hard_remaining;
             info.soft_floor = floor;
+            // H7 fix (2026-05-31, found by Atlas review): the dynamic-TM
+            // consumer caps adjusted_soft via `.min(info.tm_max_time)`. On the
+            // `go ponder` path tm_max_time is NEVER initialized — the up-front
+            // C6 reset zeroes soft/hard/floor but not tm_max_time, and the
+            // `infinite` branch sets nothing — so it carries 0 (fresh process)
+            // or a stale prior-`go` value. With tm_max_time=0,
+            // `min(soft*mult, 0).max(1) = 1ms` → the dynamic-TM gate fires one
+            // iteration after ponderhit and the engine emits instantly,
+            // ignoring the whole ponderhit-soft window (probe: 486ms@d17 vs
+            // pre-P13 4315ms@d19 at 60+5). Phase 13 (e0ec5e1) made tm_max_time
+            // the SOLE cap; pre-P13 used min(soft, hard/2) so the missing init
+            // was inert. SPRT-invisible (no ponder in fastchess, #513). Set it
+            // to the hard remaining so the cap matches the absolute deadline.
+            info.tm_max_time = hard_remaining;
         }
         let iter_start = std::time::Instant::now();
 
