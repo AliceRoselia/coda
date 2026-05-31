@@ -4691,7 +4691,21 @@ fn quiescence_with_depth(
 
     // Use main MovePicker in quiescence mode.
     // This partitions captures into good (SEE>=0) and bad, and uses staged ordering.
-    let mut picker = MovePicker::new_quiescence(board, tt_move, &info.history);
+    // Non-check QS searches noisy moves only. The picker returns the TT move
+    // first without a noisy check, and the main search stores quiet best_moves
+    // in TT — so a quiet TT move would otherwise be searched here (SEE passes
+    // quiet moves to safe squares: balance starts at 0 with no opponent
+    // recapture). Only hand a capture/EP/promotion TT move to the QS picker.
+    let qs_tt_move = if tt_move != NO_MOVE
+        && (board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
+            || move_flags(tt_move) == FLAG_EN_PASSANT
+            || is_promotion(tt_move))
+    {
+        tt_move
+    } else {
+        NO_MOVE
+    };
+    let mut picker = MovePicker::new_quiescence(board, qs_tt_move, &info.history);
     let mut best_move = NO_MOVE;
     let mut qs_move_count = 0i32;
     let qs_max_caps = tp(&QS_MAX_CAPTURES);
