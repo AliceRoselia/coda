@@ -93,7 +93,7 @@ tunables!(
     //   NMP_UNDEFENDED_MAX float-converged at 0.6 (int rounds to 1, no
     //     change); two consecutive tunes have drifted this toward feature-
     //     disable. Candidate for ablation SPRT (set to 0).
-    (NMP_BASE_R_10X, 77, 20, 80, 15.0, true),
+    (NMP_BASE_R_10X, 77, 20, 110, 15.0, true),
     // Ceiling lifted from 60 → 200 (audit 2026-05-20): SPSA at 55, 90%
     // from min, only ~9% headroom. Symmetric to a floor pin — gradient
     // clamped at the top. Lifting lets SPSA find the true optimum.
