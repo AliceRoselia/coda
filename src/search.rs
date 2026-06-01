@@ -113,8 +113,13 @@ tunables!(
     // Floor lifted from 20 → 0 (audit 2026-05-20): pinned at 23, 2% from floor.
     (FUT_BASE, 29, 0, 200, 9.0, true),
     (FUT_PER_DEPTH, 81, 40, 250, 10.5, true),
-    (HIST_PRUNE_DEPTH_10X, 10, 10, 80, 15.0, true),
-    (HIST_PRUNE_MULT, 7603, 500, 50000, 2475.0, true),
+    // 2026-06-01: hist-prune refactor (cont[1]+cont[2]+pawn only, SF
+    // pattern). Score scale dropped ~2.3× vs prior (7 contributors → 3),
+    // so MULT recalibrates from 7603 toward SF's 4097. DEPTH_10X starts
+    // at 50 (effective 5) — SF's implicit shallow-only gate. SPSA tune
+    // on this branch will refine both.
+    (HIST_PRUNE_DEPTH_10X, 50, 10, 80, 15.0, true),
+    (HIST_PRUNE_MULT, 4097, 500, 50000, 2475.0, true),
     (SEE_QUIET_MULT, 35, 5, 80, 3.75, true),
     (LMR_HIST_DIV, 7258, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
@@ -3682,15 +3687,25 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
             && FEAT_HIST_PRUNE.load(Ordering::Relaxed)
         {
-            let mut hist_prune_score = info.history.main_score(from, to, enemy_attacks);
+            // 2026-06-01 structural fix: match SF pattern.
+            //   score = cont_hist[ply-1] + cont_hist[ply-2] + pawn_hist
+            //
+            // Prior version (since e7f52b5) summed main_hist + 4 cont-hist
+            // offsets {1,2,4,6} + pawn_hist. main_hist is a CONTEXT-BLIND
+            // signal ("this from-to has been generally OK") that diluted
+            // the CONTEXT-SPECIFIC cont-hist message hist-prune needs.
+            // SPSA tune #1685 — given a widened range floor of effective 0
+            // instead of the prior 1 — pushed HIST_PRUNE_DEPTH_10X
+            // aggressively toward effectively-disabled, confirming the
+            // feature was net-negative as implemented. SF/Obsidian both
+            // exclude main_hist; Reckless has no standalone hist-prune.
+            //
+            // SF uses contHist[0] + contHist[1] + pawn_entry — exactly
+            // ply-1 + ply-2 + pawn. Match that.
+            let mut hist_prune_score = 0i32;
             if moved_piece != NO_PIECE {
                 let gp = go_piece(moved_piece);
-                // Cont-hist at offsets {1, 2, 4, 6} — full set used by
-                // Coda's move-ordering already; bringing hist-prune score
-                // in line. Diagnostic data showed including ply-6 doubles
-                // fire rate at unchanged threshold (most-often-dominant
-                // offset). See docs/history_prune_cont_hist_data_2026-05-08.md.
-                let offsets = [1usize, 2, 4, 6];
+                let offsets = [1usize, 2];
                 for &off in &offsets {
                     if ply_u >= off {
                         let p = info.moved_piece_stack[ply_u - off] as usize;
@@ -3700,7 +3715,6 @@ fn negamax(
                         }
                     }
                 }
-                // Pawn history in pruning decision
                 let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
                 hist_prune_score += info.pawn_hist[ph_idx][gp][to as usize] as i32;
             }
