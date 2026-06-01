@@ -113,7 +113,7 @@ tunables!(
     // Floor lifted from 20 → 0 (audit 2026-05-20): pinned at 23, 2% from floor.
     (FUT_BASE, 29, 0, 200, 9.0, true),
     (FUT_PER_DEPTH, 81, 40, 250, 10.5, true),
-    (HIST_PRUNE_DEPTH_10X, 10, 10, 80, 15.0, true),
+    (HIST_PRUNE_DEPTH_10X, 10, 0, 80, 15.0, true),
     (HIST_PRUNE_MULT, 7603, 500, 50000, 2475.0, true),
     (SEE_QUIET_MULT, 35, 5, 80, 3.75, true),
     (LMR_HIST_DIV, 7258, 2000, 100000, 4900.0, true),
@@ -149,7 +149,7 @@ tunables!(
     // Coda's 9 is 3× consensus at d=1: allows 5-10 quiets vs SF's 2-4.
     // Bisecting 9 → 5 first.
     (LMP_BASE, 8, 1, 15, 2.0, true),
-    (LMP_DEPTH, 4, 4, 20, 2.0, true),
+    (LMP_DEPTH, 4, 1, 20, 2.0, true),
     (BAD_NOISY_MARGIN, 80, 30, 150, 6.0, true),
     (PROBCUT_MARGIN, 140, 80, 300, 11.0, true),
     (HINDSIGHT_THRESH, 184, 50, 400, 17.5, true),
