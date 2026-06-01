@@ -1097,8 +1097,15 @@ fn parse_option(tokens: &[&str], info: &mut SearchInfo, num_threads: &mut usize)
     }
     if name_idx == 0 || value_idx == 0 || value_idx >= tokens.len() { return; }
 
-    let name = tokens[name_idx];
-    let value = tokens[value_idx];
+    // The value runs from after "value" to the end of the line: file paths and
+    // book names legitimately contain spaces (`value /my nets/foo.nnue`), so
+    // taking only tokens[value_idx] would silently truncate and load the wrong
+    // path. Name spans name_idx..(the "value" keyword); current option names
+    // are single-token, but join for spec-correctness.
+    let name = tokens[name_idx..value_idx - 1].join(" ");
+    let value = tokens[value_idx..].join(" ");
+    let name = name.as_str();
+    let value = value.as_str();
 
     match name {
         "Hash" => {
