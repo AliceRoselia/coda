@@ -1517,7 +1517,16 @@ pub fn compute_tm_budgets(
     const HARD_WINDOW_DEN: u64 = 100;
     const OPT_WINDOW_NUM: u64 = 73;
     const OPT_WINDOW_DEN: u64 = 100;
-    const INC_FRAC_NUM: u64 = 94;
+    // Increment fraction added to the per-move opt window. Was 94 (94% of inc),
+    // which over-allocated badly at high-inc TCs: measured 2026-06-01 across ~80
+    // lichess games/account, codabot spent 39% (600+1) up to 275%(!) (60+10) of
+    // its clock by move 20 — the inc×0.94 term dominated (at 60+10 it alone made
+    // the base alloc 5.7× a 2.5%-of-clock reference). Top engines add ~1/3–1/2
+    // of increment, not ~all of it. Cut to 50 (half-increment): leaves the
+    // already-fine low-inc TCs ~unchanged (600+1 3.2%→3.1%) while pulling the
+    // broken high-inc TCs down (60+10 14.5%→9.1% base). See
+    // project_early_overspend_2026-06-01.
+    const INC_FRAC_NUM: u64 = 50;
     const INC_FRAC_DEN: u64 = 100;
     const DEFAULT_MOVES_TO_GO: u64 = 24;
 
