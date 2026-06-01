@@ -2530,6 +2530,26 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 break;
             }
 
+            // SOFT-side predictive stop (2026-06-01): don't BEGIN an iteration
+            // we can't finish within adjusted_soft. The reactive check above is
+            // post-iteration only, so the engine overshoots adjusted_soft by a
+            // whole deep iteration — instrumented at 60+10 opening: adj_soft
+            // ~4.4s but actual spend ~6.7s (+52% overrun = the dominant
+            // overspend component; INC_FRAC only trims `opt`, the smaller base).
+            // Mirror the hard-side guard's `2× last-iter` EBF estimate: if the
+            // predicted next iteration would push us past adjusted_soft, stop
+            // now and keep the completed result. SF/Viridithas gate iteration
+            // START on the optimum, not just the max. Uses the same 2× EBF
+            // estimate as the hard-side guard below; coefficient could be a
+            // tunable later if SPSA wants finer control.
+            {
+                let iter_el = iter_start.elapsed().as_millis() as u64;
+                let predicted = 2 * iter_el;
+                if elapsed_since_tm + predicted > adjusted_soft && iter_el > 0 {
+                    break;
+                }
+            }
+
             // Next-iteration estimate: stop if next iteration would exceed time limit.
             // Use 2x last iteration time as estimate (exponential branching).
             // Check both hard_limit (normal) and ponderhit_time (after ponderhit).
