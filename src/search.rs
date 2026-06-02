@@ -3688,7 +3688,16 @@ fn negamax(
             && FEAT_LMP.load(Ordering::Relaxed)
         {
             let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
-            if move_count > lmp_limit {
+            // R/Q quiet carve-out, variant C (root-score gate, 2026-06-02):
+            // exempt R/Q quiets from LMP when the most recent completed
+            // iteration scored the root below -200cp. `info.last_score`
+            // already tracks the prior iteration's root score (used by TM);
+            // reading it here cheaply gives us the "root is losing" signal
+            // without per-node noise. At iteration 1, last_score=0 so the
+            // carve never fires — fine, depth-1 trees don't need rescue.
+            let rq_carve = (moved_pt == ROOK || moved_pt == QUEEN)
+                && info.last_score < -200;
+            if move_count > lmp_limit && !rq_carve {
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
                 picker.skip_quiet = true;
