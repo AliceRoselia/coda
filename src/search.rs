@@ -3688,7 +3688,16 @@ fn negamax(
             && FEAT_LMP.load(Ordering::Relaxed)
         {
             let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
-            if move_count > lmp_limit {
+            // R/Q quiet carve-out, variant A (static-eval gate, 2026-06-02):
+            // exempt R/Q quiets from LMP when static_eval + 300 < alpha — a
+            // genuine "losing this position by a minor piece" signal that's
+            // much narrower than the best_score-based gate the prior
+            // experiment used (#1706 H0 -2.0). static_eval is per-node and
+            // stable; best_score in zero-window subtrees commonly undershoots
+            // alpha without the root being lost.
+            let rq_carve = (moved_pt == ROOK || moved_pt == QUEEN)
+                && static_eval > -INFINITY && static_eval + 300 < alpha;
+            if move_count > lmp_limit && !rq_carve {
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
                 picker.skip_quiet = true;
