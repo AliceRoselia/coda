@@ -3515,7 +3515,19 @@ fn negamax(
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
             let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
-            if !see_ge(board, mv, see_quiet_threshold) {
+            // R/Q quiet carve-out on SEE pruning (2026-06-02): exempt rook/queen
+            // quiets from SEE-prune when `best_score + 100 < alpha` (mirror of
+            // the LMP carve in #1706, which is currently +1.2 ±1.5 / 60K trending H1).
+            // Feature-attribution on 17 PRUNED_TRUNCATE HORIZON positions: SEE_PRUNE
+            // disable rescues 5/9 actionable lines — the most-implicated feature
+            // (more than LMP at 4/9). Hypothesis: in losing subtrees, slow R/Q
+            // quiets are sometimes the only line; SEE pruning kills them because
+            // the piece statically loses material on landing square, missing the
+            // tactical follow-up.
+            let see_moved_pt = board.piece_type_at(from);
+            let rq_carve = (see_moved_pt == ROOK || see_moved_pt == QUEEN)
+                && best_score + 100 < alpha;
+            if !see_ge(board, mv, see_quiet_threshold) && !rq_carve {
                 info.stats.see_prunes += 1;
                 continue;
             }
