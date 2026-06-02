@@ -3688,7 +3688,12 @@ fn negamax(
             && FEAT_LMP.load(Ordering::Relaxed)
         {
             let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
-            if move_count > lmp_limit {
+            // R/Q quiet carve-out, variant B (overshoot bonus, 2026-06-02):
+            // give R/Q quiets +2 LMP-limit headroom instead of exempting them
+            // entirely (variant A). Less aggressive — the prune still kicks
+            // in, just two move-count slots later for R/Q. P/N/B unchanged.
+            let rq_bonus = if moved_pt == ROOK || moved_pt == QUEEN { 2 } else { 0 };
+            if move_count > lmp_limit + rq_bonus {
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
                 picker.skip_quiet = true;
