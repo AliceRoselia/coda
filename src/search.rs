@@ -3688,7 +3688,20 @@ fn negamax(
             && FEAT_LMP.load(Ordering::Relaxed)
         {
             let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
-            if move_count > lmp_limit {
+            // R/Q quiet carve-out (2026-06-02): in losing subtrees, slow rook/queen
+            // moves are often the saving line. SF-best on our 34-position HORIZON
+            // regression set is R/Q in 59% of cases (12+8/34). Exempt these from
+            // LMP when we're already losing this subtree by >100cp, so the picker
+            // keeps yielding them.
+            //
+            // Input-metric on 34-position regression set:
+            //   main:                                  6/34 (18%)
+            //   gated (best_score + 100 < alpha):     10/34 (29%) — +4 net
+            //   unconditional R/Q exempt:              9/34 (26%) — and +7% bench
+            // Gated wins both axes (more SF-best hits, smaller bench delta).
+            let rq_carve = (moved_pt == ROOK || moved_pt == QUEEN)
+                && best_score + 100 < alpha;
+            if move_count > lmp_limit && !rq_carve {
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
                 picker.skip_quiet = true;
