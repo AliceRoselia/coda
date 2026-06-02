@@ -114,12 +114,13 @@ tunables!(
     (FUT_BASE, 29, 0, 200, 9.0, true),
     (FUT_PER_DEPTH, 81, 40, 250, 10.5, true),
     // 2026-06-01: hist-prune refactor (cont[1]+cont[2]+pawn only, SF
-    // pattern). Score scale dropped ~2.3× vs prior (7 contributors → 3),
-    // so MULT recalibrates from 7603 toward SF's 4097. DEPTH_10X starts
-    // at 50 (effective 5) — SF's implicit shallow-only gate. SPSA tune
-    // on this branch will refine both.
-    (HIST_PRUNE_DEPTH_10X, 50, 10, 80, 15.0, true),
-    (HIST_PRUNE_MULT, 4097, 500, 50000, 2475.0, true),
+    // pattern). Score scale dropped ~2.3× vs prior (7 contributors → 3).
+    // Defaults below are SPSA #1690 outputs (1500 iters on fix branch):
+    //   HIST_PRUNE_DEPTH_10X 50→38 (effective gate ~lmr_d ≤ 4 vs ≤ 5)
+    //   HIST_PRUNE_MULT 4097→4761 (+16%, Coda's cont-hist runs higher
+    //   magnitude than SF's so threshold raises)
+    (HIST_PRUNE_DEPTH_10X, 38, 10, 80, 15.0, true),
+    (HIST_PRUNE_MULT, 4761, 500, 50000, 2475.0, true),
     (SEE_QUIET_MULT, 35, 5, 80, 3.75, true),
     (LMR_HIST_DIV, 7258, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
