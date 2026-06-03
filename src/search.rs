@@ -3688,7 +3688,15 @@ fn negamax(
             && FEAT_LMP.load(Ordering::Relaxed)
         {
             let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
-            if move_count > lmp_limit {
+            // Rook-only carve-out (2026-06-03): the original R+Q carve-out
+            // (1706) H1'd at +1.2 vs old main but H0'd at +0.4 vs current
+            // main (post-hist-prune-removal). Rook moves were 35% of SF-best
+            // on actionable HORIZON positions vs Queen 24%. Test if rook
+            // alone is the actionable half — half the gate condition,
+            // potentially half the noise, but maybe carries.
+            let rook_carve = board.piece_type_at(move_from(mv)) == ROOK
+                && best_score + 100 < alpha;
+            if move_count > lmp_limit && !rook_carve {
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
                 picker.skip_quiet = true;
