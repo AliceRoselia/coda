@@ -3118,9 +3118,19 @@ fn negamax(
     // Hindsight reduction: when parent was LMR-reduced and both sides
     // think the position is quiet, reduce depth further.
     // Gate on prior_reduction (Stockfish >= 2, Alexandria >= 1).
+    //
+    // Endgame carve-out (2026-06-03): skip when ≤12 pieces on the board.
+    // Motivated by feature-attribution analysis on PRUNED_TRUNCATE HORIZON
+    // pos 45 (vs Minic): K+P endgame, SF-best Kf1, Coda played Kf2;
+    // NO_HINDSIGHT was the sole feature ablation that rescued it.
+    // Input metric didn't reproduce on current trunk (post-hist-prune-removal
+    // shifted the search). SPRT'd anyway per methodology — "trust SPRT,
+    // not input metric" — to settle the question.
     let prior_reduction = if ply_u >= 1 { info.reductions[ply_u - 1] } else { 0 };
+    let endgame_skip_hindsight = crate::bitboard::popcount(board.occupied()) <= 12;
     if !in_check && ply >= 1 && depth >= tp10(&HINDSIGHT_MIN_DEPTH_10X) && ply_u >= 1
         && prior_reduction >= 2
+        && !endgame_skip_hindsight
         && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
         && static_eval > -INFINITY
         && FEAT_HINDSIGHT.load(Ordering::Relaxed)
