@@ -339,6 +339,18 @@ tunables!(
     (NMP_MIN_DEPTH_10X, 68, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
     // Floor lifted from 10 → 0 (audit 2026-05-20): pinned at 25, 8% from floor.
     (HINDSIGHT_MIN_DEPTH_10X, 5, 0, 200, 15.0, true),        // was hardcoded 2 (hindsight reduction gate)
+    // Optimism (SF/Reckless eval-bias; 2026-06-04). A dynamic, root-running-
+    // -score-derived bias folded into the NNUE eval with its own material
+    // multiplier: opt = OPTIMISM_K * avg / (|avg| + OPTIMISM_OFFSET), where
+    // avg is the EMA of the best root move's score; optimism[root_stm]=+opt,
+    // optimism[~root_stm]=-opt. Makes the engine keep tension/material when
+    // genuinely ahead and seek simplification when defending. Distinct from
+    // contempt (avg output unchanged; proportional to real advantage; decays
+    // as the position equalizes). K is in raw-NNUE-score units (SPSA absorbs
+    // the unit conversion). See docs/anti_draw_mechanisms_2026-06-04.md.
+    (OPTIMISM_K, 150, 0, 400, 16.0, true),
+    (OPTIMISM_OFFSET, 120, 20, 400, 12.0, true),
+    (OPTIMISM_MAT_BASE, 1500, 0, 8000, 80.0, true),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
@@ -576,6 +588,14 @@ pub struct SearchInfo {
     pub max_depth: i32,
     pub max_nodes: u64,
     pub move_overhead: u64, // ms
+    // Optimism (eval bias). `optimism[c]` is the signed bias for color `c`
+    // (= +opt for root_stm, -opt for the opponent), in raw-NNUE-score units,
+    // folded into `eval()`. `optimism_avg` is the EMA of the best root move's
+    // score; `optimism_has_data` gates the first iteration (opt=0 until we
+    // have a score). Recomputed at the end of each ID iteration.
+    optimism: [i32; 2],
+    optimism_avg: i32,
+    optimism_has_data: bool,
     // Dynamic time management state
     tm_prev_best: Move,
     tm_prev_score: i32,
@@ -721,6 +741,9 @@ impl SearchInfo {
             max_depth: 100,
             max_nodes: 0,
             move_overhead: 100,
+            optimism: [0; 2],
+            optimism_avg: 0,
+            optimism_has_data: false,
             tm_prev_best: NO_MOVE,
             tm_best_move_changes: 0,
             tm_forced_state: ForcedState::None,
@@ -986,7 +1009,36 @@ impl SearchInfo {
         // correction — hence SPRT #610 showed −8 Elo at 1000 games before
         // we caught this. The fix is structural: keep TT storage
         // halfmove-independent, apply scale freshly on read.
-        score * (22400 + material) / 32 / 1024
+        //
+        // Optimism (SF/Reckless): fold a root-score-derived bias into the
+        // eval with its own material multiplier. `optimism[side_to_move]` is
+        // +opt when the side to move is the root side (we're ahead → keep
+        // tension/material), -opt for the opponent. Default-zero until the
+        // root has data, so iteration 1 / non-search evals are unchanged.
+        let opt = self.optimism[board.side_to_move as usize];
+        let opt_base = tp(&OPTIMISM_MAT_BASE);
+        (score * (22400 + material) + opt * (opt_base + material)) / 32 / 1024
+    }
+
+    /// Recompute the optimism bias from the best root move's running-average
+    /// score, called at the end of each completed ID iteration. `opt = K *
+    /// avg / (|avg| + OFFSET)` saturates to ±K, so it's bounded; mate scores
+    /// are excluded from the EMA so a single mate PV doesn't pin the average.
+    fn update_optimism(&mut self, score: i32) {
+        if !is_mate_score(score) {
+            self.optimism_avg = if self.optimism_has_data {
+                (2 * score + self.optimism_avg) / 3
+            } else {
+                score
+            };
+            self.optimism_has_data = true;
+        }
+        let off = tp(&OPTIMISM_OFFSET);
+        let k = tp(&OPTIMISM_K);
+        let avg = self.optimism_avg;
+        let opt = k * avg / (avg.abs() + off);
+        self.optimism[self.root_stm as usize] = opt;
+        self.optimism[(self.root_stm ^ 1) as usize] = -opt;
     }
 }
 
@@ -1720,6 +1772,9 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
     info.nodes = 0;
+    info.optimism = [0; 2];
+    info.optimism_avg = 0;
+    info.optimism_has_data = false;
     info.tm_has_data = false;
     info.tm_best_stable = 0;
     info.tm_best_move_changes = 0;
@@ -1793,6 +1848,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
         }
         prev_score = score;
         info.last_score = score;
+        info.update_optimism(score);
         info.completed_depth = depth;
     }
 
@@ -1860,6 +1916,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.tm_asp_fail_high = 0;
     info.tm_forced_state = ForcedState::None;
     info.tm_has_data = false;
+    info.optimism = [0; 2];
+    info.optimism_avg = 0;
+    info.optimism_has_data = false;
     // Reset per-root-move node counts
     for v in info.root_move_nodes.iter_mut() { *v = 0; }
 
@@ -2123,6 +2182,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         prev_score = score;
         info.last_score = score;
+        info.update_optimism(score);
         info.ponder_depth.store(depth as u64, std::sync::atomic::Ordering::Relaxed);
 
         // Snapshot the completed iteration's pv_table[0] so a future
