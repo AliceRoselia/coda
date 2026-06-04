@@ -111,8 +111,8 @@ tunables!(
     // Force-more-pruning experiment: Coda was under-pruning at mid-depth
     // where Reckless prunes confidently. SPSA retune-on-branch expected.
     // Floor lifted from 20 → 0 (audit 2026-05-20): pinned at 23, 2% from floor.
-    (FUT_BASE, 29, 0, 200, 9.0, true),
-    (FUT_PER_DEPTH, 81, 40, 250, 10.5, true),
+    (FUT_BASE, 32, 0, 200, 9.0, true),
+    (FUT_PER_DEPTH, 86, 40, 250, 10.5, true),
     // HIST_PRUNE_DEPTH_10X / HIST_PRUNE_MULT removed 2026-06-02 — see hist-prune
     // removal block in main negamax body for rationale (three H0 SPRTs).
     (SEE_QUIET_MULT, 35, 5, 80, 3.75, true),
@@ -148,7 +148,7 @@ tunables!(
     // use LMP_BASE=3 with the same `(BASE + d²)/(2 - improving)` formula.
     // Coda's 9 is 3× consensus at d=1: allows 5-10 quiets vs SF's 2-4.
     // Bisecting 9 → 5 first.
-    (LMP_BASE, 8, 1, 15, 2.0, true),
+    (LMP_BASE, 7, 1, 15, 2.0, true),
     (LMP_DEPTH, 4, 4, 20, 2.0, true),
     (BAD_NOISY_MARGIN, 80, 30, 150, 6.0, true),
     (PROBCUT_MARGIN, 140, 80, 300, 11.0, true),
@@ -269,7 +269,7 @@ tunables!(
     (LMR_THREAT_DIV_10X, 11, 10, 50, 15.0, true),
     // Was 68 (tp10→7). Now FIXED-POINT. Default 70 → eff 7.0 ≡ old behavior.
     (LMR_KING_PRESSURE_DIV_10X, 72, 20, 90, 15.0, true),
-    (FUT_THREATS_MARGIN, 9, 0, 200, 10.0, true),
+    (FUT_THREATS_MARGIN, 13, 0, 200, 10.0, true),
     (DISCOVERED_ATTACK_BONUS, 3534, 0, 30000, 1500.0, false),
     // BATTERY_BONUS removed 2026-05-17: ablation #1278 at [0, 3] H0
     // (+0.2 ±1.1, CI [-0.9, +1.3] at 114K games). Feature confirmed
