@@ -348,9 +348,9 @@ tunables!(
     // contempt (avg output unchanged; proportional to real advantage; decays
     // as the position equalizes). K is in raw-NNUE-score units (SPSA absorbs
     // the unit conversion). See docs/anti_draw_mechanisms_2026-06-04.md.
-    (OPTIMISM_K, 150, 0, 400, 16.0, true),
+    (OPTIMISM_K, 240, 0, 400, 16.0, true),
     (OPTIMISM_OFFSET, 120, 20, 400, 12.0, true),
-    (OPTIMISM_MAT_BASE, 1500, 0, 8000, 80.0, true),
+    (OPTIMISM_MAT_BASE, 4500, 0, 8000, 80.0, true),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
