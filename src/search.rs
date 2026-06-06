@@ -3708,6 +3708,18 @@ fn negamax(
             continue;
         }
 
+        // Recapture detection + SEE, computed PRE-make_move (SEE needs the
+        // pre-move board). Pre-move, the opponent's move into this node is the
+        // undo-stack top. Recapture = that move captured on square S and our
+        // move lands on S. Gate on SEE>=0: don't extend material-LOSING
+        // recaptures — they're rarely the critical line, and the ungated form
+        // fired on 2.7% of nodes (~5x singular-ext), inflating the tree.
+        // The extension is applied post-make below (see recap_extend).
+        let recap_extend = ply > 0 && is_cap && !board.undo_stack.is_empty() && {
+            let prev = &board.undo_stack[board.undo_stack.len() - 1];
+            prev.captured != NO_PIECE_TYPE && to == move_to(prev.mv) && see_ge(board, mv, 0)
+        };
+
         // Build NNUE dirty piece info BEFORE make_move
         let dirty = if let Some(net) = info.nnue_net.as_deref() {
             build_dirty_piece(mv, us, flip_color(us), moved_pt, captured_pt, net)
@@ -3737,12 +3749,9 @@ fn negamax(
         // count as a "previous capture" against the first root-move capture
         // even though it's not an in-search recapture pattern.
         let mut extension = 0;
-        if ply > 0 && is_cap && board.undo_stack.len() >= 2 {
-            let prev_undo = &board.undo_stack[board.undo_stack.len() - 2];
-            if prev_undo.captured != NO_PIECE_TYPE && to == move_to(prev_undo.mv) {
-                extension = if FEAT_EXTENSIONS.load(Ordering::Relaxed) { 1 } else { 0 };
-                if extension > 0 { info.stats.recapture_ext += 1; }
-            }
+        if recap_extend && FEAT_EXTENSIONS.load(Ordering::Relaxed) {
+            extension = 1;
+            info.stats.recapture_ext += 1;
         }
         // N6 Promotion-imminent extension: pawn push to 7th rank (from STM's
         // perspective) very often decides the game. Extend by 1. Gated by
