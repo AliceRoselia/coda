@@ -2672,39 +2672,6 @@ fn negamax(
     // Prefetch TT bucket early to hide memory latency
     info.tt.prefetch(board.hash);
 
-    // Threat-aware history indexing: upgrade from pawn-only to all-enemy-pieces.
-    // `enemy_attacks` keys the 4D main history slot (from_threatened, to_threatened);
-    // broader threat coverage → finer move-ordering distinctions.
-    // Cost: 8-12 extra magic lookups per node, only at non-QS non-TT-cut nodes.
-    let them_color = flip_color(board.side_to_move);
-    let enemy_attacks: u64 = board.attacks_by_color(them_color);
-
-    // Pawn-specific threat count kept separate: RFP margin adjustment and
-    // LMR_THREAT_DIV are tuned on the pawn-only scale.
-    let their_pawns = board.pieces[PAWN as usize] & board.colors[them_color as usize];
-    let enemy_pawn_attacks: u64 = if them_color == WHITE {
-        ((their_pawns & !0x0101010101010101u64) << 7) | ((their_pawns & !0x8080808080808080u64) << 9)
-    } else {
-        ((their_pawns & !0x8080808080808080u64) >> 7) | ((their_pawns & !0x0101010101010101u64) >> 9)
-    };
-    let our_non_pawns = board.colors[board.side_to_move as usize]
-        & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
-    let has_pawn_threats = (enemy_pawn_attacks & our_non_pawns) != 0;
-    let threat_count = popcount(enemy_pawn_attacks & our_non_pawns) as i32;
-    // our_defenses signal for futility widener: count of our non-pawn
-    // pieces under any enemy attack (pawn OR piece). Widens margin in
-    // tactical positions. Uses existing enemy_attacks — no new bitboard.
-    let any_threat_count = popcount(enemy_attacks & our_non_pawns) as i32;
-    // B1: Discovered-attack bitboard. Our pieces that are currently
-    // blocking one of our sliders' attack on an enemy piece — moving
-    // any such piece uncovers a slider attack. Used as a quiet-move
-    // ordering bonus in MovePicker. Cost: 10-20 magic lookups.
-    let our_xray_blockers: u64 = if tp(&DISCOVERED_ATTACK_BONUS) > 0 {
-        board.xray_blockers(board.side_to_move)
-    } else {
-        0
-    };
-
     // (PV length already cleared at function entry, before early returns.)
 
     // Track seldepth
@@ -2941,6 +2908,7 @@ fn negamax(
                             || move_flags(tt_move) == FLAG_EN_PASSANT;
                         if !tt_is_cap && tt_piece != NO_PIECE {
                             let bonus = history_bonus(depth);
+                            let enemy_attacks = board.attacks_by_color(flip_color(board.side_to_move));
                             History::update_history(
                                 info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
                                 bonus,
@@ -3159,6 +3127,39 @@ fn negamax(
     }
 
     // Null-move pruning
+    // Threat-aware history/pruning signals are intentionally computed after
+    // TT cutoffs and the depth<=0 qsearch handoff. They are only needed by
+    // pruning, move ordering, and history updates in nodes that survive to
+    // real main-search work.
+    let them_color = flip_color(board.side_to_move);
+    let enemy_attacks: u64 = board.attacks_by_color(them_color);
+
+    // Pawn-specific threat count kept separate: RFP margin adjustment and
+    // LMR_THREAT_DIV are tuned on the pawn-only scale.
+    let their_pawns = board.pieces[PAWN as usize] & board.colors[them_color as usize];
+    let enemy_pawn_attacks: u64 = if them_color == WHITE {
+        ((their_pawns & !0x0101010101010101u64) << 7) | ((their_pawns & !0x8080808080808080u64) << 9)
+    } else {
+        ((their_pawns & !0x8080808080808080u64) >> 7) | ((their_pawns & !0x0101010101010101u64) >> 9)
+    };
+    let our_non_pawns = board.colors[board.side_to_move as usize]
+        & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+    let has_pawn_threats = (enemy_pawn_attacks & our_non_pawns) != 0;
+    let threat_count = popcount(enemy_pawn_attacks & our_non_pawns) as i32;
+    // our_defenses signal for futility widener: count of our non-pawn
+    // pieces under any enemy attack (pawn OR piece). Widens margin in
+    // tactical positions. Uses existing enemy_attacks — no new bitboard.
+    let any_threat_count = popcount(enemy_attacks & our_non_pawns) as i32;
+    // B1: Discovered-attack bitboard. Our pieces that are currently
+    // blocking one of our sliders' attack on an enemy piece — moving
+    // any such piece uncovers a slider attack. Used as a quiet-move
+    // ordering bonus in MovePicker. Cost: 10-20 magic lookups.
+    let our_xray_blockers: u64 = if tp(&DISCOVERED_ATTACK_BONUS) > 0 {
+        board.xray_blockers(board.side_to_move)
+    } else {
+        0
+    };
+
     let us = board.side_to_move;
     let stm_non_pawn = board.colors[us as usize]
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
@@ -5320,4 +5321,3 @@ mod tests {
         );
     }
 }
-
