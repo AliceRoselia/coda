@@ -3745,7 +3745,15 @@ fn negamax(
         // count as a "previous capture" against the first root-move capture
         // even though it's not an in-search recapture pattern.
         let mut extension = 0;
-        if ply > 0 && is_cap && board.undo_stack.len() >= 2 {
+        // Recapture extension — GATED to PV-node + TT-move (Reckless/Caissa
+        // pattern, 2026-06-07). Cross-engine survey of engines stronger than
+        // Coda: 16/18 have NO recapture extension; the only 2 that do
+        // (Reckless #2, Caissa #11) both gate on PV node AND the recapture
+        // being the TT move. Coda's old ungated form fired on 2.7% of ALL
+        // nodes, cost 34% of the tree, and tested -Elo (removal +7). This
+        // gate fires only on the principal-line forced recapture, capturing
+        // the tactical value without the tree bloat.
+        if is_pv && mv == tt_move && ply > 0 && is_cap && board.undo_stack.len() >= 2 {
             let prev_undo = &board.undo_stack[board.undo_stack.len() - 2];
             if prev_undo.captured != NO_PIECE_TYPE && to == move_to(prev_undo.mv) {
                 extension = if FEAT_EXTENSIONS.load(Ordering::Relaxed) { 1 } else { 0 };
