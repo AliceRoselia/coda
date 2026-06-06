@@ -409,7 +409,7 @@ pub static FEAT_FUTILITY: AtomicBool = AtomicBool::new(true);
 pub static FEAT_SEE_PRUNE: AtomicBool = AtomicBool::new(true); // confirmed: -17 Elo without (clean CPU retest)
 pub static FEAT_BAD_NOISY: AtomicBool = AtomicBool::new(true); // confirmed: -26 Elo without (retested without CPU contention)
 pub static FEAT_EXTENSIONS: AtomicBool = AtomicBool::new(true);
-pub static FEAT_FH_BLEND: AtomicBool = AtomicBool::new(true); // gates fail-high score blending (replaces dead FEAT_ALPHA_REDUCE — see below)
+pub static FEAT_FH_BLEND: AtomicBool = AtomicBool::new(false); // gates fail-high score blending (replaces dead FEAT_ALPHA_REDUCE — see below)
 // FEAT_ALPHA_REDUCE removed 2026-06-06: it gated the `alpha_raised` LMR
 // adjustment that was deleted in 21c8f7f (Apr 7, "LMR simplify", H0'd
 // -2..-4). The flag was orphaned — never read (.load) anywhere — so its
