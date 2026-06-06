@@ -143,7 +143,7 @@ Negamax with alpha-beta, iterative deepening, PVS, aspiration windows (from dept
 - TT cutoff cont-hist malus (penalize opponent's quiet on cutoff)
 - Mate distance pruning (non-PV, ply+1 offset)
 
-**Move ordering:** TT move → good captures (MVV×16 + captHist) → quiets (main hist + contHist×3 + pawn hist + quiet check bonus) → bad captures. Good/bad quiet split being tested (SF pattern: defer low-history quiets after bad captures).
+**Move ordering:** TT move → good captures (MVV×16 + captHist) → quiets (main hist + contHist×3 + pawn hist + quiet check bonus) → bad captures.
 
 **Exemptions:** TT move exempt from pruning. Promotions exempt from LMR.
 
@@ -309,7 +309,24 @@ was 20× too high (cost +47 Elo when fixed).
 
 ## NNUE Model Naming Convention
 
-Format: `net-v{N}-{accumWidth}[t][d]h{layers}[s]-w{wdl}-e{epochs}s{snap}.nnue`
+**Production nets (going forward, since 2026-05-31): hash-based.** Name a
+promoted prod net `net-v{N}-{OB_HASH}.nnue` — reuse the 8-char OpenBench
+content hash you already pass to `--dev-network` (e.g.
+`net-v9-E2773E50.nnue`). Rationale: descriptive filenames encode recipe
+*inferences* that rot or turn out wrong (the retired `...C8fix-factor.nnue`
+prod actually never contained C8fix-2 — the filename lied), and a content
+hash can't. Reusing the OB hash also collapses the net's two identities
+(filename + OB hash) into one, killing a class of mismatch bugs. Keep only
+the `v{N}` arch-generation prefix — v5/v7/v9 coexist and the inference path
+is generation-load-bearing. **Recipe / provenance lives in
+`docs/net_catalog.md`**, keyed by hash, where it can be corrected without a
+rename. This matches SF (`nn-<hash>.nnue`) and most engines.
+
+**Legacy descriptive format** (for decoding pre-2026-05-31 names — do NOT
+use for new prod nets; fine for throwaway experiment nets where a
+self-describing name is convenient):
+
+`net-v{N}-{accumWidth}[t][d]h{layers}[s]-w{wdl}-e{epochs}s{snap}.nnue`
 
 - **`v{N}`**: architecture generation. v5 (direct FT→output), v7 (FT→hidden→output), v9 (FT + threats → hidden → output, current production).
 - **`accumWidth`**: accumulator width per perspective. For v9+ this is literal (`768t` = 768 accum + threats). Legacy v5/v7 names confusingly use the input feature count `768pw` to mean 1536 accum on v7 — see git history if decoding old names.
@@ -402,7 +419,7 @@ resource-allocation logic, see **`docs/improvement_threads.md`**
 - **is_pseudo_legal must be thorough**: TT hash collisions inject illegal moves. Pawn validation must check direction, intermediate squares (double push), starting rank, destination empty (pushes), enemy piece (captures). Castling must check rights, path clear, king/intermediate/destination not attacked, king on correct square. All three bugs cost 320 Elo combined.
 - **PV error warnings = TT collision bugs**: Every "Illegal PV move" from cutechess-cli means a TT collision passed is_pseudo_legal and corrupted the search tree. Treat as critical, not cosmetic.
 - **Feature flag ablation**: env var controlled flags (NO_XXX, ENABLE_XXX, DISABLE_ALL) for systematic search feature testing. Parsed once at startup via std::sync::Once.
-- LMR contHist weight: 3x in move ordering, ply-1+ply-2 in reduction adjustment
+- LMR contHist weight: 1x in move ordering (CONT_HIST_MULT_10X tp10, SPSA-converged from earlier 3x default), ply-1+ply-2 in reduction adjustment. 2026-05-19 audit: floor was pinned at 10 (1.0 effective); now widened to 0 to let SPSA explore below 1×.
 - PV nodes skip all TT cutoffs and QS beta blending
 - Polyglot book encodes castling as king-to-rook (must convert to king-to-destination)
 
@@ -413,6 +430,20 @@ Warnings accumulate into noise that masks real issues. Fix or
 `#[allow(...)]`-suppress with intent before committing.
 
 ## Testing Methodology
+
+### → Before any OB operation: invoke the `ob` skill
+
+For all OpenBench operations (submitting SPRTs, submitting SPSA tunes,
+benching for OB, stopping tests, reading results), invoke the **`ob`
+skill** at `.claude/skills/ob.md`. It is the canonical reference for
+OB usage and supersedes any scattered per-Claude memories on the topic.
+
+The skill covers: bench measurement (including the critical
+net-override case), SPRT submission with the bounds policy, SPSA tune
+submission, stopping tests, reading results with early-N caveats,
+common failure modes. **Recurring bench-mismatch and stop-didn't-stop
+issues have been from skipping this skill** — invoking it first is
+cheap and prevents the failure modes.
 
 ### Self-Play SPRT (primary acceptance test)
 
@@ -428,6 +459,62 @@ All search/eval changes must pass self-play SPRT before merging.
 below for when to deviate.
 
 **LTC testing (40+0.4)** for time management changes — TM features are invisible at STC (10+0.1) where each move gets ~200ms. Node-based TM failed 3x at STC but passed at +11.9 LTC.
+
+### TM-class changes: inverted methodology
+
+**For time-management changes specifically**, the SPRT-as-primary rule is
+INVERTED. Self-play SPRT can **completely miss** the subset of TM changes
+that address ponder-asymmetric clock dynamics — because in self-play both
+sides drain symmetrically, saving clock cannot create the kind of endgame
+advantage that ponder-leeching opponents on lichess exploit. This applies
+to cross-engine RR without ponder TOO — only ponder-enabled cross-engine
+tests measure the deployment-relevant effect.
+
+**Concrete case (Phase 10h, 2026-05-25)**: cross-engine RR at 30+0.5 vs
+ponder-enabled similar-strength engines showed **+19 ±18 Elo** over
+Coda.main across 360 games per engine. Same code at SPRT #1520 LTC 40+0.4
+self-play tracked at +0.6 ±3.1 →H0. **Same code in cross-engine RR with
+ponder OFF tracked at ~0 Elo** at N=70+ per engine. The ponder enablement
+is the critical test condition — without it, neither SPRT nor cross-engine
+non-ponder RR detects the gain.
+
+**Methodology for TM-class changes:**
+1. **Inspect mechanism first**: 5-10 local games at the target TC, parse
+   per-move clocks from PGN, verify the change actually fires as designed.
+   See `scripts/tm_pattern_inspect.py`. Catches "governor never fires" /
+   "wrong TC for mechanism" bugs cheaply before burning fleet/CPU.
+2. **Primary signal: cross-engine RR with ponder-enabled opponents.** Use
+   similar-strength engines (Halogen, Velvet, Koivisto, Igel — close to
+   Coda's rating) with `ponder` flag on the engine line. TC at deployment-
+   matched ratios (30+0.5 for 60:1 ratio, etc.). Target ≥200 games per
+   engine for ±20 Elo CI; default 30-50 rounds × 2 games × 21+ pairs.
+3. **Cross-check: SPRT before merging** at `[0, 3]` LTC. Required for
+   non-regression confirmation. Accept any verdict short of clear regression
+   — do NOT gate merge on SPRT magnitude for TM changes (it WILL undersell
+   ponder-asymmetric gains).
+4. **Ground truth: lichess A/B deployment** — codabot runs on two lichess
+   nodes; deploy to one, compare real-world Elo.
+
+**Some TM changes DO show in SPRT** (Phase 10a +11.1, Phase 10c +1.5, the
+no-inc hotfix). These are TM changes that improve symmetric-self-play
+behavior. The systematic undersell is specific to ponder-asymmetric gains.
+
+**Don't apply this inverted rule to search/eval changes.** They keep the
+standard SPRT-as-primary discipline.
+
+**Common-trap regex bug (2026-05-25)**: when parsing per-move spend from
+cutechess PGN comments `{+0.43/17 0.60s}`, the non-greedy regex
+`[^}]*?([0-9]+\.[0-9]+)s?[^}]*?\}` extracts the FIRST decimal (the score,
+`0.43`), NOT the spend (`0.60`). Use `([0-9]+\.[0-9]+)s\b` instead. Caught
+this after multiple wrong "mechanism not firing" conclusions on Phase
+10f/10g/10h analyses; tooling is now correct in `tm_pattern_inspect.py`
+and `tm_variation_analyzer.py`.
+
+**Concurrency for 8C/16T host (`feedback_conc_choice_8c16t`):**
+- Non-ponder gauntlets: `conc=16`
+- Ponder gauntlets: `conc=8` (each pondering engine uses ~1 extra thread
+  during opponent's turn)
+- Never drop to `conc=4` thinking ponder doubles thread cost — it doesn't.
 
 **SPRT via OpenBench** (preferred):
 ```bash
@@ -489,8 +576,12 @@ Bench: 1780721
 | Bounds | When to use | Example |
 |--------|-------------|---------|
 | **`[0, 3]` (DEFAULT)** | "Does this feature help?" at Coda's current strength. Most new ideas target +1-3 Elo. **Pick this unless you have a specific reason for one of the rows below.** | Pruning/ordering tweak, parameter probe, small bonus adjustment, incremental feature, audit correctness fix, tune-applied retest, structural ports |
+| `[-2, 1]` | "Ship if not a meaningful regression." Bench-neutral refactors, NPS-only changes, ARM ordering, adding tunables at default values. Forces enough games to actually discriminate near zero. | Code cleanup with possible perf delta, OnceLock migration, defensive guard whose direction is uncertain |
 | `[-3, 3]` | Small-win correctness fix where a regression ≤ -3 would be a block. Use for fixes whose direction is uncertain but where the correctness side of the trade matters. | SE margin tweak, 50mr mate downgrade, stale-bound gate |
-| `[-5, 5]` | Pure non-regression / infrastructure check. | NPS-only bench-neutral change, adding tunables at default values, ARM ordering change |
+
+**`[-5, 5]` is on the do-not-use list** — it locks H1 on noise
+(`+1 ±4` ships, `-1 ±4` doesn't, same true effect). Adam pushed back
+on this 2026-05-26. If you reach for it, use `[-2, 1]` instead.
 
 **Why `[0, 3]` is the standing default.** Most ideas at our current
 rating land in the +1-3 Elo range. Wider bounds (`[0, 5]`, `[0, 10]`)
@@ -505,7 +596,8 @@ true Elo is +5, `[0, 3]` will H1 it just as fast. We've repeatedly
 regretted wider bounds and never regretted `[0, 3]`. **Don't hedge
 toward wider bounds out of uncertainty.** Use `[-3, 3]` for
 correctness fixes where regression matters symmetrically; use
-`[-5, 5]` for pure non-regression infrastructure changes.
+`[-2, 1]` for "ship if not a meaningful regression" on bench-neutral
+or infrastructure changes.
 
 **What does NOT need SPRT:**
 - Comments, documentation, tooling changes
