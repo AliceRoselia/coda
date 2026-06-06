@@ -1605,6 +1605,37 @@ unsafe fn simd512_l1_int8_dot_sparse_vnni(packed: &[u8], weights: &[i8], nnz_ind
     _mm512_reduce_add_epi32(_mm512_add_epi32(s0, s1))
 }
 
+#[inline(always)]
+fn fill_l1_out(
+    hidden32: &[i32],
+    l1: usize,
+    pw_scale: i32,
+    qa_l1: i32,
+    dual_l1: bool,
+    crelu_l1: bool,
+    out: &mut [f32],
+) {
+    let qa_l1_f = qa_l1 as f32;
+    let qa_l1_sq = qa_l1_f * qa_l1_f;
+    if dual_l1 {
+        for i in 0..l1 {
+            let h_val = (hidden32[i] / pw_scale).clamp(0, qa_l1);
+            out[i] = h_val as f32 / qa_l1_f;
+            out[l1 + i] = (h_val * h_val) as f32 / qa_l1_sq;
+        }
+    } else if crelu_l1 {
+        for i in 0..l1 {
+            let h_val = (hidden32[i] / pw_scale).clamp(0, qa_l1);
+            out[i] = h_val as f32 / qa_l1_f;
+        }
+    } else {
+        for i in 0..l1 {
+            let h_val = (hidden32[i] / pw_scale).clamp(0, qa_l1);
+            out[i] = (h_val * h_val) as f32 / qa_l1_sq;
+        }
+    }
+}
+
 /// AVX-512 f32 L2 matmul for L2 == 32: two ZMM accumulators hold the full
 /// L2 row, one FMA pair per `l1_out[i]`. Replaces the generic loop that
 /// LLVM was vectorising with `VGATHERQPS` (13% of total cycles on v9,
@@ -1642,6 +1673,43 @@ unsafe fn l2_fmadd_avx512_x32(
     _mm512_storeu_ps(h2.as_mut_ptr().add(16), h_hi);
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn l1_l2_fused_avx512_x32(
+    hidden32: &[i32],
+    l1: usize,
+    pw_scale: i32,
+    qa_l1: i32,
+    crelu_l1: bool,
+    l2_weights_f: &[f32],
+    l2_total: usize,
+    l2_off: usize,
+    biases: &[f32],
+    h2: &mut [f32],
+) {
+    let qa_l1_f = qa_l1 as f32;
+    let qa_l1_sq = qa_l1_f * qa_l1_f;
+    let mut h_lo = _mm512_loadu_ps(biases.as_ptr().add(l2_off));
+    let mut h_hi = _mm512_loadu_ps(biases.as_ptr().add(l2_off + 16));
+    for i in 0..l1 {
+        let h_val = (*hidden32.get_unchecked(i) / pw_scale).clamp(0, qa_l1);
+        let v = if crelu_l1 {
+            h_val as f32 / qa_l1_f
+        } else {
+            (h_val * h_val) as f32 / qa_l1_sq
+        };
+        if v == 0.0 { continue; }
+        let bcast = _mm512_set1_ps(v);
+        let wp = l2_weights_f.as_ptr().add(i * l2_total + l2_off);
+        let w_lo = _mm512_loadu_ps(wp);
+        let w_hi = _mm512_loadu_ps(wp.add(16));
+        h_lo = _mm512_fmadd_ps(bcast, w_lo, h_lo);
+        h_hi = _mm512_fmadd_ps(bcast, w_hi, h_hi);
+    }
+    _mm512_storeu_ps(h2.as_mut_ptr(), h_lo);
+    _mm512_storeu_ps(h2.as_mut_ptr().add(16), h_hi);
+}
+
 /// AVX-2 sibling of `l2_fmadd_avx512_x32` for the AVX-2 fleet (Atlas + most
 /// OB workers + lichess host). Same semantics, 8 f32 lanes per YMM →
 /// 4 accumulators for l2 == 32. Atlas perf annotate (2026-05-06) showed
@@ -1664,6 +1732,51 @@ unsafe fn l2_fmadd_avx2_x32(
     let mut h3 = _mm256_loadu_ps(biases.as_ptr().add(l2_off + 24));
     for i in 0..l1_out_count {
         let v = *l1_out.get_unchecked(i);
+        if v == 0.0 { continue; }
+        let bcast = _mm256_set1_ps(v);
+        let wp = l2_weights_f.as_ptr().add(i * l2_total + l2_off);
+        let w0 = _mm256_loadu_ps(wp);
+        let w1 = _mm256_loadu_ps(wp.add(8));
+        let w2 = _mm256_loadu_ps(wp.add(16));
+        let w3 = _mm256_loadu_ps(wp.add(24));
+        h0 = _mm256_fmadd_ps(bcast, w0, h0);
+        h1 = _mm256_fmadd_ps(bcast, w1, h1);
+        h2v = _mm256_fmadd_ps(bcast, w2, h2v);
+        h3 = _mm256_fmadd_ps(bcast, w3, h3);
+    }
+    _mm256_storeu_ps(h2.as_mut_ptr(), h0);
+    _mm256_storeu_ps(h2.as_mut_ptr().add(8), h1);
+    _mm256_storeu_ps(h2.as_mut_ptr().add(16), h2v);
+    _mm256_storeu_ps(h2.as_mut_ptr().add(24), h3);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn l1_l2_fused_avx2_x32(
+    hidden32: &[i32],
+    l1: usize,
+    pw_scale: i32,
+    qa_l1: i32,
+    crelu_l1: bool,
+    l2_weights_f: &[f32],
+    l2_total: usize,
+    l2_off: usize,
+    biases: &[f32],
+    h2: &mut [f32],
+) {
+    let qa_l1_f = qa_l1 as f32;
+    let qa_l1_sq = qa_l1_f * qa_l1_f;
+    let mut h0 = _mm256_loadu_ps(biases.as_ptr().add(l2_off));
+    let mut h1 = _mm256_loadu_ps(biases.as_ptr().add(l2_off + 8));
+    let mut h2v = _mm256_loadu_ps(biases.as_ptr().add(l2_off + 16));
+    let mut h3 = _mm256_loadu_ps(biases.as_ptr().add(l2_off + 24));
+    for i in 0..l1 {
+        let h_val = (*hidden32.get_unchecked(i) / pw_scale).clamp(0, qa_l1);
+        let v = if crelu_l1 {
+            h_val as f32 / qa_l1_f
+        } else {
+            (h_val * h_val) as f32 / qa_l1_sq
+        };
         if v == 0.0 { continue; }
         let bcast = _mm256_set1_ps(v);
         let wp = l2_weights_f.as_ptr().add(i * l2_total + l2_off);
@@ -3243,35 +3356,13 @@ impl NNUENet {
         }
         let _ = hidden32_seeded;
 
-        // Dequantize + activation
-        let qa_l1_f = qa_l1 as f32;
-        let qa_l1_sq = qa_l1_f * qa_l1_f;
+        // Dequantize + activation constants. The common L2==32 path can
+        // consume `hidden32` directly; fallback and direct-output paths still
+        // materialize `l1_out`.
         let l1_out_count = if self.dual_l1 { l1 * 2 } else { l1 };
         const L1_OUT_BUF: usize = 128;  // l1*2 ≤ 128 (dual_l1 with l1 ≤ 64)
         debug_assert!(l1_out_count <= L1_OUT_BUF, "l1_out_count {} exceeds L1_OUT_BUF {}", l1_out_count, L1_OUT_BUF);
-        let mut l1_out_storage = std::mem::MaybeUninit::<[f32; L1_OUT_BUF]>::uninit();
-        let l1_out: &mut [f32] = unsafe {
-            std::slice::from_raw_parts_mut(l1_out_storage.as_mut_ptr() as *mut f32, L1_OUT_BUF)
-        };
-        if self.dual_l1 {
-            // Dual L1 activation: CReLU(L1) concat SCReLU(L1)
-            for i in 0..l1 {
-                let h_val = (hidden32[i] / pw_scale).clamp(0, qa_l1);
-                l1_out[i] = h_val as f32 / qa_l1_f;               // CReLU: [0, 1]
-                l1_out[l1 + i] = (h_val * h_val) as f32 / qa_l1_sq; // SCReLU: [0, 1]
-            }
-        } else if self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed) {
-            // Clipped ReLU variant (for nets trained with .crelu() on L1/L2 in Bullet)
-            for i in 0..l1 {
-                let h_val = (hidden32[i] / pw_scale).clamp(0, qa_l1);
-                l1_out[i] = h_val as f32 / qa_l1_f; // CReLU: [0, 1]
-            }
-        } else {
-            for i in 0..l1 {
-                let h_val = (hidden32[i] / pw_scale).clamp(0, qa_l1);
-                l1_out[i] = (h_val * h_val) as f32 / qa_l1_sq; // SCReLU
-            }
-        }
+        let crelu_l1 = self.crelu_hidden.load(std::sync::atomic::Ordering::Relaxed);
 
         // L2 or output
         if self.l2_per_bucket > 0 {
@@ -3297,7 +3388,29 @@ impl NNUENet {
             // and ate ~13% of total cycles. Explicit 2-register broadcast-FMA
             // is branch-light, load-heavy, cache-friendly.
             #[cfg(target_arch = "x86_64")]
-            if self.has_avx512 && l2 == 32 {
+            if self.has_avx512 && l2 == 32 && !self.dual_l1 {
+                unsafe {
+                    l1_l2_fused_avx512_x32(
+                        &hidden32[..l1], l1, pw_scale, qa_l1, crelu_l1,
+                        &self.l2_weights_f, l2_total, l2_off,
+                        &self.l2_biases_f, h2,
+                    );
+                }
+            } else if self.has_avx2 && l2 == 32 && !self.dual_l1 {
+                unsafe {
+                    l1_l2_fused_avx2_x32(
+                        &hidden32[..l1], l1, pw_scale, qa_l1, crelu_l1,
+                        &self.l2_weights_f, l2_total, l2_off,
+                        &self.l2_biases_f, h2,
+                    );
+                }
+            } else {
+                let mut l1_out_storage = std::mem::MaybeUninit::<[f32; L1_OUT_BUF]>::uninit();
+                let l1_out: &mut [f32] = unsafe {
+                    std::slice::from_raw_parts_mut(l1_out_storage.as_mut_ptr() as *mut f32, L1_OUT_BUF)
+                };
+                fill_l1_out(&hidden32[..l1], l1, pw_scale, qa_l1, self.dual_l1, crelu_l1, l1_out);
+                if self.has_avx512 && l2 == 32 {
                 unsafe {
                     l2_fmadd_avx512_x32(
                         &l1_out[..l1_out_count], l1_out_count,
@@ -3305,7 +3418,7 @@ impl NNUENet {
                         &self.l2_biases_f, h2,
                     );
                 }
-            } else if self.has_avx2 && l2 == 32 {
+                } else if self.has_avx2 && l2 == 32 {
                 unsafe {
                     l2_fmadd_avx2_x32(
                         &l1_out[..l1_out_count], l1_out_count,
@@ -3313,7 +3426,7 @@ impl NNUENet {
                         &self.l2_biases_f, h2,
                     );
                 }
-            } else {
+                } else {
                 for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
                 for i in 0..l1_out_count {
                     if l1_out[i] == 0.0 { continue; }
@@ -3321,9 +3434,15 @@ impl NNUENet {
                         h2[k] += l1_out[i] * self.l2_weights_f[i * l2_total + l2_off + k];
                     }
                 }
+                }
             }
             #[cfg(not(target_arch = "x86_64"))]
             {
+                let mut l1_out_storage = std::mem::MaybeUninit::<[f32; L1_OUT_BUF]>::uninit();
+                let l1_out: &mut [f32] = unsafe {
+                    std::slice::from_raw_parts_mut(l1_out_storage.as_mut_ptr() as *mut f32, L1_OUT_BUF)
+                };
+                fill_l1_out(&hidden32[..l1], l1, pw_scale, qa_l1, self.dual_l1, crelu_l1, l1_out);
                 for k in 0..l2 { h2[k] = self.l2_biases_f[l2_off + k]; }
                 for i in 0..l1_out_count {
                     if l1_out[i] == 0.0 { continue; }
@@ -3375,6 +3494,11 @@ impl NNUENet {
 
         let out_w = &self.out_weights_f[bucket * l1_pb..bucket * l1_pb + l1_pb];
         let mut out_f = self.out_bias_f[bucket];
+        let mut l1_out_storage = std::mem::MaybeUninit::<[f32; L1_OUT_BUF]>::uninit();
+        let l1_out: &mut [f32] = unsafe {
+            std::slice::from_raw_parts_mut(l1_out_storage.as_mut_ptr() as *mut f32, L1_OUT_BUF)
+        };
+        fill_l1_out(&hidden32[..l1], l1, pw_scale, qa_l1, self.dual_l1, crelu_l1, l1_out);
         for i in 0..l1 { out_f += l1_out[i] * out_w[i]; }
         (out_f * EVAL_SCALE as f32) as i32
     }
