@@ -101,7 +101,7 @@ tunables!(
     (NMP_EVAL_DIV, 112, 50, 400, 17.5, true),
     (NMP_EVAL_MAX_10X, 34, 10, 60, 5.0, true),
     (NMP_VERIFY_DEPTH_10X, 65, 40, 200, 20.0, true),
-    (RFP_DEPTH, 18, 2, 20, 2.0, true),
+    (RFP_DEPTH, 8, 2, 24, 2.0, true),
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
     (RFP_MARGIN_IMP, 36, 0, 150, 6.0, true),
     (RFP_MARGIN_NOIMP, 44, 0, 200, 7.5, true),
