@@ -3856,10 +3856,9 @@ fn negamax(
                     reduction += 1;
                 }
 
-                // Reduce less when moving a piece away from a pawn-attacked square
-                if enemy_attacks & (1u64 << from) != 0 {
-                    reduction -= 1;
-                }
+                // [REMOVED 2026-06-07] from-square-attacked LMR adjustment —
+                // Coda-unique, present in NONE of the 18 stronger engines.
+                // Part of a 3-adjustment bundle removal; see commit msg.
 
                 // Reduce less when move gives check (Obsidian/Alexandria/Berserk pattern)
                 if gives_check {
@@ -3905,16 +3904,11 @@ fn negamax(
                     reduction -= complexity / tp(&LMR_COMPLEXITY_DIV);
                 }
 
-                // Threat-density LMR: reduce less when multiple pieces are
-                // under pawn attack. Tactical positions need deeper search.
-                // Fixed-point divisor: stored × 10. Avoids tp10 swallowing
-                // sub-integer SPSA precision on this multiplicative use.
-                reduction -= threat_count * 10 / LMR_THREAT_DIV_10X.load(Ordering::Relaxed).max(1);
-
-                // King-pressure LMR modifier: reduce less when enemy has
-                // many attackers on our king zone. Parent-node signal reused
-                // from NMP/ProbCut gates — tactical king positions need depth.
-                reduction -= king_zone_pressure * 10 / LMR_KING_PRESSURE_DIV_10X.load(Ordering::Relaxed).max(1);
+                // [REMOVED 2026-06-07] threat-density + king-pressure LMR
+                // adjustments — both Coda-unique, present in NONE of the 18
+                // stronger engines. Part of a 3-adjustment bundle removal.
+                // Tunables left inert to avoid tune-spec churn; clean up if H1.
+                let _ = (threat_count, king_zone_pressure);
 
                 // Clamp: never extend (negative), never reduce past depth 1.
                 // Note: `new_depth - 1` can be -1 when negative singular
