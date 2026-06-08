@@ -14670,3 +14670,64 @@ these three are net-positive. Do not remove.
 Remaining audit queue (task #72): TT near-miss replacement (Coda-unique 80cp
 margin vs consensus margin-free fail-low relax), all-node negative-ext -1
 branch, NMP cluster (min-depth=6 vs consensus 1-4 — low node-share).
+
+## 2026-06-08 — Codex NNUE hot-path and threat-accumulator sweep
+
+Context: FT1024 transition makes NNUE/threat compute more valuable. Several
+small hot-path/code-quality experiments were tested with bench + SPRT rather
+than trusted by local NPS alone.
+
+### Merged / merge-worthy
+- `nnue-hotpath-cleanup`: removed redundant hidden32 caller seeding for dense
+  L1 paths, moved bias add into SIMD dense-L1 finales, split pairwise pack
+  threat/plain wrappers, and fixed aarch64 wrapper cfg + MaybeUninit UB before
+  merge. SPRT landed about **+6 Elo**. Keeper.
+- `fix/nnue-buffer-soundness` (#1815): replaced unsound MaybeUninit
+  `&mut [T]` construction with raw-pointer prefix writes and initialized
+  prefix slices. Bench-identical to main at review; all tests passed; aarch64
+  cross-compile clean. SPRT stopped at **-0.44 ±1.53** inside non-regression
+  band. Soundness fix, keeper.
+- `fix/nnue-scratch-macro`: DRY follow-up for the sound scratch-buffer pattern.
+  Non-regression SPRT mild positive after ~47K games; merged as hygiene.
+- NNUE accumulator chain/barrier fixes:
+  - `perf/nnue-perspective-validity` (#1847): **+1.98 ±1.56 H1**, merged.
+  - `perf/nnue-tt-barrier-selective` (#1860): **+2.01 ±1.57 H1**, merged.
+  These reduced unnecessary full materialization/rebuild work while keeping the
+  implementation complexity acceptable. Combined NNUE-side contribution from
+  this sweep is roughly +10 Elo.
+
+### Rejected / dropped
+- `nnue-l1-l2-fusion`: fused L1 activation into L2 for the common path. Local
+  hot-loop improvement was small, but SPRT finished around **+0.95 ±2.77** and
+  code complexity was higher. Dropped.
+- `perf/lazy-threat-signals` (#1816): deferred threat-signal computation.
+  SPRT H0'd around **-4.01**. Dropped; not additive.
+- `perf/nnue-tt-barrier-materialize` (#1859): broad TT-barrier materialize.
+  H0'd **+0.1 ±1.3 / 71K**, LLR -2.22. Dropped.
+- TT-barrier follow-up variants, all stopped as stale H0 trends:
+  - `perf/nnue-tt-barrier-noncut` (#1862): about **+0.3 ±2.1**, LLR -0.66.
+  - `perf/nnue-tt-barrier-ttmove` (#1863): about **+0.1 ±1.9**, LLR -1.01.
+  - `perf/nnue-tt-barrier-depth4` (#1861): about **-0.4 ±2.5**, LLR -1.01.
+  - `perf/nnue-tt-barrier-pv-depth4` (#1864): about **-1.1 ±2.5**, LLR -1.77.
+  - `perf/nnue-tt-barrier-depth2` (#1865): about **-1.1 ±2.7**, LLR -1.58.
+  Lesson: the selective merged barrier was the useful point; extra gating did
+  not lift it above complexity/compute cost.
+
+### Threat accumulator profiling and microbench
+- FT1024 profile with OB worker stopped: `apply_threat_deltas` is the
+  load-bearing threat path: ~3.0M calls, ~33.3M deltas, avg 11.1 deltas/call.
+  Measured split: raw-delta→feature-index conversion ~27%, prefetch ~3%, SIMD
+  row application ~70%.
+- AVX2 replay tile-size probe (`apply_deltas_avx2` REGS 8/12/16/20):
+  short runs hinted that 12/16 might help, but longer
+  `eval-bench --mode incremental --positions 8 --reps 1000000` flattened it:
+  `REGS=8` ≈ **1.982M eval/s**, `REGS=16` ≈ **1.982M eval/s**. Restored
+  `REGS=8`; no reliable win.
+- Low-risk cleanup candidate: remove the temporary `RawThreatDelta[128]` copy
+  in `ThreatStack::update` by borrowing `curr_entry.delta.as_slice()` after
+  `split_at_mut`. Bench-identical in local FT1024 search bench; should be
+  SPRT'd as a `[-2,1]` non-regression/stress test before merge.
+- Next real investigation target: precompute/store per-POV threat feature
+  indices instead of raw deltas. Potential ceiling is bounded by the ~27%
+  index-conversion slice of `apply_threat_deltas`; complexity risk is king
+  mirroring/POV dependence.
