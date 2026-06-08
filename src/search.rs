@@ -3407,7 +3407,7 @@ fn negamax(
         }
     }
 
-    if tt_static_eval_hit && depth >= 3 {
+    if tt_static_eval_hit && depth >= 2 {
         info.materialize_tt_barrier(board);
     }
 
