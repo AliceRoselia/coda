@@ -3167,6 +3167,30 @@ fn negamax(
         }
     }
 
+    if !in_check {
+        // Reverse Futility Pruning (Static Null Move Pruning)
+        // RFP TT quiet guard: skip RFP when TT has a quiet best move (Tucano/Weiss).
+        // If we know a good quiet move exists, don't prune based on static eval alone.
+        let tt_move_is_quiet = tt_move != NO_MOVE
+            && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
+            && move_flags(tt_move) != FLAG_EN_PASSANT
+            && !is_promotion(tt_move);
+        if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
+            let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
+            if has_pawn_threats { margin += margin / 3; }
+            // E2: widen margin when position is unstable (parent-child eval gap
+            // > UNSTABLE_THRESH). Static eval can't be trusted for RFP when
+            // eval is volatile. Mirrors unstable × ProbCut skip (#542 +6.7).
+            if unstable { margin += margin / 3; }
+            if static_eval - margin >= beta {
+                info.stats.rfp_cutoffs += 1;
+                return static_eval - margin;
+            }
+        }
+
+    }
+
     // Null-move pruning
     let us = board.side_to_move;
     let stm_non_pawn = board.colors[us as usize]
@@ -3291,30 +3315,6 @@ fn negamax(
                 threat_sq = move_to(threat_entry.best_move) as i32;
             }
         }
-    }
-
-    if !in_check {
-        // Reverse Futility Pruning (Static Null Move Pruning)
-        // RFP TT quiet guard: skip RFP when TT has a quiet best move (Tucano/Weiss).
-        // If we know a good quiet move exists, don't prune based on static eval alone.
-        let tt_move_is_quiet = tt_move != NO_MOVE
-            && board.piece_type_at(move_to(tt_move)) == NO_PIECE_TYPE
-            && move_flags(tt_move) != FLAG_EN_PASSANT
-            && !is_promotion(tt_move);
-        if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
-            let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
-            // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
-            if has_pawn_threats { margin += margin / 3; }
-            // E2: widen margin when position is unstable (parent-child eval gap
-            // > UNSTABLE_THRESH). Static eval can't be trusted for RFP when
-            // eval is volatile. Mirrors unstable × ProbCut skip (#542 +6.7).
-            if unstable { margin += margin / 3; }
-            if static_eval - margin >= beta {
-                info.stats.rfp_cutoffs += 1;
-                return static_eval - margin;
-            }
-        }
-
     }
 
     // ProbCut: at moderate+ depths, if a shallow search of captures with
