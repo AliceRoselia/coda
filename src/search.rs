@@ -1004,6 +1004,15 @@ impl SearchInfo {
         // halfmove-independent, apply scale freshly on read.
         score * (22400 + material) / 32 / 1024
     }
+
+    #[inline]
+    fn materialize_tt_barrier(&mut self, board: &Board) {
+        if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
+            if acc.has_unmaterialized_psq_barrier() {
+                acc.materialize(net, board);
+            }
+        }
+    }
 }
 
 /// Scale a raw (halfmove-independent) eval toward zero as the halfmove
@@ -3031,6 +3040,7 @@ fn negamax(
         if tt_hit && tt_entry.static_eval > -4095 {
             raw_eval = tt_entry.static_eval;
             info.stats_tt_static_eval_hits += 1;
+            info.materialize_tt_barrier(board);
         } else {
             raw_eval = info.eval(board);
             // Eval-only TT writeback: when we paid for an NNUE eval AND
@@ -4617,6 +4627,7 @@ fn quiescence_with_depth(
         // (from in-check TT stores) get clamped to -4095 and would
         // otherwise pass a wider check.
         info.stats_tt_static_eval_hits += 1;
+        info.materialize_tt_barrier(board);
         tt_entry.static_eval
     } else {
         info.eval(board)
