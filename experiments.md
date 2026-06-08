@@ -14670,3 +14670,20 @@ these three are net-positive. Do not remove.
 Remaining audit queue (task #72): TT near-miss replacement (Coda-unique 80cp
 margin vs consensus margin-free fail-low relax), all-node negative-ext -1
 branch, NMP cluster (min-depth=6 vs consensus 1-4 — low node-share).
+
+## 2026-06-08 — NMP ordering experiment submitted
+
+Branch `experiment/nmp-before-depth-reductions`: move IIR + hindsight
+reduction/extension after NMP, but before RFP. This lets NMP see the original
+depth while keeping RFP on the previously reduced depth, isolating the NMP
+ordering hypothesis.
+
+Local bench/counters on current main base a3e27dd:
+- Broad version (IIR/hindsight after both NMP and RFP): NMP attempts 7,312,
+  cutoffs 4,093, but bench 3,074,404 nodes — too much tree expansion.
+- Narrow NMP-only version: bench 2,529,554 nodes; NMP attempts 6,561,
+  cutoffs 3,572 (54%, 1.4/Kn); RFP remains strong at 647,307 cutoffs
+  (25.6%). Full tests pass (169/0/6 ignored).
+
+Reading: the ordering change does increase useful NMP activity. The RFP-facing
+version is probably too broad; the NMP-only version is cheap enough to SPRT.

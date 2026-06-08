@@ -3121,51 +3121,10 @@ fn negamax(
             || is_promotion(tt_move)
     };
 
-    // Internal Iterative Reduction: reduce depth when no TT move exists.
-    // Restricted to PV/cut nodes (Obsidian/Berserk/Stormphrax pattern).
-    // All-nodes have tight bounds already, IIR there wastes depth.
     let is_pv = beta - alpha_orig > 1;
-    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
-        depth -= 1;
-    }
 
     // Threat square from null-move failure
     let mut threat_sq: i32 = -1;
-
-    // Hindsight reduction: when parent was LMR-reduced and both sides
-    // think the position is quiet, reduce depth further.
-    // Gate on prior_reduction (Stockfish >= 2, Alexandria >= 1).
-    let prior_reduction = if ply_u >= 1 { info.reductions[ply_u - 1] } else { 0 };
-    if !in_check && ply >= 1 && depth >= tp10(&HINDSIGHT_MIN_DEPTH_10X) && ply_u >= 1
-        && prior_reduction >= 2
-        && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
-        && static_eval > -INFINITY
-        && FEAT_HINDSIGHT.load(Ordering::Relaxed)
-    {
-        // Both sides optimistic about their position (eval_sum > threshold)
-        // correlates with quiet positions where reduction is safe.
-        let eval_sum = info.static_evals[ply_u - 1] + static_eval;
-        if eval_sum > tp(&HINDSIGHT_THRESH) {
-            depth -= 1;
-        }
-    }
-
-    // Hindsight extension (Stormphrax search.cpp:749-752): mirror of the
-    // reduction. When parent reduced aggressively (>=3) but the combined
-    // eval shows position has worsened (eval_sum <= 0), extend +1 ply to
-    // find the threat we missed. Non-PV only (PV already searched fully).
-    if !in_check && ply >= 1 && ply_u >= 1
-        && !is_pv
-        && prior_reduction >= 3
-        && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
-        && static_eval > -INFINITY
-        && FEAT_HINDSIGHT.load(Ordering::Relaxed)
-    {
-        let eval_sum = info.static_evals[ply_u - 1] + static_eval;
-        if eval_sum <= 0 {
-            depth += 1;
-        }
-    }
 
     // Null-move pruning
     let us = board.side_to_move;
@@ -3290,6 +3249,51 @@ fn negamax(
             if threat_entry.hit && threat_entry.best_move != NO_MOVE {
                 threat_sq = move_to(threat_entry.best_move) as i32;
             }
+        }
+    }
+
+    // Internal Iterative Reduction: reduce depth when no TT move exists.
+    // Restricted to PV/cut nodes (Obsidian/Berserk/Stormphrax pattern).
+    // All-nodes have tight bounds already, IIR there wastes depth.
+    //
+    // Keep this after NMP so null-move pruning sees the unreduced depth. RFP
+    // stays after this block to keep this experiment focused on NMP only.
+    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
+        depth -= 1;
+    }
+
+    // Hindsight reduction: when parent was LMR-reduced and both sides
+    // think the position is quiet, reduce depth further.
+    // Gate on prior_reduction (Stockfish >= 2, Alexandria >= 1).
+    let prior_reduction = if ply_u >= 1 { info.reductions[ply_u - 1] } else { 0 };
+    if !in_check && ply >= 1 && depth >= tp10(&HINDSIGHT_MIN_DEPTH_10X) && ply_u >= 1
+        && prior_reduction >= 2
+        && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
+        && static_eval > -INFINITY
+        && FEAT_HINDSIGHT.load(Ordering::Relaxed)
+    {
+        // Both sides optimistic about their position (eval_sum > threshold)
+        // correlates with quiet positions where reduction is safe.
+        let eval_sum = info.static_evals[ply_u - 1] + static_eval;
+        if eval_sum > tp(&HINDSIGHT_THRESH) {
+            depth -= 1;
+        }
+    }
+
+    // Hindsight extension (Stormphrax search.cpp:749-752): mirror of the
+    // reduction. When parent reduced aggressively (>=3) but the combined
+    // eval shows position has worsened (eval_sum <= 0), extend +1 ply to
+    // find the threat we missed. Non-PV only (PV already searched fully).
+    if !in_check && ply >= 1 && ply_u >= 1
+        && !is_pv
+        && prior_reduction >= 3
+        && info.static_evals[ply_u - 1] > -(MATE_SCORE - 100)
+        && static_eval > -INFINITY
+        && FEAT_HINDSIGHT.load(Ordering::Relaxed)
+    {
+        let eval_sum = info.static_evals[ply_u - 1] + static_eval;
+        if eval_sum <= 0 {
+            depth += 1;
         }
     }
 
