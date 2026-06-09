@@ -3205,14 +3205,16 @@ fn negamax(
         }
     };
 
+    let nmp_threat_margin =
+        (king_zone_pressure - (tp10(&NMP_KING_ZONE_MAX_10X) - 1)).max(0) * 64
+        + (any_threat_count - 2).max(0) * 64
+        + (undefended_count - (tp10(&NMP_UNDEFENDED_MAX_10X) - 1)).max(0) * 128;
+
     if depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0 && stm_non_pawn != 0
-        && beta - alpha == 1 && static_eval >= beta
+        && beta - alpha == 1 && static_eval >= beta + nmp_threat_margin
         && !prev_was_null  // Prevent consecutive null moves
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
-        && king_zone_pressure < tp10(&NMP_KING_ZONE_MAX_10X)  // New gate
-        && any_threat_count < 3  // S7-style: skip NMP when many of our pieces are under threat
-        && undefended_count < tp10(&NMP_UNDEFENDED_MAX_10X)  // T2.1: skip when hanging pieces
         && cut_node  // Reckless gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
         && FEAT_NMP.load(Ordering::Relaxed)
     {
