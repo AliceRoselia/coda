@@ -63,8 +63,15 @@ pgo: check-rust net
 net:
 	@if [ ! -f "$(EVALFILE)" ] && [ -n "$(NET_URL)" ]; then \
 		echo "Downloading NNUE net from $(NET_URL)..."; \
-		curl -sL "$(NET_URL)" -o "$(EVALFILE)"; \
-		echo "Downloaded $(EVALFILE)"; \
+		tmp="$(EVALFILE).tmp"; \
+		if curl -fsSL "$(NET_URL)" -o "$$tmp"; then \
+			mv "$$tmp" "$(EVALFILE)"; \
+			echo "Downloaded $(EVALFILE)"; \
+		else \
+			rm -f "$$tmp"; \
+			echo "Error: failed to download $(NET_URL)" >&2; \
+			exit 1; \
+		fi; \
 	elif [ -f "$(EVALFILE)" ]; then \
 		echo "$(EVALFILE) already exists"; \
 	else \
