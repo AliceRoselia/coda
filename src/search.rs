@@ -3181,51 +3181,27 @@ fn negamax(
     let king_zone = crate::attacks::king_attacks(our_king_sq as u32) | (1u64 << our_king_sq);
     let king_zone_pressure = popcount(enemy_attacks & king_zone) as i32;
 
-    // T2.1: undefended ("hanging") piece count. Our non-pawn pieces
-    // that are attacked by enemy AND NOT defended by any of our own
-    // pieces. Zero-cost-when-skipped: computation only runs for
-    // NMP-eligible nodes (most nodes either fail the depth gate or are
-    // in_check). ~10-15 magic lookups per computed node — comparable
-    // to king-zone-pressure's cost.
-    let undefended_count: i32 = {
-        // Only bother computing when NMP might actually fire.
-        let nmp_gate_cheap = depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0
-            && stm_non_pawn != 0 && beta - alpha == 1
-            && static_eval >= beta && !prev_was_null
-            && beta.abs() < MATE_SCORE - 100
-            && info.excluded_move[ply_u] == NO_MOVE;
-        if nmp_gate_cheap && tp10(&NMP_UNDEFENDED_MAX_10X) > 0 {
-            let our_non_pawn = board.colors[board.side_to_move as usize]
-                & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
-            let attacked = our_non_pawn & enemy_attacks;
-            let our_attacks = board.attacks_by_color(board.side_to_move);
-            popcount(attacked & !our_attacks) as i32
-        } else {
-            0
-        }
-    };
+    let nmp_eval_margin = (304 - 8 * depth).max(0);
 
     if depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0 && stm_non_pawn != 0
-        && beta - alpha == 1 && static_eval >= beta
+        && beta - alpha == 1 && static_eval >= beta + nmp_eval_margin
         && !prev_was_null  // Prevent consecutive null moves
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
-        && king_zone_pressure < tp10(&NMP_KING_ZONE_MAX_10X)  // New gate
-        && any_threat_count < 3  // S7-style: skip NMP when many of our pieces are under threat
-        && undefended_count < tp10(&NMP_UNDEFENDED_MAX_10X)  // T2.1: skip when hanging pieces
         && cut_node  // Reckless gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
-        // Adaptive reduction: scales with depth and eval margin above beta
-        let mut r = tp10(&NMP_BASE_R_10X) + depth / tp10(&NMP_DEPTH_DIV_10X);
+        // Reference-style adaptive reduction: less severe base/depth scaling,
+        // with extra reduction only when eval is substantially above beta.
+        let mut r = 5 + depth / 4;
         // Reduce more after captures: opponent just captured, null move more likely to work
         // (Consensus: SF/Obsidian increase R after captures, not decrease)
         if !board.undo_stack.is_empty() && board.undo_stack[board.undo_stack.len() - 1].captured != NO_PIECE_TYPE {
             r += 1;
         }
         if static_eval > beta {
-            let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp10(&NMP_EVAL_MAX_10X));
+            let eval_r = ((static_eval - beta) / 256).min(3);
             r += eval_r;
         }
         // Clamp so null-move search is at least depth 1
