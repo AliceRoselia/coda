@@ -401,7 +401,7 @@ pub fn tp10(param: &AtomicI32) -> i32 {
 }
 
 // Feature flags for ablation testing. All true = normal play.
-pub static FEAT_NMP: AtomicBool = AtomicBool::new(true);
+pub static FEAT_NMP: AtomicBool = AtomicBool::new(false);
 /// TM diagnostic mode — emit per-move TM state via `info string tm-debug`.
 /// Off by default, controlled by UCI option `TMDebug`.
 pub static TM_DEBUG: AtomicBool = AtomicBool::new(false);
