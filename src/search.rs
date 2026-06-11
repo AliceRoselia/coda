@@ -2973,11 +2973,18 @@ fn negamax(
                             info.pv_len[ply_u] = 0;
                         }
 
-                        // History bonus for TT cutoff: reinforce move ordering
+                        // History bonus for TT cutoff: reinforce move ordering.
+                        // LOWER (fail-high) collapses only: an UPPER entry reaching
+                        // here means beta dropped to tt_score <= alpha (fail-low) —
+                        // its tt_move is the best move of a FAILED node and must not
+                        // receive a fail-high bonus (SF gates on ttValue >= beta;
+                        // 2026-06-11 audit T1.1).
                         let tt_piece = board.piece_at(move_from(tt_move));
                         let tt_is_cap = board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
                             || move_flags(tt_move) == FLAG_EN_PASSANT;
-                        if !tt_is_cap && tt_piece != NO_PIECE {
+                        if tt_entry.flag != TT_FLAG_LOWER {
+                            // fail-low collapse: no history update
+                        } else if !tt_is_cap && tt_piece != NO_PIECE {
                             let bonus = history_bonus(depth);
                             History::update_history(
                                 info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
