@@ -410,6 +410,21 @@ impl TT {
                 continue;
             }
 
+            // Generation refresh on hit (Berserk/PlentyChess/RubiChess/
+            // Halogen pattern): entries serving this search stay current-gen
+            // so the graded victim function and the same-key stale-age
+            // clause can't evict hot carried-over entries from the previous
+            // move's search. Key-neutral: generation lives in data bits
+            // 56-63, the XOR verification key covers only the low 32 bits.
+            // Racing with a concurrent store can at worst produce a
+            // key/data mismatch, which the XOR check turns into a clean
+            // miss — same failure mode as any lockless torn write.
+            let cur_gen = self.generation.load(Ordering::Relaxed);
+            if unpack_generation(data) != cur_gen {
+                let refreshed = (data & !(0xFFu64 << 56)) | ((cur_gen as u64) << 56);
+                bucket.data[i].store(refreshed, Ordering::Release);
+            }
+
             return TTEntry {
                 best_move: unpack_move(data),
                 flag,
@@ -468,9 +483,18 @@ impl TT {
                 return;
             }
 
-            // Key match: update if newer generation or sufficiently deep
+            // Key match: consensus same-key gate (2026-06-11 TT audit).
+            // EXACT bypass (11/13 stronger engines) — a fresh exact score is
+            // the entry that seeds the next iteration's PV; PV stores get a
+            // +2-ply depth credit (8/13, SF's `+2*pv`); stale-generation
+            // entries always yield (SF family). With probe-side generation
+            // refresh, anything probed this search is already current-gen,
+            // so the stale clause only catches store-without-probe paths.
             if recovered_upper == key_upper {
-                if depth > slot_depth - 3 || gen != slot_gen {
+                if flag == TT_FLAG_EXACT
+                    || depth + 2 * (is_pv as i32) > slot_depth - 3
+                    || gen != slot_gen
+                {
                     bucket.data[i].store(new_data, Ordering::Release);
                     bucket.keys[i].store(new_key, Ordering::Release);
                 }
