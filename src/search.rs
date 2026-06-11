@@ -1792,21 +1792,25 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     // when main sets the shared stop flag.
     let effective_max = info.max_depth.min(MAX_PLY as i32 / 2);
     let mut prev_score = 0i32;
+    let mut avg_score = 0i32;
+    let mut have_avg = false;
     for depth in 1..=effective_max {
         if info.stop.load(Ordering::Relaxed) { break; }
 
         let score;
 
-        // Aspiration windows (skip for mate scores) — mirrors search().
+        // Aspiration windows (skip for mate scores) — mirrors search()
+        // (avg centring T2.8 + fail-high count reset/cap T2.7).
         if depth >= 4 && prev_score > -MATE_SCORE + 100 && prev_score < MATE_SCORE - 100 {
-            let avg = prev_score;
+            let avg = avg_score;
             let mut delta = tp(&ASP_DELTA) + (avg as i64 * avg as i64 / tp(&ASP_SCORE_DIV) as i64) as i32;
-            let mut alpha = (prev_score - delta).max(-INFINITY);
-            let mut beta = (prev_score + delta).min(INFINITY);
-            let mut asp_depth = depth;
+            let mut alpha = (avg - delta).max(-INFINITY);
+            let mut beta = (avg + delta).min(INFINITY);
+            let mut fail_high_cnt: i32 = 0;
             #[allow(unused_assignments)]
             let mut asp_result = prev_score;
             loop {
+                let asp_depth = (depth - fail_high_cnt.min(3)).max(1);
                 let result = negamax(board, info, alpha, beta, asp_depth, 0, false);
                 if info.stop.load(Ordering::Relaxed) {
                     asp_result = result;
@@ -1816,11 +1820,14 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
                     info.tm_asp_fail_low = info.tm_asp_fail_low.saturating_add(1);
                     beta = (3 * alpha + 5 * beta) / 8;
                     alpha = (result - delta).max(-INFINITY);
+                    fail_high_cnt = 0;
                 } else if result >= beta {
                     info.tm_asp_fail_high = info.tm_asp_fail_high.saturating_add(1);
                     alpha = (5 * alpha + 3 * beta) / 8;
                     beta = (result + delta).min(INFINITY);
-                    asp_depth = (asp_depth - 1).max(1);
+                    if result < MATE_SCORE - 100 {
+                        fail_high_cnt += 1;
+                    }
                 } else {
                     asp_result = result;
                     break;
@@ -1838,6 +1845,8 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
             best_move = info.pv_table[0][0];
         }
         prev_score = score;
+        avg_score = if have_avg { (avg_score + score) / 2 } else { score };
+        have_avg = true;
         info.last_score = score;
         info.completed_depth = depth;
     }
@@ -2003,6 +2012,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
     let mut best_move = NO_MOVE;
     let mut prev_score = 0i32;
+    // Smoothed running average of completed-iteration scores (Reckless/SF
+    // averageScore) — used to centre + size the aspiration window (T2.8).
+    let mut avg_score = 0i32;
+    let mut have_avg = false;
 
     // Stable PV snapshot. Updated only at the end of a *completed* iteration.
     // On a mid-iteration interrupt (should_stop fires inside negamax) we
@@ -2072,17 +2085,26 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         // Aspiration windows (skip for mate scores)
         if depth >= 4 && prev_score > -MATE_SCORE + 100 && prev_score < MATE_SCORE - 100 {
-            // Eval-dependent aspiration delta: wider for extreme scores (Reckless pattern)
-            // Calm positions (avg~0): delta=13, winning (avg~500): delta=24, crushing (avg~1000): delta=55
-            let avg = prev_score;
+            // Centre window + size delta on the smoothed running average score,
+            // not the raw previous iteration (Reckless avg=(avg+score)/2, SF
+            // averageScore) — damps one-off score spikes so a single noisy
+            // iteration doesn't recentre the window and force an immediate
+            // fail at the next depth (2026-06-11 audit T2.8).
+            let avg = avg_score;
             let mut delta = tp(&ASP_DELTA) + (avg as i64 * avg as i64 / tp(&ASP_SCORE_DIV) as i64) as i32;
-            let mut alpha = (prev_score - delta).max(-INFINITY);
-            let mut beta = (prev_score + delta).min(INFINITY);
-            let mut asp_depth = depth;
+            let mut alpha = (avg - delta).max(-INFINITY);
+            let mut beta = (avg + delta).min(INFINITY);
+            // Fail-high depth reduction with reset-on-fail-low and cap
+            // (SF failedHighCnt / Stormphrax aspReduction pattern; cap 3).
+            // The old form decremented monotonically for the loop lifetime, so
+            // a fail-high -> fail-low oscillation re-searched the fail-low at
+            // reduced depth and never recovered (audit T2.7).
+            let mut fail_high_cnt: i32 = 0;
             #[allow(unused_assignments)]
             let mut asp_result = prev_score;
 
             loop {
+                let asp_depth = (depth - fail_high_cnt.min(3)).max(1);
                 let result = negamax(board, info, alpha, beta, asp_depth, 0, false);
 
                 if info.should_stop() {
@@ -2095,13 +2117,16 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // Fail low: contract beta aggressively toward alpha, widen alpha
                     beta = (3 * alpha + 5 * beta) / 8;
                     alpha = (result - delta).max(-INFINITY);
+                    fail_high_cnt = 0;
                 } else if result >= beta {
                     info.tm_asp_fail_high = info.tm_asp_fail_high.saturating_add(1);
                     // Fail high: contract alpha toward beta, widen beta
                     alpha = (5 * alpha + 3 * beta) / 8;
                     beta = (result + delta).min(INFINITY);
-                    // Reduce depth for re-search (Alexandria/Midnight/Seer pattern)
-                    asp_depth = (asp_depth - 1).max(1);
+                    // Don't reduce when the fail-high is mate-bound (Obsidian gate)
+                    if result < MATE_SCORE - 100 {
+                        fail_high_cnt += 1;
+                    }
                 } else {
                     asp_result = result;
                     break;
@@ -2168,6 +2193,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         }
 
         prev_score = score;
+        avg_score = if have_avg { (avg_score + score) / 2 } else { score };
+        have_avg = true;
         info.last_score = score;
         info.ponder_depth.store(depth as u64, std::sync::atomic::Ordering::Relaxed);
 
