@@ -1,6 +1,8 @@
 //! Transposition table with lockless concurrent access.
 //! 5-slot buckets, cache-line aligned (64 bytes).
-//! Parallel arrays, 32-bit XOR key verification, power-of-2 indexing.
+//! Parallel arrays, 32-bit XOR key verification (LOW 32 bits of the hash —
+//! index mapping consumes the high bits), Lemire multiply-high indexing
+//! over an exact bucket count.
 
 use crate::types::*;
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
@@ -77,7 +79,7 @@ fn unpack_generation(data: u64) -> u8 {
 #[repr(C, align(64))]
 struct TTBucket {
     data: [AtomicU64; BUCKET_SIZE],  // 40 bytes — packed entry data
-    keys: [AtomicU32; BUCKET_SIZE],  // 20 bytes — upper32(hash) XOR lower32(data)
+    keys: [AtomicU32; BUCKET_SIZE],  // 20 bytes — lower32(hash) XOR lower32(data)
     _pad: [u8; 4],                   // 4 bytes padding to 64
 }
 
@@ -284,7 +286,7 @@ pub struct TT {
     buckets: AlignedBuckets,
     #[cfg(not(target_os = "linux"))]
     buckets: Vec<TTBucket>,
-    mask: usize,  // num_buckets - 1 (power of 2)
+    num_buckets: usize,  // exact count — no power-of-2 rounding
     generation: std::sync::atomic::AtomicU8,
 }
 
@@ -323,13 +325,10 @@ impl TT {
     /// Create a new TT with the given size in megabytes.
     pub fn new(mb: usize) -> Self {
         let bytes = mb * 1024 * 1024;
-        let num_buckets_raw = bytes / 64;
-        // Round down to power of 2
-        let mut size = 1usize;
-        while size * 2 <= num_buckets_raw {
-            size *= 2;
-        }
-        let size = size.max(1);
+        // Exact bucket count + Lemire multiply-high indexing (12/13 stronger
+        // engines). The old power-of-2 round-DOWN silently wasted up to half
+        // the requested hash (Hash=1000 -> 512 MB used).
+        let size = (bytes / 64).max(1);
 
         #[cfg(target_os = "linux")]
         let buckets = {
@@ -354,7 +353,7 @@ impl TT {
 
         TT {
             buckets,
-            mask: size - 1,
+            num_buckets: size,
             generation: std::sync::atomic::AtomicU8::new(0),
         }
     }
@@ -371,10 +370,14 @@ impl TT {
         self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Get the bucket index for a hash (power-of-2 masking).
+    /// Bucket index via Lemire multiply-high: maps the full 64-bit hash
+    /// uniformly onto [0, num_buckets) for ANY count. Consumes the hash's
+    /// HIGH bits — which is why XOR verification uses the LOW 32 bits
+    /// (they must stay independent of the index or same-bucket entries
+    /// would share verification prefixes).
     #[inline(always)]
     fn bucket_index(&self, hash: u64) -> usize {
-        (hash as usize) & self.mask
+        (((hash as u128) * (self.num_buckets as u128)) >> 64) as usize
     }
 
     /// Probe the TT for a position. Lock-free via atomic loads.
@@ -391,7 +394,7 @@ impl TT {
     pub fn probe(&self, hash: u64) -> TTEntry {
         let idx = self.bucket_index(hash);
         let bucket = &self.buckets[idx];
-        let key_upper = (hash >> 32) as u32;
+        let key_low = hash as u32;
 
         for i in 0..BUCKET_SIZE {
             // Order matters: load key (Acquire) BEFORE data so the
@@ -401,7 +404,7 @@ impl TT {
             let data = bucket.data[i].load(Ordering::Acquire);
 
             // 32-bit XOR verification: detects torn reads from concurrent writes
-            if stored_key ^ (data as u32) != key_upper {
+            if stored_key ^ (data as u32) != key_low {
                 continue;
             }
 
@@ -438,10 +441,10 @@ impl TT {
         let idx = self.bucket_index(hash);
         let bucket = &self.buckets[idx];
         let gen = self.generation.load(Ordering::Relaxed);
-        let key_upper = (hash >> 32) as u32;
+        let key_low = hash as u32;
 
         let new_data = pack_data(best_move, flag, static_eval, score, depth, gen, is_pv);
-        let new_key = key_upper ^ (new_data as u32);
+        let new_key = key_low ^ (new_data as u32);
 
         // Scan all 5 slots: key match, empty, or worst-scoring
         let mut replace_idx = 0;
@@ -452,7 +455,7 @@ impl TT {
             // matching data write on aarch64.
             let slot_key = bucket.keys[i].load(Ordering::Acquire);
             let slot_data = bucket.data[i].load(Ordering::Acquire);
-            let recovered_upper = slot_key ^ (slot_data as u32);
+            let recovered_key = slot_key ^ (slot_data as u32);
 
             let slot_flag = unpack_flag(slot_data);
             let slot_depth = unpack_depth(slot_data);
@@ -469,7 +472,7 @@ impl TT {
             }
 
             // Key match: update if newer generation or sufficiently deep
-            if recovered_upper == key_upper {
+            if recovered_key == key_low {
                 if depth > slot_depth - 3 || gen != slot_gen {
                     bucket.data[i].store(new_data, Ordering::Release);
                     bucket.keys[i].store(new_key, Ordering::Release);
@@ -517,7 +520,7 @@ impl TT {
     /// when only ~3% of slots held current-gen entries (cross-engine
     /// comparison with Reckless on Lichess 12+5 highlighted the gap).
     pub fn hashfull(&self) -> u32 {
-        let sample = (self.mask + 1).min(1000);
+        let sample = self.num_buckets.min(1000);
         let current_gen = self.generation.load(Ordering::Relaxed);
         let mut used = 0u32;
         for i in 0..sample {
@@ -712,16 +715,28 @@ mod tests {
         assert!(e.tt_pv);
     }
 
+    /// Find `n` distinct hashes (including `seed`) that map to the same
+    /// bucket under Lemire indexing, by golden-ratio scanning.
+    fn same_bucket_hashes(tt: &TT, seed: u64, n: usize) -> Vec<u64> {
+        let target_idx = tt.bucket_index(seed);
+        let mut v = vec![seed];
+        let mut h = seed.wrapping_add(0x9E3779B97F4A7C15);
+        while v.len() < n {
+            if tt.bucket_index(h) == target_idx {
+                v.push(h);
+            }
+            h = h.wrapping_add(0x9E3779B97F4A7C15);
+        }
+        v
+    }
+
     /// Five distinct hashes mapping to the same bucket must all coexist
-    /// (the bucket has 5 slots). We force a collision by choosing
-    /// hashes whose lower bits agree (picking 5 hashes that differ only
-    /// in the upper 32 bits but share the bucket index).
+    /// (the bucket has 5 slots).
     #[test]
     fn tt_five_distinct_hashes_all_fit() {
         let tt = TT::new(4);
-        let base = 0x1u64;
-        // Shift upper 32 bits so lower bits (bucket index) stay identical.
-        let hashes: Vec<u64> = (0..5).map(|i| base | ((i as u64 + 1) << 32)).collect();
+        // Lemire indexing: find 5 genuine same-bucket colliders.
+        let hashes = same_bucket_hashes(&tt, 0x1u64, 5);
 
         for (i, &h) in hashes.iter().enumerate() {
             tt.store(h, (i + 1) as i32, 100 + i as i32,
@@ -739,7 +754,7 @@ mod tests {
 
     /// XOR-key verification: a probe with a DIFFERENT hash that happens
     /// to collide with the same bucket must not return another entry's
-    /// data (stored_key ^ data != key_upper → miss).
+    /// data (stored_key ^ data != key_low → miss).
     #[test]
     fn tt_xor_verification_prevents_wrong_key_hit() {
         let tt = TT::new(4);
@@ -804,8 +819,7 @@ mod tests {
     #[test]
     fn tt_sixth_key_evicts_one_not_all() {
         let tt = TT::new(4);
-        let base = 0x5u64;
-        let hashes: Vec<u64> = (0..6).map(|i| base | ((i as u64 + 1) << 32)).collect();
+        let hashes = same_bucket_hashes(&tt, 0x5u64, 6);
 
         for (i, &h) in hashes.iter().enumerate() {
             // All same depth so eviction falls back on "worst slot" = first scanned.
@@ -845,16 +859,19 @@ mod targeted_tests {
         assert_eq!(entry.flag, TT_FLAG_LOWER);
         println!("Direct store+probe: OK");
 
-        // Store entries that map to the SAME bucket to test eviction
-        let mask = (64 * 1024 * 1024 / 64) - 1;
-        let bucket_idx = target_hash as usize & mask;
-
-        // Store 10 entries to the same bucket
-        for i in 0..10u64 {
-            let h = ((i + 1) << 20) | (bucket_idx as u64);
-            if h != target_hash {
-                tt.store(h, (i as i32) + 1, 0, TT_FLAG_EXACT, 0, 0, false);
+        // Store entries that map to the SAME bucket to test eviction.
+        // With Lemire indexing, find colliders by scanning candidate hashes.
+        let num_buckets = 64 * 1024 * 1024 / 64;
+        let target_idx = (((target_hash as u128) * (num_buckets as u128)) >> 64) as usize;
+        let mut stored = 0u64;
+        let mut h = target_hash.wrapping_add(0x9E3779B97F4A7C15);
+        while stored < 10 {
+            let idx = (((h as u128) * (num_buckets as u128)) >> 64) as usize;
+            if idx == target_idx && h != target_hash {
+                stored += 1;
+                tt.store(h, stored as i32, 0, TT_FLAG_EXACT, 0, 0, false);
             }
+            h = h.wrapping_add(0x9E3779B97F4A7C15);
         }
 
         let entry2 = tt.probe(target_hash);
@@ -872,7 +889,7 @@ impl TT {
     pub fn dump_to_file(&self, path: &str) -> std::io::Result<()> {
         use std::io::Write;
         let mut f = std::fs::File::create(path)?;
-        let num_buckets = self.mask + 1;
+        let num_buckets = self.num_buckets;
         for bi in 0..num_buckets {
             let bucket = &self.buckets[bi];
             for si in 0..BUCKET_SIZE {
