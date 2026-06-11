@@ -1874,9 +1874,13 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.root_stm = board.side_to_move;
 
     // Age history tables (×0.80) to preserve useful move ordering from prior searches.
-    // Killers and counter-moves are cleared (position-specific). Correction history reset.
+    // Killers and counter-moves are cleared (position-specific).
+    // Correction history PERSISTS across `go` calls (cleared on ucinewgame only,
+    // uci.rs) — consensus practice (SF/Reckless/Obsidian/Berserk/Stormphrax all
+    // persist within a game; 2026-06-11 audit T2.1). Eval miscalibration is
+    // position-family-keyed and stays valid across one game move, same locality
+    // argument as pawn_hist below.
     info.history.age(4, 5);
-    info.clear_correction_history();
     info.stats = PruneStats::default();
     // Age pawn history (×0.80, matching main/capture history aging)
     for entry in info.pawn_hist.iter_mut() {
