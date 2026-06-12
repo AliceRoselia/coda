@@ -3000,11 +3000,46 @@ fn negamax(
                             info.pv_len[ply_u] = 0;
                         }
 
-                        // History bonus for TT cutoff: reinforce move ordering
+                        // History bonus for TT cutoff: reinforce move ordering.
+                        // Direction-split (audit T1.1 retake; #1931 showed the
+                        // plain LOWER-only gate REGRESSES -1.6 — the UPPER-side
+                        // bonus carried real signal):
+                        //   LOWER collapse (fail-high): bonus the tt_move, as
+                        //   before — it caused the cutoff.
+                        //   UPPER collapse (fail-low): the tt_move is the best
+                        //   move of a FAILED node; replace its bonus with the
+                        //   consensus mechanism the old bonus was accidentally
+                        //   approximating — a PCM bonus to the OPPONENT's prior
+                        //   quiet (SF/Reckless fail-low prior-countermove
+                        //   pattern, T2.13), mirroring the TT-cutoff cont-hist
+                        //   malus shape above with flipped sign/direction.
                         let tt_piece = board.piece_at(move_from(tt_move));
                         let tt_is_cap = board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
                             || move_flags(tt_move) == FLAG_EN_PASSANT;
-                        if !tt_is_cap && tt_piece != NO_PIECE {
+                        if tt_entry.flag != TT_FLAG_LOWER {
+                            // Fail-low collapse: PCM bonus to opponent's prior quiet.
+                            let stack_len = board.undo_stack.len();
+                            if ply_u >= 2 && stack_len >= 2 {
+                                let opp_undo = &board.undo_stack[stack_len - 1];
+                                let our_undo = &board.undo_stack[stack_len - 2];
+                                if opp_undo.mv != NO_MOVE && opp_undo.captured == NO_PIECE_TYPE
+                                    && our_undo.mv != NO_MOVE
+                                {
+                                    let opp_gp = info.moved_piece_stack[ply_u - 1] as usize;
+                                    let our_gp = info.moved_piece_stack[ply_u - 2] as usize;
+                                    let opp_to = info.moved_to_stack[ply_u - 1] as usize;
+                                    let our_to = info.moved_to_stack[ply_u - 2] as usize;
+                                    if opp_gp > 0 && opp_gp < 13 && our_gp > 0 && our_gp < 13
+                                        && opp_to < 64 && our_to < 64
+                                    {
+                                        History::update_cont_history(
+                                            &mut info.history.cont_hist[our_gp][our_to][opp_gp][opp_to],
+                                            history_bonus(depth),
+                                        );
+                                    }
+                                }
+                            }
+                        } else if !tt_is_cap && tt_piece != NO_PIECE {
                             let bonus = history_bonus(depth);
                             History::update_history(
                                 info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
@@ -4406,6 +4441,40 @@ fn negamax(
     if let Some(floor) = tb_floor {
         if best_score < floor {
             best_score = floor;
+        }
+    }
+
+    // PCM fail-low bonus (audit T2.13; SF search.cpp:1444-1474, Reckless
+    // search.rs:1036-1053): a fail-low at this node is direct evidence the
+    // opponent's previous move was good — reinforce it in cont-hist. Quiet
+    // PCM only; main-hist would need the PARENT's threat keying, which we
+    // don't store. Exact mirror (sign-flipped) of the TT-cutoff cont-hist
+    // malus shape above, same undo_stack/stack-index discipline.
+    if best_score <= alpha_orig
+        && ply_u >= 2
+        && info.excluded_move[ply_u] == NO_MOVE
+        && !info.stop.load(Ordering::Relaxed)
+    {
+        let stack_len = board.undo_stack.len();
+        if stack_len >= 2 {
+            let opp_undo = &board.undo_stack[stack_len - 1];
+            let our_undo = &board.undo_stack[stack_len - 2];
+            if opp_undo.mv != NO_MOVE && opp_undo.captured == NO_PIECE_TYPE
+                && our_undo.mv != NO_MOVE
+            {
+                let opp_gp = info.moved_piece_stack[ply_u - 1] as usize;
+                let our_gp = info.moved_piece_stack[ply_u - 2] as usize;
+                let opp_to = info.moved_to_stack[ply_u - 1] as usize;
+                let our_to = info.moved_to_stack[ply_u - 2] as usize;
+                if opp_gp > 0 && opp_gp < 13 && our_gp > 0 && our_gp < 13
+                    && opp_to < 64 && our_to < 64
+                {
+                    History::update_cont_history(
+                        &mut info.history.cont_hist[our_gp][our_to][opp_gp][opp_to],
+                        history_bonus(depth),
+                    );
+                }
+            }
         }
     }
 
