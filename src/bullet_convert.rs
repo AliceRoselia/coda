@@ -216,10 +216,22 @@ pub fn convert_v7(
     hl_crelu: bool,
     xray_trained: bool,
     reckless_buckets: bool,
+    psqt: bool,
 ) -> Result<(), String> {
     let psq_input_size = kb_count * PSQ_INPUTS_PER_BUCKET;
     let data = std::fs::read(input_path).map_err(|e| format!("read {}: {}", input_path, e))?;
     let data_len = strip_footer(&data);
+
+    // PSQT skip connection (SF SFNNv5+ pattern, Bullet --psqt): an affine
+    // over the full sparse input with NNUE_OUTPUT_BUCKETS outputs, no bias
+    // (the bias cancels in the (stm − ntm)/2 combine and is not saved).
+    // Saved by the trainer LAST after l3b as i16 quantised at ×255 (QA),
+    // input-major like every other affine in quantised.bin: one row of
+    // 8 i16 per input feature, PSQ rows first then threat rows.
+    if psqt && num_threats == 0 {
+        return Err("--psqt requires a threat net (--threats > 0): the trainer \
+                    only emits psqtw for the coda_v9 threat architecture".to_string());
+    }
 
     let l1w_bytes_per = if int8_l1 { 1 } else { 2 };
     // Bucketed: Bullet bakes output buckets into hidden layer dimensions
@@ -239,7 +251,11 @@ pub fn convert_v7(
     } else {
         out_input * NNUE_OUTPUT_BUCKETS * 4 + NNUE_OUTPUT_BUCKETS * 4 // f32
     };
-    let fixed_bytes = l1b_bytes + l2_bytes + out_bytes;
+    // Trailing psqtw block: (psq_inputs + threats) rows × 8 i16, already
+    // quantised by the trainer. Independent of FT size, so it belongs in
+    // fixed_bytes for the FT-size inference below.
+    let psqt_bytes = if psqt { (psq_input_size + num_threats) * NNUE_OUTPUT_BUCKETS * 2 } else { 0 };
+    let fixed_bytes = l1b_bytes + l2_bytes + out_bytes + psqt_bytes;
     // Pairwise: L1 input is H (after CReLU+pairwise+concat = ft_size)
     // Direct: L1 input is 2*H
     let l1_mul = if use_pairwise { 1 } else { 2 };
@@ -254,16 +270,16 @@ pub fn convert_v7(
         (data_len - fixed_bytes) / bytes_per_neuron
     };
 
-    println!("Input: {} bytes, FT={} L1={}{} L2={} threats={} kb={}/{:?} (bucketed: {}x{}, {}x{})",
+    println!("Input: {} bytes, FT={} L1={}{} L2={} threats={} kb={}/{:?} psqt={} (bucketed: {}x{}, {}x{})",
         data.len(), h, l1_size, if int8_l1 { "(i8)" } else { "" }, l2_size, num_threats,
-        kb_count, kb_layout, bl1, bl2, NNUE_OUTPUT_BUCKETS, l1_size);
+        kb_count, kb_layout, psqt, bl1, bl2, NNUE_OUTPUT_BUCKETS, l1_size);
 
     // Verify size
     let l1_input = l1_mul * h;
     let expected = total_ft_inputs * h * 2 + h * 2 + l1_input * bl1 * l1w_bytes_per
-        + l1b_bytes + l2_bytes + out_bytes;
+        + l1b_bytes + l2_bytes + out_bytes + psqt_bytes;
     if expected != data_len {
-        return Err(format!("Size mismatch: expected {} bytes for FT={}, got {} (total_ft_inputs={})", expected, h, data_len, total_ft_inputs));
+        return Err(format!("Size mismatch: expected {} bytes for FT={}, got {} (total_ft_inputs={}, psqt_bytes={})", expected, h, data_len, total_ft_inputs, psqt_bytes));
     }
 
     let mut offset = 0;
@@ -429,14 +445,38 @@ pub fn convert_v7(
         }
     }
 
+    // psqtw: trailing block appended LAST after l3b by the trainer.
+    // (psq_input_size + num_threats) rows × NNUE_OUTPUT_BUCKETS i16, already
+    // quantised at ×255 — read verbatim, no rescale. Row order matches l0w's
+    // feature order (PSQ block then threats), which is also the engine's
+    // feature-index order.
+    let mut psqt_weights = Vec::new();
+    if psqt {
+        let n = (psq_input_size + num_threats) * NNUE_OUTPUT_BUCKETS;
+        psqt_weights = vec![0i16; n];
+        for w in psqt_weights.iter_mut() {
+            *w = read_i16_le(&data, offset);
+            offset += 2;
+        }
+        println!("Read {} psqt weights ({} rows × {}, i16 @ ×255)",
+            n, psq_input_size + num_threats, NNUE_OUTPUT_BUCKETS);
+    }
+
     println!("Parsed {} bytes of {} (FT={})", offset, data.len(), h);
 
-    // Write .nnue — v10 for threats (adds training_flags byte), v8 for dual L1, v7 otherwise.
+    // Write .nnue — v11 for threats+psqt, v10 for threats (adds training_flags
+    // byte), v8 for dual L1, v7 otherwise.
     // v10 vs v9: v10 adds a training_flags byte after the kb_layout byte, recording
     // metadata like xray_trained. v9 nets are still loadable (legacy xray_trained=true
     // assumed). Old Coda binaries that don't understand v10 will error on load, which
     // is the intended fail-loud behavior for format mismatch.
-    let version = if num_threats > 0 { 10u32 } else if dual_l1 { 8u32 } else { 7u32 };
+    // v11 = v10 semantics + trailing psqt block. The version bump is deliberate
+    // fail-loud: binaries without psqt inference must REFUSE these nets rather
+    // than silently dropping the psqt term (which would corrupt eval).
+    let version = if psqt { 11u32 }
+        else if num_threats > 0 { 10u32 }
+        else if dual_l1 { 8u32 }
+        else { 7u32 };
     let mut buf = Vec::new();
     write_u32_le(&mut buf, NNUE_MAGIC);
     write_u32_le(&mut buf, version);
@@ -504,6 +544,12 @@ pub fn convert_v7(
     }
     for &w in &output_weights { write_i16_le(&mut buf, w); } // [BUCKETS][L2]
     for &b in &output_bias { write_i32_le(&mut buf, b); }     // [BUCKETS]
+    // v11: psqt block at the END of the payload. (768*kb_count) PSQ rows then
+    // num_threats threat rows, 8 × i16 per row, in the engine's feature-index
+    // order (= the trainer's input order, = l0w's row order).
+    if psqt {
+        for &w in &psqt_weights { write_i16_le(&mut buf, w); }
+    }
 
     std::fs::File::create(output_path)
         .and_then(|mut f| f.write_all(&buf))
@@ -511,6 +557,132 @@ pub fn convert_v7(
 
     let dual_str = if dual_l1 { " dual" } else { "" };
     let threat_str = if num_threats > 0 { format!(" threats={}", num_threats) } else { String::new() };
-    println!("Saved {} ({} bytes, v{}{}{} FT={} L1={} L2={})", output_path, buf.len(), version, dual_str, threat_str, h, l1_size, l2_size);
+    let psqt_str = if psqt { " psqt" } else { "" };
+    println!("Saved {} ({} bytes, v{}{}{}{} FT={} L1={} L2={})", output_path, buf.len(), version, dual_str, threat_str, psqt_str, h, l1_size, l2_size);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a synthetic Bullet quantised.bin for a tiny v9-shaped net
+    /// (pairwise + int8 L1 + f32 hidden + threats), optionally with a
+    /// trailing psqtw block, with deterministic values.
+    fn make_quantised_bin(h: usize, l1: usize, l2: usize, kb: usize, threats: usize, psqt: bool) -> Vec<u8> {
+        let psq = kb * PSQ_INPUTS_PER_BUCKET;
+        let total_ft = psq + threats;
+        let mut buf = Vec::new();
+        let push_i16 = |buf: &mut Vec<u8>, v: i16| buf.extend_from_slice(&v.to_le_bytes());
+        let push_f32 = |buf: &mut Vec<u8>, v: f32| buf.extend_from_slice(&v.to_le_bytes());
+
+        // l0w: [total_ft][h] i16 — PSQ rows then threat rows. Threat values
+        // kept inside i8 range so the converter's clamp is a no-op.
+        for i in 0..total_ft * h {
+            push_i16(&mut buf, ((i * 7) % 199) as i16 - 99);
+        }
+        // l0b: [h] i16
+        for j in 0..h { push_i16(&mut buf, (j % 23) as i16 - 11); }
+        // l1w: [l1_input = h (pairwise)][l1] i8
+        for i in 0..h * l1 { buf.push((((i * 13) % 251) as i32 - 125) as i8 as u8); }
+        // l1b: [l1] f32
+        for i in 0..l1 { push_f32(&mut buf, i as f32 * 0.01); }
+        // l2w: [l1][l2] f32 + l2b: [l2] f32
+        for i in 0..l1 * l2 { push_f32(&mut buf, (i % 31) as f32 * 0.005 - 0.07); }
+        for i in 0..l2 { push_f32(&mut buf, i as f32 * -0.02); }
+        // l3w: [l2][8] f32 + l3b: [8] f32
+        for i in 0..l2 * NNUE_OUTPUT_BUCKETS { push_f32(&mut buf, (i % 17) as f32 * 0.01); }
+        for b in 0..NNUE_OUTPUT_BUCKETS { push_f32(&mut buf, b as f32 * 0.1); }
+        // psqtw: [total_ft][8] i16 @ ×255, appended LAST (trainer contract).
+        if psqt {
+            for i in 0..total_ft * NNUE_OUTPUT_BUCKETS {
+                push_i16(&mut buf, expected_psqt_value(i));
+            }
+        }
+        buf
+    }
+
+    /// Deterministic psqtw element pattern shared by writer and checker.
+    fn expected_psqt_value(i: usize) -> i16 {
+        (((i.wrapping_mul(104_729)) % 2003) as i32 - 1001) as i16
+    }
+
+    #[test]
+    fn psqt_convert_load_roundtrip() {
+        crate::init();
+        let (h, l1, l2, kb, threats) = (32usize, 16usize, 32usize, 16usize, 512usize);
+        let psq = kb * PSQ_INPUTS_PER_BUCKET;
+
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let bin_path = dir.join(format!("coda_psqt_rt_{}.bin", pid));
+        let nnue_path = dir.join(format!("coda_psqt_rt_{}.nnue", pid));
+        let bin = make_quantised_bin(h, l1, l2, kb, threats, true);
+        std::fs::write(&bin_path, &bin).unwrap();
+
+        // Converting WITHOUT --psqt must fail loud on the size mismatch —
+        // the trailing psqtw block may never be silently ignored.
+        let err = convert_v7(
+            bin_path.to_str().unwrap(), nnue_path.to_str().unwrap(),
+            true, true, l1, l2, true, false, h, false, false,
+            KbLayout::Uniform, kb, threats, false, true, false,
+            false,
+        );
+        assert!(err.is_err(), "psqt bin without --psqt must be rejected, got {:?}", err);
+
+        // Convert WITH --psqt → v11 .nnue.
+        convert_v7(
+            bin_path.to_str().unwrap(), nnue_path.to_str().unwrap(),
+            true, true, l1, l2, true, false, h, false, false,
+            KbLayout::Uniform, kb, threats, false, true, false,
+            true,
+        ).expect("psqt conversion failed");
+
+        // Load and verify the psqt block round-tripped exactly, split into
+        // PSQ rows then threat rows in feature order.
+        let net = crate::nnue::NNUENet::load(nnue_path.to_str().unwrap()).expect("v11 load failed");
+        assert!(net.has_psqt, "loader must flag v11 nets as has_psqt");
+        assert!(net.has_threats && net.use_pairwise && net.l1_size > 0);
+        assert_eq!(net.psqt_weights_psq.len(), psq * NNUE_OUTPUT_BUCKETS);
+        assert_eq!(net.psqt_weights_threat.len(), threats * NNUE_OUTPUT_BUCKETS);
+        for (i, &v) in net.psqt_weights_psq.iter().enumerate() {
+            assert_eq!(v, expected_psqt_value(i), "psq psqt row mismatch at {}", i);
+        }
+        for (i, &v) in net.psqt_weights_threat.iter().enumerate() {
+            assert_eq!(v, expected_psqt_value(psq * NNUE_OUTPUT_BUCKETS + i),
+                "threat psqt row mismatch at {}", i);
+        }
+        // ThreatStack carrier: value block + 16 bytes per feature, and the
+        // carrier rows decode back to the loaded threat psqt rows.
+        assert_eq!(net.threat_weights.len(), threats * h + threats * 2 * NNUE_OUTPUT_BUCKETS);
+        let carrier = crate::threat_accum::psqt_carrier(&net.threat_weights, threats, h)
+            .expect("psqt carrier must be present on a v11 net");
+        for f in 0..threats {
+            for k in 0..NNUE_OUTPUT_BUCKETS {
+                let off = f * 2 * NNUE_OUTPUT_BUCKETS + 2 * k;
+                let v = i16::from_le_bytes([carrier[off] as u8, carrier[off + 1] as u8]);
+                assert_eq!(v, net.psqt_weights_threat[f * NNUE_OUTPUT_BUCKETS + k],
+                    "carrier decode mismatch at feature {} lane {}", f, k);
+            }
+        }
+
+        // Control: same net without psqt converts to v10 and loads with
+        // has_psqt=false and an exactly-sized threat weight vec.
+        let bin10 = make_quantised_bin(h, l1, l2, kb, threats, false);
+        std::fs::write(&bin_path, &bin10).unwrap();
+        convert_v7(
+            bin_path.to_str().unwrap(), nnue_path.to_str().unwrap(),
+            true, true, l1, l2, true, false, h, false, false,
+            KbLayout::Uniform, kb, threats, false, true, false,
+            false,
+        ).expect("v10 conversion failed");
+        let net10 = crate::nnue::NNUENet::load(nnue_path.to_str().unwrap()).expect("v10 load failed");
+        assert!(!net10.has_psqt);
+        assert!(net10.psqt_weights_psq.is_empty() && net10.psqt_weights_threat.is_empty());
+        assert_eq!(net10.threat_weights.len(), threats * h);
+        assert!(crate::threat_accum::psqt_carrier(&net10.threat_weights, threats, h).is_none());
+
+        let _ = std::fs::remove_file(&bin_path);
+        let _ = std::fs::remove_file(&nnue_path);
+    }
 }

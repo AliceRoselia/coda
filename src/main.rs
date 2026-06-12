@@ -446,6 +446,11 @@ enum Commands {
         /// uniform `(piece_count-2)/4` formula.
         #[arg(long = "reckless-buckets", action = clap::ArgAction::SetTrue)]
         reckless_buckets: bool,
+        /// PSQT skip connection (Bullet --psqt). Reads the trailing psqtw
+        /// block ((768*kb + threats) rows × 8 i16 @ ×255) appended after
+        /// l3b in quantised.bin, and writes a v11 .nnue. Requires --threats.
+        #[arg(long)]
+        psqt: bool,
     },
     /// Convert .nnue to Bullet checkpoint (for transfer learning)
     ConvertCheckpoint {
@@ -1030,7 +1035,7 @@ fn main() {
             run_eval_dist(&input, count, &cli.nnue, &csv, quiet_only);
         }
 
-        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, xray_trained, reckless_buckets }) => {
+        Some(Commands::ConvertBullet { input, output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, consensus_buckets, kb_layout, kb_count, threats, output_buckets, hl_crelu, xray_trained, reckless_buckets, psqt }) => {
             // Resolve king bucket layout and count. Explicit --kb-layout wins;
             // --consensus-buckets is the legacy path for 16-bucket consensus.
             let layout = if !kb_layout.is_empty() {
@@ -1046,8 +1051,12 @@ fn main() {
             let count = if kb_count > 0 { kb_count } else { layout.default_count() };
 
             let result = if hidden > 0 {
-                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, xray_trained, reckless_buckets)
+                bullet_convert::convert_v7(&input, &output, screlu, pairwise, hidden, hidden2, int8l1, bucketed_hidden, ft_size, int16_hidden, dual, layout, count, threats, hl_crelu, xray_trained, reckless_buckets, psqt)
             } else {
+                if psqt {
+                    eprintln!("Error: --psqt requires hidden layers (--hidden > 0); the v5 path has no psqt support");
+                    std::process::exit(1);
+                }
                 bullet_convert::convert_v5(&input, &output, screlu, pairwise, output_buckets, layout, count)
             };
             if let Err(e) = result {

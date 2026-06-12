@@ -2521,9 +2521,24 @@ pub struct NNUENet {
     pub out_bias_f: Vec<f32>,     // [NNUE_OUTPUT_BUCKETS]
     pub dual_l1: bool,            // v8: dual L1 activation (CReLU+SCReLU on L1 output)
     // v9 threat features
-    pub threat_weights: Vec<i8>,  // [num_threat_features × hidden_size] i8 weights
+    /// `[num_threat_features × hidden_size]` i8 value weights. For v11 psqt
+    /// nets this carries the threat psqt rows appended after the value block
+    /// (see `threat_accum::psqt_carrier`) so the ThreatStack can update its
+    /// psqt lanes inside the existing `refresh`/`update` signatures.
+    pub threat_weights: Vec<i8>,
     pub num_threat_features: usize,
     pub has_threats: bool,
+    // v11 PSQT skip connection (SF SFNNv5+ pattern)
+    /// PSQ-feature psqt rows: `[num_king_buckets*768 × NNUE_OUTPUT_BUCKETS]`
+    /// i16 at ×255 (QA), feature-index order matching `input_weights`.
+    pub psqt_weights_psq: Vec<i16>,
+    /// Threat-feature psqt rows: `[num_threat_features × NNUE_OUTPUT_BUCKETS]`
+    /// i16 at ×255, feature-index order matching `threat_weights`.
+    pub psqt_weights_threat: Vec<i16>,
+    /// Net carries a PSQT skip connection (v11). Eval adds
+    /// `0.5 * (stm_psqt − ntm_psqt) / 255` to the network output before
+    /// centipawn scaling. When false, all psqt bookkeeping is skipped.
+    pub has_psqt: bool,
     /// Whether the net was trained WITH xray threat features. Coda inference
     /// always emits xrays, so nets with `xray_trained=false` will produce
     /// garbage eval (weights were learned against direct-attack signal only,
@@ -2680,7 +2695,7 @@ impl NNUENet {
                 }
                 hidden_size = (h_numer / h_denom) as usize;
             }
-            7..=10 => {
+            7..=11 => {
                 let flags = read_u8(reader)?;
                 use_screlu = flags & 1 != 0;
                 use_pairwise = flags & 2 != 0;
@@ -2741,10 +2756,24 @@ impl NNUENet {
                     xray_trained = true;
                     reckless_buckets = false;
                 }
+                // v11 (= v10 + trailing psqt block) only exists for the v9
+                // production shape: threats + pairwise + hidden layers. The
+                // psqt eval term is implemented on exactly that forward path
+                // (`forward_with_l1_pairwise_inner`); refuse anything else so
+                // a mis-flagged net fails loud instead of silently dropping
+                // its psqt term.
+                if version == 11 && (!has_threats || !use_pairwise || l1_size == 0) {
+                    return Err(format!(
+                        "v11 (psqt) net must be a pairwise threat net with hidden layers \
+                         (threats={}, pairwise={}, l1={})",
+                        has_threats, use_pairwise, l1_size
+                    ));
+                }
                 hidden_size = ft_size;
             }
             _ => return Err(format!("unsupported NNUE version: {}", version)),
         };
+        let has_psqt = version == 11;
 
         // The pairwise SIMD pack writes pw = hidden_size/2 bytes into a fixed
         // PW_BUF (1024) stack buffer. A net header claiming hidden_size > 2048
@@ -2829,6 +2858,26 @@ impl NNUENet {
             output_bias[i] = read_i32(reader)?;
         }
 
+        // v11: trailing PSQT block at the end of the payload — (768*kb) PSQ
+        // rows then num_threat_features threat rows, NNUE_OUTPUT_BUCKETS i16
+        // per row at ×255, feature-index order matching the weight blocks.
+        let mut psqt_weights_psq = Vec::new();
+        let mut psqt_weights_threat = Vec::new();
+        if has_psqt {
+            psqt_weights_psq = vec![0i16; psq_input_size * NNUE_OUTPUT_BUCKETS];
+            read_i16_slice(reader, &mut psqt_weights_psq)?;
+            psqt_weights_threat = vec![0i16; num_threat_features * NNUE_OUTPUT_BUCKETS];
+            read_i16_slice(reader, &mut psqt_weights_threat)?;
+            // Append the threat psqt rows to the threat weight vec so the
+            // ThreatStack (which only ever sees `&net.threat_weights`) can
+            // maintain its psqt lanes in lockstep with its values. See
+            // threat_accum::psqt_carrier for the format and rationale.
+            crate::threat_accum::append_psqt_carrier(
+                &mut threat_weights, &psqt_weights_threat,
+                num_threat_features, hidden_size,
+            );
+        }
+
         // Compute king bucket tables for this net's layout. Stored on the
         // returned NNUENet struct (per-net, not static) so Lazy SMP helpers
         // can read them concurrently without racing a subsequent net load.
@@ -2842,14 +2891,15 @@ impl NNUENet {
             KbLayout::Reckless  => " reckless-kb10",
         };
         let threat_str = if has_threats { format!(" threats={}", num_threat_features) } else { String::new() };
+        let psqt_str = if has_psqt { " psqt" } else { "" };
         if l1_size > 0 {
             if l2_size > 0 {
-                println!("info string Loaded NNUE v{} {} {}{}{}{} (FT={} L1={} L2={})", version, source_name, activation, dual_str, bucket_str, threat_str, hidden_size, l1_size, l2_size);
+                println!("info string Loaded NNUE v{} {} {}{}{}{}{} (FT={} L1={} L2={})", version, source_name, activation, dual_str, bucket_str, threat_str, psqt_str, hidden_size, l1_size, l2_size);
             } else {
-                println!("info string Loaded NNUE v{} {} {}{}{}{} (FT={} L1={})", version, source_name, activation, dual_str, bucket_str, threat_str, hidden_size, l1_size);
+                println!("info string Loaded NNUE v{} {} {}{}{}{}{} (FT={} L1={})", version, source_name, activation, dual_str, bucket_str, threat_str, psqt_str, hidden_size, l1_size);
             }
         } else {
-            println!("info string Loaded NNUE v{} {} {}{}{} ({})", version, source_name, activation, bucket_str, threat_str, hidden_size);
+            println!("info string Loaded NNUE v{} {} {}{}{}{} ({})", version, source_name, activation, bucket_str, threat_str, psqt_str, hidden_size);
         }
 
         // Transpose L1 weights for SIMD: [j*L1+i] → [i*H+j] per perspective
@@ -3003,6 +3053,9 @@ impl NNUENet {
             threat_weights,
             num_threat_features,
             has_threats,
+            psqt_weights_psq,
+            psqt_weights_threat,
+            has_psqt,
             xray_trained,
             reckless_buckets,
             num_king_buckets,
@@ -3063,6 +3116,14 @@ impl NNUENet {
         &self.input_weights[off..off + self.hidden_size]
     }
 
+    /// PSQT row (NNUE_OUTPUT_BUCKETS i16 at ×255) for a PSQ feature index.
+    /// Only valid when `has_psqt`.
+    #[inline]
+    pub fn psqt_psq_row(&self, idx: usize) -> &[i16] {
+        let off = idx * NNUE_OUTPUT_BUCKETS;
+        &self.psqt_weights_psq[off..off + NNUE_OUTPUT_BUCKETS]
+    }
+
     /// Output width per bucket (always per-bucket size, not total bucketed size).
     #[inline]
     fn output_width(&self) -> usize {
@@ -3105,17 +3166,21 @@ impl NNUENet {
         if stm_threat.is_empty() {
             return self.forward_with_l1_pairwise(stm_acc, ntm_acc, bucket);
         }
-        self.forward_with_l1_pairwise_threats(stm_acc, ntm_acc, stm_threat, ntm_threat, bucket)
+        // Legacy path — psqt nets must route through forward_with_threats,
+        // which computes the psqt term (0.0 here would silently drop it).
+        debug_assert!(!self.has_psqt,
+            "psqt net evaluated through the legacy fused path — psqt term lost");
+        self.forward_with_l1_pairwise_threats(stm_acc, ntm_acc, stm_threat, ntm_threat, bucket, 0.0)
     }
 
     fn forward_with_l1_pairwise(&self, stm_acc: &[i16], ntm_acc: &[i16], bucket: usize) -> i32 {
-        unsafe { self.forward_with_l1_pairwise_inner(stm_acc, ntm_acc, &[], &[], bucket) }
+        unsafe { self.forward_with_l1_pairwise_inner(stm_acc, ntm_acc, &[], &[], bucket, 0.0) }
     }
 
     fn forward_with_l1_pairwise_threats(&self, stm_acc: &[i16], ntm_acc: &[i16],
-        stm_threat: &[i16], ntm_threat: &[i16], bucket: usize) -> i32
+        stm_threat: &[i16], ntm_threat: &[i16], bucket: usize, psqt_term: f32) -> i32
     {
-        unsafe { self.forward_with_l1_pairwise_inner(stm_acc, ntm_acc, stm_threat, ntm_threat, bucket) }
+        unsafe { self.forward_with_l1_pairwise_inner(stm_acc, ntm_acc, stm_threat, ntm_threat, bucket, psqt_term) }
     }
 
     /// Marked `#[target_feature]` to propagate AVX2 codegen context through
@@ -3124,9 +3189,14 @@ impl NNUENet {
     /// AVX2 sequences inside the inlined region (measured +~5% NPS, identical
     /// bench node count). Callers must ensure AVX2 is available; on x86_64
     /// with `-Ctarget-cpu=native` it is.
+    /// `psqt_term` (v11): pre-computed `0.5 * (stm_psqt − ntm_psqt) / QA`
+    /// skip-connection value, added to the float network output BEFORE the
+    /// centipawn scaling — matching the trainer's
+    /// `net_out + 0.5 * (stm_psqt - ntm_psqt)`. 0.0 for non-psqt nets
+    /// (bit-identical to the pre-psqt code: IEEE `x + 0.0 == x`).
     #[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx2"))]
     unsafe fn forward_with_l1_pairwise_inner(&self, stm_acc: &[i16], ntm_acc: &[i16],
-        stm_threat: &[i16], ntm_threat: &[i16], bucket: usize) -> i32
+        stm_threat: &[i16], ntm_threat: &[i16], bucket: usize, psqt_term: f32) -> i32
     {
         let h = self.hidden_size;
         let pw = h / 2; // pairwise output per perspective
@@ -3689,13 +3759,13 @@ impl NNUENet {
                 for k in 0..l2 { acc += h2[k] * out_w[k]; }
                 acc
             };
-            return (out_f * EVAL_SCALE as f32) as i32;
+            return ((out_f + psqt_term) * EVAL_SCALE as f32) as i32;
         }
 
         let out_w = &self.out_weights_f[bucket * l1_pb..bucket * l1_pb + l1_pb];
         let mut out_f = self.out_bias_f[bucket];
         for i in 0..l1 { out_f += l1_out[i] * out_w[i]; }
-        (out_f * EVAL_SCALE as f32) as i32
+        ((out_f + psqt_term) * EVAL_SCALE as f32) as i32
     }
 
     /// v7 hidden layer forward pass (SCReLU).
@@ -4161,13 +4231,35 @@ impl NNUENet {
 
             if self.l1_size > 0 {
                 if self.use_pairwise {
-                    return self.forward_with_l1_pairwise_threats(stm_acc, ntm_acc, t_stm, t_ntm, bucket);
+                    // PSQT skip connection (v11): per-perspective lane sums
+                    // live on the PSQ accumulator (piece features) and the
+                    // ThreatStack (threat features), both at ×255. The
+                    // trainer adds `0.5 * (stm_psqt − ntm_psqt)` to the raw
+                    // network output; dividing by QA recovers that scale.
+                    // Uses the SAME output bucket as the forward pass.
+                    let psqt_term = if self.has_psqt {
+                        let (a_stm, a_ntm, ts_stm, ts_ntm) = if stm == WHITE {
+                            (acc.psqt_lanes(WHITE), acc.psqt_lanes(BLACK),
+                             threat_stack.psqt_lanes(WHITE), threat_stack.psqt_lanes(BLACK))
+                        } else {
+                            (acc.psqt_lanes(BLACK), acc.psqt_lanes(WHITE),
+                             threat_stack.psqt_lanes(BLACK), threat_stack.psqt_lanes(WHITE))
+                        };
+                        let diff = (a_stm[bucket] + ts_stm[bucket]) - (a_ntm[bucket] + ts_ntm[bucket]);
+                        diff as f32 / QA as f32 * 0.5
+                    } else {
+                        0.0
+                    };
+                    return self.forward_with_l1_pairwise_threats(stm_acc, ntm_acc, t_stm, t_ntm, bucket, psqt_term);
                 }
                 // Non-pairwise with threats: combine on stack (rare path)
                 // Sized to the threat-pipeline maximum, not the historical
                 // v9 width: a non-pairwise threat net with FT>768 would
                 // have panicked on the old [i16; 768] buffers. Threat nets
                 // with h > MAX_FT_SIZE are rejected at load.
+                // Unreachable for psqt nets — the v11 loader requires
+                // pairwise + hidden layers (see load_from_reader).
+                debug_assert!(!self.has_psqt);
                 let mut stm_combined = [0i16; crate::threat_accum::MAX_FT_SIZE];
                 let mut ntm_combined = [0i16; crate::threat_accum::MAX_FT_SIZE];
                 for i in 0..h {
@@ -4199,6 +4291,11 @@ impl NNUENet {
     /// Forward pass: CReLU or SCReLU activation → dot product with output weights.
     /// Returns centipawns from side-to-move perspective.
     pub fn forward(&self, acc: &NNUEAccumulator, stm: u8, piece_count: u32) -> i32 {
+        // v11 psqt nets must be evaluated through forward_with_threats with
+        // an active ThreatStack — only that path computes the psqt term.
+        // This legacy path would silently drop it.
+        debug_assert!(!self.has_psqt,
+            "forward() called on a psqt (v11) net — route through forward_with_threats");
         let bucket = self.output_bucket(piece_count);
         let h = self.hidden_size;
         let out_w = self.output_weight_row(bucket);
@@ -4522,6 +4619,13 @@ pub const MAX_HIDDEN_SIZE: usize = 2048;
 #[repr(C, align(64))]
 pub struct AccEntry {
     psq_accurate: [bool; 2],
+    /// Per-perspective PSQT skip-connection lanes over PSQ features (v11
+    /// nets): sum of the active features' psqt rows, ×255 scale. Written by
+    /// exactly the four code paths that set `psq_accurate` (force_recompute,
+    /// both incremental appliers, Finny refresh) so lanes and accumulator
+    /// share one accuracy lifecycle and cannot diverge. Untouched (zero)
+    /// when `net.has_psqt` is false.
+    psqt: [[i32; NNUE_OUTPUT_BUCKETS]; 2],
     dirty: DirtyPiece,
     pub threat_accurate: [bool; 2], // per-perspective [WHITE, BLACK]
     pub threat_deltas: Vec<crate::threats::RawThreatDelta>,
@@ -4631,6 +4735,11 @@ impl AccDataStack {
 /// Finny table entry: cached accumulator for a specific king bucket.
 struct FinnyEntry {
     acc: Vec<i16>,                      // cached accumulator values
+    /// Cached PSQT lanes for this bucket/mirror (v11 nets). Maintained by
+    /// the same full-build / bitboard-diff operations as `acc`, so the
+    /// cached lanes always correspond to `piece_bbs` exactly like the
+    /// cached accumulator does. Untouched when `net.has_psqt` is false.
+    psqt: [i32; NNUE_OUTPUT_BUCKETS],
     piece_bbs: ([Bitboard; 6], [Bitboard; 2]), // piece and color bitboards when cached
     valid: bool,
 }
@@ -4674,6 +4783,7 @@ impl NNUEAccumulator {
         for _ in 0..ACC_STACK_PLIES {
             stack.push(AccEntry {
                 psq_accurate: [false; 2],
+                psqt: [[0; NNUE_OUTPUT_BUCKETS]; 2],
                 dirty: DirtyPiece::recompute(),
                 threat_accurate: [false; 2],
                 threat_deltas: Vec::new(),
@@ -4689,6 +4799,7 @@ impl NNUEAccumulator {
         for _ in 0..FINNY_SIZE {
             finny.push(FinnyEntry {
                 acc: vec![0; hidden_size],
+                psqt: [0; NNUE_OUTPUT_BUCKETS],
                 piece_bbs: ([0; 6], [0; 2]),
                 valid: false,
             });
@@ -4791,6 +4902,14 @@ impl NNUEAccumulator {
         &self.stack[self.top]
     }
 
+    /// PSQT skip-connection lanes over PSQ features for the current ply
+    /// (v11 nets). Only meaningful when the net `has_psqt` and the current
+    /// entry is materialized — zero otherwise.
+    #[inline]
+    pub fn psqt_lanes(&self, perspective: u8) -> &[i32; NNUE_OUTPUT_BUCKETS] {
+        &self.stack[self.top].psqt[perspective as usize]
+    }
+
     /// Force a full recompute of both perspectives (for debugging).
     pub fn force_recompute(&mut self, net: &NNUENet, board: &Board) {
         let h = self.hidden_size;
@@ -4824,6 +4943,25 @@ impl NNUEAccumulator {
                         for j in 0..h { dst[j] += row[j]; }
                     }
                 }
+            }
+        }
+        // PSQT lanes from scratch (no bias — the psqt affine's bias cancels
+        // in the (stm − ntm)/2 combine and is not stored).
+        if net.has_psqt {
+            for perspective in [WHITE, BLACK] {
+                let mut lanes = [0i32; NNUE_OUTPUT_BUCKETS];
+                for color in 0..2u8 {
+                    for pt in 0..6u8 {
+                        let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
+                        while bb != 0 {
+                            let sq = pop_lsb(&mut bb) as u8;
+                            let idx = net.halfka_index(perspective, board.king_sq(perspective), color, pt, sq);
+                            let row = net.psqt_psq_row(idx);
+                            for k in 0..NNUE_OUTPUT_BUCKETS { lanes[k] += row[k] as i32; }
+                        }
+                    }
+                }
+                self.stack[self.top].psqt[perspective as usize] = lanes;
             }
         }
         self.stack[self.top].psq_accurate = [true; 2];
@@ -5108,6 +5246,24 @@ impl NNUEAccumulator {
         let b_adds = &b_adds[..nba];
         let b_subs = &b_subs[..nbs];
 
+        // PSQT lanes (v11): parent lanes ± the same per-change feature rows.
+        // Done before the SIMD dispatch below because every dispatch arm
+        // early-returns. Fully gated — zero work for non-psqt nets.
+        if net.has_psqt {
+            let mut lanes = self.stack[parent_ply].psqt;
+            for i in 0..n {
+                let (add, color, pt, sq) = dirty.changes[i];
+                let w_row = net.psqt_psq_row(net.halfka_index(WHITE, w_king_sq, color, pt, sq));
+                let b_row = net.psqt_psq_row(net.halfka_index(BLACK, b_king_sq, color, pt, sq));
+                let sign = if add { 1i32 } else { -1i32 };
+                for k in 0..NNUE_OUTPUT_BUCKETS {
+                    lanes[WHITE as usize][k] += sign * w_row[k] as i32;
+                    lanes[BLACK as usize][k] += sign * b_row[k] as i32;
+                }
+            }
+            self.stack[top].psqt = lanes;
+        }
+
         #[cfg(target_arch = "x86_64")]
         if net.has_avx512 && h.is_multiple_of(32) {
             let (parent_w, current_w) = self.psq.parent_and_current(parent_ply, top, WHITE as usize);
@@ -5198,6 +5354,21 @@ impl NNUEAccumulator {
 
         let adds = &adds[..na];
         let subs = &subs[..ns];
+
+        // PSQT lanes (v11): parent lanes ± the same per-change feature rows
+        // for this perspective. Before the early-returning SIMD dispatch.
+        if net.has_psqt {
+            let mut lanes = self.stack[parent_ply].psqt[perspective as usize];
+            for i in 0..n {
+                let (add, color, pt, sq) = dirty.changes[i];
+                let row = net.psqt_psq_row(net.halfka_index(perspective, king_sq, color, pt, sq));
+                let sign = if add { 1i32 } else { -1i32 };
+                for k in 0..NNUE_OUTPUT_BUCKETS {
+                    lanes[k] += sign * row[k] as i32;
+                }
+            }
+            self.stack[top].psqt[perspective as usize] = lanes;
+        }
 
         #[cfg(target_arch = "x86_64")]
         if net.has_avx512 && h.is_multiple_of(32) {
@@ -5412,11 +5583,26 @@ impl NNUEAccumulator {
             let piece_indices = scratch_slice!(piece_indices_ptr, n_pieces);
             let empty: [usize; 0] = [];
             finny_batch_apply(net, &mut entry.acc[..h], &net.input_weights, h, piece_indices, &empty);
+            // PSQT lanes (v11): full build from the same feature indices.
+            // Cached in the Finny entry alongside `acc` so the diff path
+            // below stays correct-by-construction (lanes always describe
+            // exactly the cached `piece_bbs`).
+            let mut lanes = [0i32; NNUE_OUTPUT_BUCKETS];
+            if net.has_psqt {
+                for &idx in piece_indices.iter() {
+                    let row = net.psqt_psq_row(idx);
+                    for k in 0..NNUE_OUTPUT_BUCKETS { lanes[k] += row[k] as i32; }
+                }
+                entry.psqt = lanes;
+            }
             entry.piece_bbs = (board.pieces, board.colors);
             entry.valid = true;
             // Mirror cache → live psq slot.
             let dst = self.psq.view_mut(self.top, perspective as usize);
             dst.copy_from_slice(&self.finny[perspective as usize * 32 + bucket * 2 + mirror_idx].acc[..h]);
+            if net.has_psqt {
+                self.stack[self.top].psqt[perspective as usize] = lanes;
+            }
             self.stack[self.top].psq_accurate[perspective as usize] = true;
             return;
         }
@@ -5471,11 +5657,31 @@ impl NNUEAccumulator {
                 add_rows, sub_rows,
             );
         }
+        // PSQT lanes (v11): apply the same bitboard-diff adds/subs to the
+        // cached lanes. Read back into a local so it can be written to the
+        // live stack entry after the Finny borrow ends — the lanes must be
+        // propagated even when the diff is empty (cache hit).
+        let mut lanes = [0i32; NNUE_OUTPUT_BUCKETS];
+        if net.has_psqt {
+            lanes = entry.psqt;
+            for &idx in add_rows.iter() {
+                let row = net.psqt_psq_row(idx);
+                for k in 0..NNUE_OUTPUT_BUCKETS { lanes[k] += row[k] as i32; }
+            }
+            for &idx in sub_rows.iter() {
+                let row = net.psqt_psq_row(idx);
+                for k in 0..NNUE_OUTPUT_BUCKETS { lanes[k] -= row[k] as i32; }
+            }
+            entry.psqt = lanes;
+        }
         entry.piece_bbs = (board.pieces, board.colors);
 
         // Copy updated cache to accumulator (drop entry borrow first).
         let dst = self.psq.view_mut(self.top, perspective as usize);
         dst.copy_from_slice(&self.finny[perspective as usize * 32 + bucket * 2 + mirror_idx].acc[..h]);
+        if net.has_psqt {
+            self.stack[self.top].psqt[perspective as usize] = lanes;
+        }
         self.stack[self.top].psq_accurate[perspective as usize] = true;
     }
 
@@ -7803,5 +8009,287 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ----------------------------------------------------------------------
+    // PSQT skip connection (v11) — PSQ-feature lane consistency tests.
+    //
+    // These use a SYNTHETIC net (deterministic psqt rows, h small) because
+    // the production net has no psqt block — with `has_psqt = false` the
+    // lanes stay zero and there is nothing to verify. The synthetic net
+    // exercises the same four lane-update paths used in production:
+    // force_recompute, both incremental appliers, and the Finny refresh
+    // (full build + bitboard diff).
+    // ----------------------------------------------------------------------
+
+    /// Synthetic net with deterministic PSQ weights and psqt rows.
+    /// `h` must be a multiple of 32 so the AVX-512/AVX2 paths engage.
+    fn make_psqt_test_net(h: usize) -> NNUENet {
+        let psq_inputs = 16 * PSQ_INPUTS_PER_BUCKET;
+        let mut input_weights = vec![0i16; psq_inputs * h];
+        for (i, w) in input_weights.iter_mut().enumerate() {
+            *w = ((i.wrapping_mul(31)) % 251) as i16 - 125;
+        }
+        let mut input_biases = vec![0i16; h];
+        for (j, b) in input_biases.iter_mut().enumerate() {
+            *b = (j % 17) as i16 - 8;
+        }
+        // Distinct per (feature, lane) so any single-feature divergence in
+        // the lanes is visible — same pattern as threat_accum's test rows.
+        let mut psqt_weights_psq = vec![0i16; psq_inputs * NNUE_OUTPUT_BUCKETS];
+        for idx in 0..psq_inputs {
+            for k in 0..NNUE_OUTPUT_BUCKETS {
+                let v = ((idx.wrapping_mul(104_729)).wrapping_add(k.wrapping_mul(389)) % 1009) as i32 - 504;
+                psqt_weights_psq[idx * NNUE_OUTPUT_BUCKETS + k] = v as i16;
+            }
+        }
+        let (king_bucket, king_mirror) = compute_king_buckets(KbLayout::Uniform);
+        NNUENet {
+            hidden_size: h,
+            input_weights,
+            input_biases,
+            output_weights: Vec::new(),
+            output_weights_i8: Vec::new(),
+            output_scale: [1.0; NNUE_OUTPUT_BUCKETS],
+            output_bias: [0; NNUE_OUTPUT_BUCKETS],
+            use_screlu: false,
+            use_pairwise: true,
+            l1_size: 0,
+            l2_size: 0,
+            l1_per_bucket: 0,
+            l2_per_bucket: 0,
+            bucketed_hidden: false,
+            l1_scale: QA,
+            l1_weights: Vec::new(),
+            l1_weights_t: Vec::new(),
+            l1_weights_8t: Vec::new(),
+            l1_weights_sparse: Vec::new(),
+            l1_biases: Vec::new(),
+            l2_weights_f: Vec::new(),
+            l2_biases_f: Vec::new(),
+            out_weights_f: Vec::new(),
+            out_bias_f: Vec::new(),
+            dual_l1: false,
+            threat_weights: Vec::new(),
+            num_threat_features: 0,
+            has_threats: false,
+            psqt_weights_psq,
+            psqt_weights_threat: Vec::new(),
+            has_psqt: true,
+            xray_trained: true,
+            reckless_buckets: false,
+            num_king_buckets: 16,
+            kb_layout: KbLayout::Uniform,
+            king_bucket,
+            king_mirror,
+            use_sparse_l1: std::sync::atomic::AtomicBool::new(false),
+            crelu_hidden: std::sync::atomic::AtomicBool::new(false),
+            has_avx2: detect_avx2(),
+            has_avx512: detect_avx512(),
+            has_avx512_vnni: detect_avx512_vnni(),
+            has_avx_vnni: detect_avx_vnni(),
+            has_neon: detect_neon(),
+        }
+    }
+
+    /// Random games: incremental psqt lanes (materialize: incremental +
+    /// replay + Finny refresh paths) must equal the from-scratch recompute
+    /// (force_recompute) after every move. Covers captures, promotions,
+    /// EP, castling, and king-bucket crossings via the random move mix.
+    #[test]
+    fn fuzz_psqt_psq_lanes() {
+        use crate::board::Board;
+        use crate::movegen::generate_legal_moves;
+        use crate::search::build_dirty_piece;
+        use crate::types::{flip_color, move_from, move_to};
+
+        crate::init();
+
+        let h = 64usize;
+        let net = make_psqt_test_net(h);
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "4k3/P6P/8/8/8/8/p6p/4K3 w - - 0 1", // promotion testbed
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const MAX_PLIES: usize = 100;
+        const GAMES_PER_FEN: usize = 15;
+
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for game in 0..GAMES_PER_FEN {
+                let seed: u32 = 0x9512_75A1u32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::from_fen(fen);
+                let mut acc = NNUEAccumulator::new(h);
+                acc.force_recompute(&net, &board);
+
+                for ply in 0..MAX_PLIES {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 { break; }
+                    let mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
+
+                    let us = board.side_to_move;
+                    let them = flip_color(us);
+                    let moved_pt = board.piece_type_at(move_from(mv));
+                    let captured_pt = board.piece_type_at(move_to(mv));
+                    let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net);
+
+                    assert!(board.make_move(mv), "psqt fuzz {} game {} ply {}: move {} illegal?",
+                        fen_idx, game, ply, crate::types::move_to_uci(mv));
+
+                    acc.push(dirty);
+                    acc.materialize(&net, &board);
+
+                    // From-scratch reference (independent code path).
+                    let mut ref_acc = NNUEAccumulator::new(h);
+                    ref_acc.force_recompute(&net, &board);
+
+                    for persp in [WHITE, BLACK] {
+                        // PSQ values must match too (guards the test setup).
+                        let got = acc.psq.view(acc.top, persp as usize);
+                        let refv = ref_acc.psq.view(0, persp as usize);
+                        assert_eq!(got, refv,
+                            "psqt fuzz PSQ value divergence: fen_idx={} game={} ply={} move={} persp={} seed={:#x}",
+                            fen_idx, game, ply, crate::types::move_to_uci(mv), persp, seed);
+                        let gl = acc.psqt_lanes(persp);
+                        let rl = ref_acc.psqt_lanes(persp);
+                        assert_eq!(gl, rl,
+                            "psqt lane divergence: fen_idx={} game={} ply={} move={} persp={} \
+                             incr={:?} scratch={:?} seed={:#x}",
+                            fen_idx, game, ply, crate::types::move_to_uci(mv), persp, gl, rl, seed);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Deterministic king march across bucket boundaries: every step forces
+    /// the Finny refresh path (full build on first touch, bitboard diff on
+    /// revisit) for at least one perspective. Verifies the cached Finny psqt
+    /// lanes stay consistent with a from-scratch recompute.
+    #[test]
+    fn psqt_finny_king_march() {
+        use crate::board::Board;
+        use crate::search::build_dirty_piece;
+        use crate::types::{flip_color, NO_PIECE_TYPE, make_move, FLAG_NONE};
+
+        crate::init();
+
+        let h = 64usize;
+        let net = make_psqt_test_net(h);
+
+        // Kings + a few fixed pieces so the lanes are non-trivial.
+        let mut board = Board::from_fen("4k3/2p5/8/8/8/8/2P5/4K3 w - - 0 1");
+        let mut acc = NNUEAccumulator::new(h);
+        acc.force_recompute(&net, &board);
+
+        // March the white king across the e-file mirror boundary and through
+        // multiple buckets; black king wanders in step. Same square plan as
+        // finny_king_march_consistency.
+        let sequence: &[(u8, u8)] = &[
+            (4, 3), (60, 59), (3, 2), (59, 58), (2, 1), (58, 57),
+            (1, 0), (57, 56), (0, 8), (56, 48), (8, 16), (48, 40),
+            (16, 24), (40, 32),
+            // March back east across the mirror boundary again.
+            (24, 25), (32, 33), (25, 26), (33, 34), (26, 27), (34, 35),
+            (27, 28), (35, 36),
+        ];
+
+        for (i, &(from, to)) in sequence.iter().enumerate() {
+            let mv = make_move(from, to, FLAG_NONE);
+            let us = board.side_to_move;
+            let them = flip_color(us);
+            let moved_pt = board.piece_type_at(from);
+            let captured_pt = board.piece_type_at(to);
+            assert_eq!(captured_pt, NO_PIECE_TYPE, "psqt king march: no captures expected");
+            let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net);
+
+            assert!(board.make_move(mv), "psqt king march step {}: move illegal {}→{}", i, from, to);
+
+            acc.push(dirty);
+            acc.materialize(&net, &board);
+
+            let mut ref_acc = NNUEAccumulator::new(h);
+            ref_acc.force_recompute(&net, &board);
+
+            for persp in [WHITE, BLACK] {
+                let got = acc.psq.view(acc.top, persp as usize);
+                let refv = ref_acc.psq.view(0, persp as usize);
+                assert_eq!(got, refv,
+                    "psqt king-march PSQ value divergence: step={} {}→{} persp={}",
+                    i, from, to, persp);
+                let gl = acc.psqt_lanes(persp);
+                let rl = ref_acc.psqt_lanes(persp);
+                assert_eq!(gl, rl,
+                    "psqt king-march lane divergence: step={} {}→{} persp={} incr={:?} scratch={:?} fen={}",
+                    i, from, to, persp, gl, rl, board.to_fen());
+            }
+        }
+    }
+
+    /// Lazy push/pop: lanes must survive pop back to an earlier ply and
+    /// re-materialize correctly after pushes that were never materialized
+    /// (pruned-node pattern).
+    #[test]
+    fn psqt_lanes_push_pop_stack() {
+        use crate::board::Board;
+        use crate::movegen::generate_legal_moves;
+        use crate::search::build_dirty_piece;
+        use crate::types::{flip_color, move_from, move_to};
+
+        crate::init();
+        let h = 64usize;
+        let net = make_psqt_test_net(h);
+
+        let mut board = Board::from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+        let mut acc = NNUEAccumulator::new(h);
+        acc.force_recompute(&net, &board);
+        let root_lanes_w = *acc.psqt_lanes(WHITE);
+        let root_lanes_b = *acc.psqt_lanes(BLACK);
+
+        // Make 3 moves with materialize, then 2 more WITHOUT materializing
+        // (lazy stack), pop everything, verify root lanes intact, then
+        // re-make a move and verify against scratch.
+        let mut made: Vec<crate::types::Move> = Vec::new();
+        for i in 0..5 {
+            let legal = generate_legal_moves(&board);
+            assert!(legal.len > 0);
+            let mv = legal.get(i % legal.len);
+            let us = board.side_to_move;
+            let them = flip_color(us);
+            let moved_pt = board.piece_type_at(move_from(mv));
+            let captured_pt = board.piece_type_at(move_to(mv));
+            let dirty = build_dirty_piece(mv, us, them, moved_pt, captured_pt, &net);
+            assert!(board.make_move(mv));
+            made.push(mv);
+            acc.push(dirty);
+            if i < 3 {
+                acc.materialize(&net, &board);
+                let mut ref_acc = NNUEAccumulator::new(h);
+                ref_acc.force_recompute(&net, &board);
+                assert_eq!(acc.psqt_lanes(WHITE), ref_acc.psqt_lanes(WHITE), "ply {} W", i);
+                assert_eq!(acc.psqt_lanes(BLACK), ref_acc.psqt_lanes(BLACK), "ply {} B", i);
+            }
+            // plies 3,4 stay unmaterialized (pruned-node pattern)
+        }
+        for _ in made.iter().rev() {
+            board.unmake_move();
+            acc.pop();
+        }
+        assert_eq!(*acc.psqt_lanes(WHITE), root_lanes_w, "root W lanes corrupted by push/pop");
+        assert_eq!(*acc.psqt_lanes(BLACK), root_lanes_b, "root B lanes corrupted by push/pop");
     }
 }

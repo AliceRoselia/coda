@@ -20,6 +20,77 @@ const MAX_PLY: usize = 256;
 /// Sized as a power of two to keep SIMD chunk paths well-tiled.
 pub const MAX_FT_SIZE: usize = 1024;
 
+/// PSQT skip-connection output lanes (= NNUE output buckets).
+pub const PSQT_LANES: usize = crate::nnue::NNUE_OUTPUT_BUCKETS;
+
+// ---------------------------------------------------------------------------
+// PSQT carrier format
+//
+// v11 nets carry an SF-style PSQT skip connection: per-feature, per-output-
+// bucket i16 values (×255) summed over each perspective's active features.
+// The ThreatStack must update its per-perspective psqt lanes wherever a
+// threat feature is added/removed — inside `refresh`/`update`, which only
+// receive `net_weights: &[i8]` (the signature is shared with call sites in
+// search.rs that we deliberately do not change).
+//
+// To get the psqt rows into those methods WITHOUT a signature change — and,
+// more importantly, to make "values updated but lanes not" structurally
+// impossible — the loader appends the threat psqt rows to the SAME `Vec<i8>`
+// as the threat value weights:
+//
+//   [ num_features × hidden_size value bytes | num_features × 16 psqt bytes ]
+//
+// Each psqt row is 8 little-endian i16 (16 bytes), in feature-index order.
+// `psqt_carrier` detects the block by exact length: every non-psqt net's
+// threat weight vec is sized exactly `num_features * hidden_size`, so the
+// detection cannot misfire. All existing consumers (apply_threat_deltas,
+// add_weight_rows, recompute_threats_full) index only `idx * hidden_size ..
+// idx * hidden_size + hidden_size` with `idx < num_features` and never see
+// the tail.
+// ---------------------------------------------------------------------------
+
+/// Append the threat psqt rows to a threat weight vec (loader side).
+/// `psqt_threat` is `[num_features × PSQT_LANES]` i16 in feature order.
+pub fn append_psqt_carrier(
+    threat_weights: &mut Vec<i8>,
+    psqt_threat: &[i16],
+    num_features: usize,
+    hidden_size: usize,
+) {
+    assert_eq!(threat_weights.len(), num_features * hidden_size,
+        "psqt carrier must be appended to an exactly-sized value block");
+    assert_eq!(psqt_threat.len(), num_features * PSQT_LANES);
+    threat_weights.reserve(num_features * 2 * PSQT_LANES);
+    for &v in psqt_threat {
+        let b = v.to_le_bytes();
+        threat_weights.push(b[0] as i8);
+        threat_weights.push(b[1] as i8);
+    }
+}
+
+/// Locate the psqt carrier block inside a threat weight slice, if present.
+/// Returns the raw 16-bytes-per-feature block.
+#[inline]
+pub fn psqt_carrier(net_weights: &[i8], num_features: usize, hidden_size: usize) -> Option<&[i8]> {
+    let base = num_features * hidden_size;
+    if net_weights.len() == base + num_features * 2 * PSQT_LANES {
+        Some(&net_weights[base..])
+    } else {
+        None
+    }
+}
+
+/// Add (`sign = 1`) or subtract (`sign = -1`) one feature's psqt row
+/// into a lane accumulator.
+#[inline]
+fn psqt_lane_apply(lanes: &mut [i32; PSQT_LANES], carrier: &[i8], feat: usize, sign: i32) {
+    let off = feat * 2 * PSQT_LANES;
+    for k in 0..PSQT_LANES {
+        let v = i16::from_le_bytes([carrier[off + 2 * k] as u8, carrier[off + 2 * k + 1] as u8]);
+        lanes[k] += sign * v as i32;
+    }
+}
+
 /// Fixed-capacity array (no heap, like ArrayVec but simpler).
 /// Tracks overflow so callers can force full recompute instead of
 /// silently using incomplete deltas.
@@ -76,6 +147,12 @@ impl DeltaVec {
 pub struct ThreatEntry {
     /// Per-perspective accumulator values: [WHITE][..h], [BLACK][..h]
     pub values: [[i16; MAX_FT_SIZE]; 2], // sized for v9 (768) + FT=1024 probes
+    /// Per-perspective PSQT skip-connection lanes (v11 nets). Sum of the
+    /// active threat features' psqt rows, ×255 scale, i32 (no overflow:
+    /// ≤ ~300 active features × i16). Updated in lockstep with `values`
+    /// whenever the net carries a psqt block (see `psqt_carrier`); stays
+    /// zero and is never read otherwise.
+    pub psqt: [[i32; PSQT_LANES]; 2],
     /// Per-perspective accuracy flags
     pub accurate: [bool; 2],
     /// Threat deltas for the move that produced this ply
@@ -98,6 +175,7 @@ impl ThreatEntry {
     pub const fn new() -> Self {
         Self {
             values: [[0i16; MAX_FT_SIZE]; 2],
+            psqt: [[0i32; PSQT_LANES]; 2],
             accurate: [false; 2],
             delta: DeltaVec::new(),
             mv: NO_MOVE,
@@ -244,6 +322,17 @@ impl ThreatStack {
             &mut entry.values[p][..h], net_weights, h, indices,
         );
 
+        // PSQT lanes (v11): rebuild from the same index set so lanes and
+        // values can never diverge. No-op (one length compare) for nets
+        // without a psqt carrier.
+        if let Some(carrier) = psqt_carrier(net_weights, num_features, h) {
+            let mut lanes = [0i32; PSQT_LANES];
+            for &idx in indices.iter() {
+                psqt_lane_apply(&mut lanes, carrier, idx, 1);
+            }
+            entry.psqt[p] = lanes;
+        }
+
         entry.accurate[p] = !overflowed;
     }
 
@@ -293,6 +382,10 @@ impl ThreatStack {
         let p = pov as usize;
         let king_sq = (board.pieces[KING as usize] & board.colors[pov as usize]).trailing_zeros();
         let mirrored = (king_sq % 8) >= 4;
+        // PSQT lanes (v11): replayed alongside values from the same deltas
+        // with the same index mapping (threat_index, same skip rules as
+        // apply_threat_deltas). None for nets without a psqt carrier.
+        let carrier = psqt_carrier(net_weights, num_features, h);
 
         #[cfg(feature = "profile-threats")]
         crate::threats::apply_stats::record_replay_gap(self.index - ancestor);
@@ -325,6 +418,9 @@ impl ThreatStack {
                 // Null move or no deltas: copy from previous
                 let (prev, curr) = self.stack.split_at_mut(ply);
                 curr[0].values[p][..h].copy_from_slice(&prev[ply - 1].values[p][..h]);
+                if carrier.is_some() {
+                    curr[0].psqt[p] = prev[ply - 1].psqt[p];
+                }
             } else {
                 // Copy deltas to local buffer to avoid borrow conflict with split_at_mut.
                 // MaybeUninit skips the per-iteration 512-byte zero-init memset that
@@ -356,6 +452,21 @@ impl ThreatStack {
                         pov, mirrored,
                     );
                 }
+                if let Some(c) = carrier {
+                    // Mirror apply_threat_deltas' index mapping exactly:
+                    // skip negative (excluded pair) and out-of-range indices.
+                    let mut lanes = prev[ply - 1].psqt[p];
+                    for d in local_deltas {
+                        let idx = crate::threats::threat_index(
+                            d.attacker_cp() as usize, d.from_sq() as u32,
+                            d.victim_cp() as usize, d.to_sq() as u32,
+                            mirrored, pov,
+                        );
+                        if idx < 0 || (idx as usize) >= num_features { continue; }
+                        psqt_lane_apply(&mut lanes, c, idx as usize, if d.add() { 1 } else { -1 });
+                    }
+                    curr[0].psqt[p] = lanes;
+                }
             }
 
             self.stack[ply].accurate[p] = true;
@@ -366,6 +477,13 @@ impl ThreatStack {
     #[inline]
     pub fn values(&self, pov: Color) -> &[i16] {
         &self.stack[self.index].values[pov as usize][..self.hidden_size]
+    }
+
+    /// PSQT skip-connection lanes for a perspective (v11 nets). Only
+    /// meaningful when the loaded net `has_psqt` — zero otherwise.
+    #[inline]
+    pub fn psqt_lanes(&self, pov: Color) -> &[i32; PSQT_LANES] {
+        &self.stack[self.index].psqt[pov as usize]
     }
 
     /// Ensure both perspectives are computed for the current position.
@@ -427,6 +545,29 @@ mod incremental_tests {
         w
     }
 
+    /// Deterministic synthetic psqt rows: distinct per (feature, lane) so a
+    /// single-feature divergence in the lane accumulators is visible.
+    fn make_psqt_rows(num_features: usize) -> Vec<i16> {
+        let mut p = vec![0i16; num_features * PSQT_LANES];
+        for idx in 0..num_features {
+            for k in 0..PSQT_LANES {
+                let v = ((idx.wrapping_mul(104_729)).wrapping_add(k.wrapping_mul(389)) % 1009) as i32 - 504;
+                p[idx * PSQT_LANES + k] = v as i16;
+            }
+        }
+        p
+    }
+
+    /// Value weights + appended psqt carrier (the v11 wire format the
+    /// loader produces). Used by all scenarios so every existing curated
+    /// case also exercises the psqt lane bookkeeping.
+    fn make_weights_with_psqt(num_features: usize) -> Vec<i8> {
+        let mut w = make_weights(num_features);
+        let p = make_psqt_rows(num_features);
+        append_psqt_carrier(&mut w, &p, num_features, H);
+        w
+    }
+
     fn parse_uci(board: &Board, s: &str) -> Move {
         let bytes = s.as_bytes();
         assert!(bytes.len() >= 4, "bad uci: {}", s);
@@ -468,7 +609,9 @@ mod incremental_tests {
     fn run_scenario(name: &str, fen: &str, moves: &[&str]) {
         crate::init();
         let nf = num_threat_features();
-        let weights = make_weights(nf);
+        // Carrier weights: every curated scenario also verifies the psqt
+        // lane bookkeeping (incremental vs refresh) for free.
+        let weights = make_weights_with_psqt(nf);
 
         let mut board = Board::new();
         board.set_fen(fen);
@@ -524,6 +667,11 @@ mod incremental_tests {
                         incr.current().delta.len(),
                     );
                 }
+                let la = incr.psqt_lanes(pov);
+                let lb = refs.psqt_lanes(pov);
+                assert_eq!(la, lb,
+                    "{}: ply={} move={} pov={} psqt lanes diverged incr={:?} refresh={:?}",
+                    name, ply, uci, if pov == WHITE { "W" } else { "B" }, la, lb);
             }
         }
     }
@@ -738,7 +886,9 @@ mod incremental_tests {
     fn fuzz_random_games() {
         crate::init();
         let nf = num_threat_features();
-        let weights = make_weights(nf);
+        // Carrier weights: the fuzzer also cross-checks psqt lanes
+        // (incremental vs refresh) after every random move.
+        let weights = make_weights_with_psqt(nf);
 
         // Several varied starting positions — opening, kiwipete middle-game,
         // tactical midgame with heavy slider activity, and an endgame.
@@ -841,9 +991,43 @@ mod incremental_tests {
                                 j, av, bv, seed,
                             );
                         }
+                        let la = incr.psqt_lanes(pov);
+                        let lb = refs.psqt_lanes(pov);
+                        assert_eq!(la, lb,
+                            "fuzz psqt-lane divergence: fen_idx={} game={} ply={} move={} pov={} \
+                             incr={:?} refresh={:?} seed={:#x}",
+                            fen_idx, game, ply, crate::types::move_to_uci(mv),
+                            if pov == WHITE { "W" } else { "B" }, la, lb, seed);
                     }
                 }
             }
+        }
+    }
+
+    /// Carrier encode/detect/decode round-trip, plus the no-carrier case.
+    #[test]
+    fn psqt_carrier_roundtrip() {
+        let nf = 37usize; // arbitrary small feature count
+        let mut w = vec![0i8; nf * H];
+        for (i, v) in w.iter_mut().enumerate() { *v = (i % 251) as i8; }
+        // No carrier: exact value-block length → None.
+        assert!(psqt_carrier(&w, nf, H).is_none());
+
+        let rows = make_psqt_rows(nf);
+        append_psqt_carrier(&mut w, &rows, nf, H);
+        let carrier = psqt_carrier(&w, nf, H).expect("carrier must be detected");
+        assert_eq!(carrier.len(), nf * 2 * PSQT_LANES);
+
+        // Decode every row through psqt_lane_apply and compare to source,
+        // both signs.
+        for f in 0..nf {
+            let mut lanes = [0i32; PSQT_LANES];
+            psqt_lane_apply(&mut lanes, carrier, f, 1);
+            for k in 0..PSQT_LANES {
+                assert_eq!(lanes[k], rows[f * PSQT_LANES + k] as i32, "feature {} lane {}", f, k);
+            }
+            psqt_lane_apply(&mut lanes, carrier, f, -1);
+            assert_eq!(lanes, [0i32; PSQT_LANES], "add then sub must cancel (feature {})", f);
         }
     }
 
