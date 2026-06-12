@@ -162,6 +162,11 @@ tunables!(
     (LMP_BASE, 6, 1, 15, 2.0, true),
     (LMP_DEPTH, 8, 4, 20, 2.0, true),
     (BAD_NOISY_MARGIN, 73, 30, 150, 6.0, true),
+    // BNFP victim credit % (audit T2.11): capture futility must credit the
+    // optimistic material gain — SEE<0 judges the exchange, not the
+    // stand-in material swing. 4/4 same-mechanism engines have a victim
+    // term (SF/PlentyChess/Clover full value, Reckless 8%).
+    (BNFP_VICTIM_PCT, 100, 0, 150, 10.0, true),
     (PROBCUT_MARGIN, 117, 80, 300, 11.0, true),
     (HINDSIGHT_THRESH, 184, 50, 400, 17.5, true),
     (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
@@ -3840,7 +3845,9 @@ fn negamax(
         // that give direct check (Reckless #630 +1.85 STC).
         if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= tp(&BAD_NOISY_DEPTH) && mv != tt_move
             && !is_promo && best_score > -(MATE_SCORE - 100)
-            && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
+            && static_eval > -INFINITY
+            && static_eval + depth * tp(&BAD_NOISY_MARGIN)
+                + see_value(captured_pt) * tp(&BNFP_VICTIM_PCT) / 100 <= alpha
             && !see_ge(board, mv, 0)
             && !board.gives_direct_check(mv)
         {
