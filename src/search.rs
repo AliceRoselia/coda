@@ -2710,6 +2710,33 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
 /// Negamax alpha-beta search.
 /// Main negamax search with all pruning, extensions, and reductions.
+/// Per-node "checking squares" table (SF StateInfo::checkSquares pattern,
+/// audit P6): squares from which each of OUR piece types gives DIRECT check
+/// to the enemy king, under CURRENT (pre-move) occupancy. Used by the
+/// pruning carve-outs in place of per-candidate gives_direct_check calls.
+/// Pre-move occupancy is the SF-accepted approximation: it differs from
+/// post-move only when the mover's own from-square blocks the to->king ray.
+#[inline]
+fn compute_checking_sqs(board: &Board) -> [Bitboard; 6] {
+    let opponent = flip_color(board.side_to_move);
+    let their_king_bb = board.pieces[KING as usize] & board.colors[opponent as usize];
+    if their_king_bb == 0 {
+        return [0; 6];
+    }
+    let their_king_sq = their_king_bb.trailing_zeros();
+    let occ = board.occupied();
+    let bishop = crate::attacks::bishop_attacks(their_king_sq, occ);
+    let rook = crate::attacks::rook_attacks(their_king_sq, occ);
+    [
+        crate::attacks::pawn_attacks(opponent, their_king_sq), // PAWN
+        crate::attacks::knight_attacks(their_king_sq),         // KNIGHT
+        bishop,                                // BISHOP
+        rook,                                  // ROOK
+        bishop | rook,                         // QUEEN
+        0,                                     // KING (no direct check)
+    ]
+}
+
 fn negamax(
     board: &mut Board,
     info: &mut SearchInfo,
@@ -3656,6 +3683,9 @@ fn negamax(
     // +22% bench (vs expected bench-neutral perf-only) — mechanism not
     // localised; SPRT'd anyway as a data point per Adam.
     let mut skip_quiets = false;
+    // Lazy per-node check-squares table (audit P6) — computed on first
+    // pruning-carve-out use, shared by all candidates at this node.
+    let mut node_checking_sqs: Option<[Bitboard; 6]> = None;
 
     loop {
         let mv = picker.next(board);
@@ -3883,7 +3913,13 @@ fn negamax(
             // Don't futility-prune moves with very strong history (Igel pattern)
             // Direct-check carve-out: don't prune moves that give direct check
             // (Reckless #410 +1.62 STC).
-            if futility_value <= alpha && main_hist < 12000 && !board.gives_direct_check(mv) {
+            let gives_chk = if flags == FLAG_CASTLE {
+                board.gives_direct_check(mv) // castle-rook checks: not piece-type keyed
+            } else {
+                let cs = node_checking_sqs.get_or_insert_with(|| compute_checking_sqs(board));
+                cs[moved_pt as usize] & (1u64 << to) != 0
+            };
+            if futility_value <= alpha && main_hist < 12000 && !gives_chk {
                 info.stats.futility_prunes += 1;
                 continue;
             }
@@ -3901,7 +3937,14 @@ fn negamax(
         // low-quality late checks.
         if ply > 0 && !in_check && depth >= 1 && depth <= tp(&LMP_DEPTH)
             && !is_cap && !is_promo
-            && (depth >= 4 || !board.gives_direct_check(mv))
+            && (depth >= 4 || !{
+                if flags == FLAG_CASTLE {
+                    board.gives_direct_check(mv)
+                } else {
+                    let cs = node_checking_sqs.get_or_insert_with(|| compute_checking_sqs(board));
+                    cs[moved_pt as usize] & (1u64 << to) != 0
+                }
+            })
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
         {
@@ -3921,7 +3964,10 @@ fn negamax(
             && !is_promo && best_score > -(MATE_SCORE - 100)
             && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
             && !see_ge(board, mv, 0)
-            && !board.gives_direct_check(mv)
+            && {
+                let cs = node_checking_sqs.get_or_insert_with(|| compute_checking_sqs(board));
+                cs[moved_pt as usize] & (1u64 << to) == 0
+            }
         {
             continue;
         }
