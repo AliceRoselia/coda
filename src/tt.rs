@@ -293,6 +293,7 @@ unsafe impl Sync for TT {}
 unsafe impl Send for TT {}
 
 /// Result of a TT probe.
+#[derive(Clone, Copy)]
 pub struct TTEntry {
     pub best_move: Move,
     pub flag: u8,

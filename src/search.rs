@@ -2737,39 +2737,6 @@ fn negamax(
     // Prefetch TT bucket early to hide memory latency
     info.tt.prefetch(board.hash);
 
-    // Threat-aware history indexing: upgrade from pawn-only to all-enemy-pieces.
-    // `enemy_attacks` keys the 4D main history slot (from_threatened, to_threatened);
-    // broader threat coverage → finer move-ordering distinctions.
-    // Cost: 8-12 extra magic lookups per node, only at non-QS non-TT-cut nodes.
-    let them_color = flip_color(board.side_to_move);
-    let enemy_attacks: u64 = board.attacks_by_color(them_color);
-
-    // Pawn-specific threat count kept separate: RFP margin adjustment and
-    // LMR_THREAT_DIV are tuned on the pawn-only scale.
-    let their_pawns = board.pieces[PAWN as usize] & board.colors[them_color as usize];
-    let enemy_pawn_attacks: u64 = if them_color == WHITE {
-        ((their_pawns & !0x0101010101010101u64) << 7) | ((their_pawns & !0x8080808080808080u64) << 9)
-    } else {
-        ((their_pawns & !0x8080808080808080u64) >> 7) | ((their_pawns & !0x0101010101010101u64) >> 9)
-    };
-    let our_non_pawns = board.colors[board.side_to_move as usize]
-        & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
-    let has_pawn_threats = (enemy_pawn_attacks & our_non_pawns) != 0;
-    let threat_count = popcount(enemy_pawn_attacks & our_non_pawns) as i32;
-    // our_defenses signal for futility widener: count of our non-pawn
-    // pieces under any enemy attack (pawn OR piece). Widens margin in
-    // tactical positions. Uses existing enemy_attacks — no new bitboard.
-    let any_threat_count = popcount(enemy_attacks & our_non_pawns) as i32;
-    // B1: Discovered-attack bitboard. Our pieces that are currently
-    // blocking one of our sliders' attack on an enemy piece — moving
-    // any such piece uncovers a slider attack. Used as a quiet-move
-    // ordering bonus in MovePicker. Cost: 10-20 magic lookups.
-    let our_xray_blockers: u64 = if tp(&DISCOVERED_ATTACK_BONUS) > 0 {
-        board.xray_blockers(board.side_to_move)
-    } else {
-        0
-    };
-
     // (PV length already cleared at function entry, before early returns.)
 
     // Track seldepth
@@ -3006,8 +2973,14 @@ fn negamax(
                             || move_flags(tt_move) == FLAG_EN_PASSANT;
                         if !tt_is_cap && tt_piece != NO_PIECE {
                             let bonus = history_bonus(depth);
+                            // enemy_attacks is computed after the TT-cutoff
+                            // exits (perf hoist) — this rare path recomputes
+                            // locally; it already pays is_pseudo_legal +
+                            // is_legal above.
+                            let local_enemy_attacks =
+                                board.attacks_by_color(flip_color(board.side_to_move));
                             History::update_history(
-                                info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
+                                info.history.main_entry(move_from(tt_move), move_to(tt_move), local_enemy_attacks),
                                 bonus,
                             );
                         } else if tt_is_cap && tt_piece != NO_PIECE {
@@ -3062,13 +3035,50 @@ fn negamax(
 
     // Leaf node - go to quiescence search
     if depth <= 0 {
-        return quiescence(board, info, alpha, beta, ply);
+        return quiescence_with_depth(board, info, alpha, beta, ply, 0, Some(tt_entry));
     }
 
     // Compute pinned, checkers, in_check
     let pinned = board.pinned();
     let checkers = board.checkers();
     let in_check = checkers != 0;
+
+    // Threat/attack/xray bitboards for history keying, pruning margins, and
+    // move ordering. Hoisted BELOW the TB/cuckoo/TT-cutoff exits and the
+    // depth<=0 QS dispatch (audit Tier3 #1): these were paid on EVERY
+    // negamax entry — including the large fraction that exit before the
+    // move loop — while their first consumers (RFP margins, NMP threat
+    // margin, MovePicker, LMR, SE xray) all sit below this point.
+    // xray_blockers is the expensive one (nested per-slider blocker loop).
+    let them_color = flip_color(board.side_to_move);
+    let enemy_attacks: u64 = board.attacks_by_color(them_color);
+
+    // Pawn-specific threat count kept separate: RFP margin adjustment and
+    // LMR_THREAT_DIV are tuned on the pawn-only scale.
+    let their_pawns = board.pieces[PAWN as usize] & board.colors[them_color as usize];
+    let enemy_pawn_attacks: u64 = if them_color == WHITE {
+        ((their_pawns & !0x0101010101010101u64) << 7) | ((their_pawns & !0x8080808080808080u64) << 9)
+    } else {
+        ((their_pawns & !0x8080808080808080u64) >> 7) | ((their_pawns & !0x0101010101010101u64) >> 9)
+    };
+    let our_non_pawns = board.colors[board.side_to_move as usize]
+        & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
+    let has_pawn_threats = (enemy_pawn_attacks & our_non_pawns) != 0;
+    let threat_count = popcount(enemy_pawn_attacks & our_non_pawns) as i32;
+    // our_defenses signal for futility widener: count of our non-pawn
+    // pieces under any enemy attack (pawn OR piece). Widens margin in
+    // tactical positions. Uses existing enemy_attacks — no new bitboard.
+    let any_threat_count = popcount(enemy_attacks & our_non_pawns) as i32;
+    // B1: Discovered-attack bitboard. Our pieces that are currently
+    // blocking one of our sliders' attack on an enemy piece — moving
+    // any such piece uncovers a slider attack. Used as a quiet-move
+    // ordering bonus in MovePicker. Cost: 10-20 magic lookups.
+    let our_xray_blockers: u64 = if tp(&DISCOVERED_ATTACK_BONUS) > 0 {
+        board.xray_blockers(board.side_to_move)
+    } else {
+        0
+    };
+
 
     // Compute static eval for pruning and LMR improving detection.
     //
@@ -3281,7 +3291,7 @@ fn negamax(
             && info.excluded_move[ply_u] == NO_MOVE
             && static_eval + tp(&RAZOR_MULT) * depth <= alpha
         {
-            let v = quiescence(board, info, alpha, alpha + 1, ply);
+            let v = quiescence_with_depth(board, info, alpha, alpha + 1, ply, 0, Some(tt_entry));
             if v <= alpha {
                 info.stats.razor_cutoffs += 1;
                 return v;
@@ -4522,7 +4532,7 @@ fn quiescence(
     beta: i32,
     ply: i32,
 ) -> i32 {
-    quiescence_with_depth(board, info, alpha, beta, ply, 0)
+    quiescence_with_depth(board, info, alpha, beta, ply, 0, None)
 }
 
 /// Quiescence search with depth tracking.
@@ -4533,6 +4543,10 @@ fn quiescence_with_depth(
     beta: i32,
     ply: i32,
     qs_depth: i32,
+    // TT entry already probed for this hash by the caller (negamax probes
+    // before its depth<=0 dispatch and before razoring) — saves a second
+    // bucket scan + XOR verify on every QS-entry leaf (audit Tier3 #2).
+    pre_probed: Option<TTEntry>,
 ) -> i32 {
     info.stats.qnodes += 1;
 
@@ -4595,8 +4609,12 @@ fn quiescence_with_depth(
         }
     }
 
-    // Probe transposition table
-    let tt_entry = info.tt.probe(board.hash);
+    // Probe transposition table (reuse the caller's probe when supplied —
+    // board.hash is unchanged between negamax's probe and this entry)
+    let tt_entry = match pre_probed {
+        Some(e) => e,
+        None => info.tt.probe(board.hash),
+    };
     let tt_move = if tt_entry.hit { tt_entry.best_move } else { NO_MOVE };
     let alpha_orig = alpha;
 
@@ -4711,7 +4729,7 @@ fn quiescence_with_depth(
             info.tt.prefetch(board.hash);
             move_count += 1;
 
-            let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
+            let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1, None);
             board.unmake_move();
             if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
         if info.threat_stack.active { info.threat_stack.pop(); }
@@ -4883,7 +4901,7 @@ fn quiescence_with_depth(
             info.threat_stack.absorb_deltas(board);
         }
         info.tt.prefetch(board.hash);
-        let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
+        let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1, None);
         board.unmake_move();
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
         if info.threat_stack.active { info.threat_stack.pop(); }
