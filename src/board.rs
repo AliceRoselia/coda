@@ -192,7 +192,10 @@ impl Board {
         let k = piece_key(make_piece(color, pt), sq);
         self.hash ^= k;
         if pt == PAWN { self.pawn_hash ^= k; }
-        else if pt != KING {
+        else {
+            // KING included (audit S1): SF/Reckless/Viridithas all key
+            // non-pawn correction history on king placement; excluding it
+            // left NO corrhist source sensitive to king position.
             self.non_pawn_key[color as usize] ^= k;
         }
     }
@@ -204,7 +207,7 @@ impl Board {
         let k = piece_key(make_piece(color, pt), sq);
         self.hash ^= k;
         if pt == PAWN { self.pawn_hash ^= k; }
-        else if pt != KING {
+        else {
             self.non_pawn_key[color as usize] ^= k;
         }
     }
@@ -221,7 +224,7 @@ impl Board {
         let k = piece_key(p, from) ^ piece_key(p, to);
         self.hash ^= k;
         if pt == PAWN { self.pawn_hash ^= k; }
-        else if pt != KING {
+        else {
             self.non_pawn_key[color as usize] ^= k;
         }
     }
@@ -459,7 +462,7 @@ impl Board {
         // Compute per-color non-pawn key
         self.non_pawn_key = [0; 2];
         for color in 0..2u8 {
-            for pt in [KNIGHT, BISHOP, ROOK, QUEEN] {
+            for pt in [KNIGHT, BISHOP, ROOK, QUEEN, KING] {
                 let mut bb = self.pieces[pt as usize] & self.colors[color as usize];
                 while bb != 0 {
                     let sq = pop_lsb(&mut bb) as u8;
@@ -1582,7 +1585,7 @@ mod tests {
                 let sq = pop_lsb(&mut pbb) as u8;
                 pawn ^= piece_key(make_piece(color, PAWN), sq);
             }
-            for pt in [KNIGHT, BISHOP, ROOK, QUEEN] {
+            for pt in [KNIGHT, BISHOP, ROOK, QUEEN, KING] {
                 let mut bb = b.pieces[pt as usize] & b.colors[color as usize];
                 while bb != 0 {
                     let sq = pop_lsb(&mut bb) as u8;
