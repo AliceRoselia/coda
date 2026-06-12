@@ -743,6 +743,10 @@ pub struct SearchInfo {
     static_evals: [i32; MAX_PLY + 1],
     /// LMR reduction applied at each ply (for hindsight reduction gating)
     reductions: [i32; MAX_PLY + 1],
+    /// Per-ply move count at recursion time (T2.14): children read the
+    /// parent's slot to gate the early-refuted-quiet malus (SF
+    /// (ss-1)->moveCount pattern).
+    move_count_stack: [u8; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
     pub excluded_move: [Move; MAX_PLY + 1],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
@@ -819,6 +823,7 @@ impl SearchInfo {
             completed_depth: 0,
             static_evals: [0; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
+            move_count_stack: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
             double_ext_count: [0; MAX_PLY + 1],
             moved_piece_stack: [0; MAX_PLY + 1],
@@ -1790,6 +1795,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.stats = PruneStats::default();
     info.static_evals = [0; MAX_PLY + 1];
     info.reductions = [0; MAX_PLY + 1];
+    info.move_count_stack = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
@@ -1924,6 +1930,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.depth_nodes = [0; MAX_PLY + 1];
     info.completed_depth = 0;
     info.reductions = [0; MAX_PLY + 1];
+    info.move_count_stack = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
@@ -3675,6 +3682,7 @@ fn negamax(
         // Pruned moves still count for LMR/LMP purposes — later moves in the ordering
         // should be reduced more regardless of whether earlier moves were pruned.
         move_count += 1;
+        info.move_count_stack[ply_u] = move_count.min(255) as u8;
 
         let from = move_from(mv);
         let to = move_to(mv);
@@ -4311,6 +4319,39 @@ fn negamax(
                     if move_count == 1 { info.stats.first_move_cutoffs += 1; }
                     info.stats.cutoff_movecount_sum += move_count as u64;
                     info.stats.cutoff_movecount_sq_sum += (move_count as u64) * (move_count as u64);
+
+                    // Early-refuted-quiet malus (audit T2.14; SF
+                    // search.cpp:1877 `(ss-1)->moveCount == 1 + (ss-1)->ttHit`,
+                    // Reckless `move_count < 2`): if the opponent's prior quiet
+                    // was tried EARLY at the parent (top-ordered/TT) and ran
+                    // straight into this refutation, that's exactly the
+                    // low-noise signal cont-hist exists for. Indiscriminate
+                    // (ungated) variants were rejected before; the early-move
+                    // gate is the load-bearing difference. Mirrors the
+                    // TT-cutoff cont-hist malus indexing.
+                    if ply_u >= 2 && info.move_count_stack[ply_u - 1] <= 2 {
+                        let stack_len = board.undo_stack.len();
+                        if stack_len >= 2 {
+                            let opp_undo = &board.undo_stack[stack_len - 1];
+                            let our_undo = &board.undo_stack[stack_len - 2];
+                            if opp_undo.mv != NO_MOVE && opp_undo.captured == NO_PIECE_TYPE
+                                && our_undo.mv != NO_MOVE
+                            {
+                                let opp_gp = info.moved_piece_stack[ply_u - 1] as usize;
+                                let our_gp = info.moved_piece_stack[ply_u - 2] as usize;
+                                let opp_to = info.moved_to_stack[ply_u - 1] as usize;
+                                let our_to = info.moved_to_stack[ply_u - 2] as usize;
+                                if opp_gp > 0 && opp_gp < 13 && our_gp > 0 && our_gp < 13
+                                    && opp_to < 64 && our_to < 64
+                                {
+                                    History::update_cont_history(
+                                        &mut info.history.cont_hist[our_gp][our_to][opp_gp][opp_to],
+                                        -history_bonus(depth),
+                                    );
+                                }
+                            }
+                        }
+                    }
 
                     // Beta cutoff - update history for quiet moves.
                     if !is_cap {
