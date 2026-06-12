@@ -8006,6 +8006,8 @@ mod tests {
             hidden_size: h,
             input_weights,
             input_biases,
+            // Lane tests never run the L1 matmul; Scalar is the inert choice.
+            l1_kernel: L1Kernel::Scalar,
             output_weights: Vec::new(),
             output_weights_i8: Vec::new(),
             output_scale: [1.0; NNUE_OUTPUT_BUCKETS],
@@ -8249,5 +8251,173 @@ mod tests {
         }
         assert_eq!(*acc.psqt_lanes(WHITE), root_lanes_w, "root W lanes corrupted by push/pop");
         assert_eq!(*acc.psqt_lanes(BLACK), root_lanes_b, "root B lanes corrupted by push/pop");
+    }
+
+    /// Trainer-vs-engine PSQT oracle (debugging SPRT #1952).
+    ///
+    /// For fixed FENs, enumerates active features with the ENGINE's own
+    /// enumeration (halfka_index + enumerate_threats), computes the trainer
+    /// formula `0.5 * (stm_psqt - ntm_psqt)` directly from the raw psqtw
+    /// block of the Bullet quantised.bin under BOTH candidate layouts
+    /// ([feature][8] and [8][feature]), and compares against the engine's
+    /// accumulated psqt lanes + final psqt term.
+    ///
+    /// Skips (passes trivially) when the training artifacts are absent.
+    #[test]
+    fn psqt_trainer_parity_oracle() {
+        use crate::board::Board;
+
+        let qbin_path = "/tmp/psqt-s200-quantised.bin";
+        let nnue_path = "nets/psqt-s200.nnue";
+        if !std::path::Path::new(qbin_path).exists() || !std::path::Path::new(nnue_path).exists() {
+            eprintln!("psqt_trainer_parity_oracle: artifacts missing, skipping");
+            return;
+        }
+        crate::init();
+        let _ = std::fs::remove_file("/tmp/psqt_oracle_feats.txt");
+
+        let net = NNUENet::load(nnue_path).expect("load psqt net");
+        assert!(net.has_psqt, "nets/psqt-s200.nnue must be a v11 psqt net");
+        let psq_inputs = net.num_king_buckets * PSQ_INPUTS_PER_BUCKET;
+        let nf_threat = net.num_threat_features;
+        let total_feats = psq_inputs + nf_threat;
+        let ob = NNUE_OUTPUT_BUCKETS;
+
+        // Raw psqtw block: appended LAST by the trainer, 32-byte bullet
+        // footer at end of file.
+        let data = std::fs::read(qbin_path).expect("read quantised.bin");
+        let block_bytes = total_feats * ob * 2;
+        let start = data.len() - 32 - block_bytes;
+        let raw: Vec<i16> = data[start..data.len() - 32]
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert_eq!(raw.len(), total_feats * ob);
+
+        let fens = [
+            ("startpos", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+            ("rook-odds", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBN1 w Qkq - 0 1"),
+            ("midgame", "r2q1rk1/pp2bppp/2n1bn2/2pp4/4P3/1BNP1N2/PPP2PPP/R1BQR1K1 w - - 4 9"),
+        ];
+
+        for (name, fen) in fens {
+            let mut board = Board::new();
+            board.set_fen(fen);
+
+            // Active feature sets per perspective (global trainer indices:
+            // PSQ in [0, psq_inputs), threats at psq_inputs + idx).
+            let mut feats: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+            for persp in [WHITE, BLACK] {
+                let ksq = (board.pieces[KING as usize] & board.colors[persp as usize])
+                    .trailing_zeros() as u8;
+                for color in 0..2u8 {
+                    for pt in 0..6u8 {
+                        let mut bb = board.pieces[pt as usize] & board.colors[color as usize];
+                        while bb != 0 {
+                            let sq = crate::bitboard::pop_lsb(&mut bb) as u8;
+                            let idx = net.halfka_index(persp, ksq, color, pt, sq);
+                            assert!(idx < psq_inputs);
+                            feats[persp as usize].push(idx);
+                        }
+                    }
+                }
+                let occ = board.colors[0] | board.colors[1];
+                let mirrored = (ksq % 8) >= 4;
+                crate::threats::enumerate_threats(
+                    &board.pieces, &board.colors, &board.mailbox,
+                    occ, persp, mirrored,
+                    |idx| {
+                        if idx < nf_threat {
+                            feats[persp as usize].push(psq_inputs + idx);
+                        }
+                    },
+                );
+            }
+
+            // Oracle lane sums under both layouts.
+            let mut lanes_a = [[0i64; NNUE_OUTPUT_BUCKETS]; 2]; // [feature][8]
+            let mut lanes_b = [[0i64; NNUE_OUTPUT_BUCKETS]; 2]; // [8][feature]
+            for p in 0..2 {
+                for &f in &feats[p] {
+                    for k in 0..ob {
+                        lanes_a[p][k] += raw[f * ob + k] as i64;
+                        lanes_b[p][k] += raw[k * total_feats + f] as i64;
+                    }
+                }
+            }
+
+            // Engine lanes: PSQ accumulator + threat stack, same paths the
+            // search eval uses.
+            let mut acc = NNUEAccumulator::new(net.hidden_size);
+            acc.force_recompute(&net, &board);
+            let mut ts = crate::threat_accum::ThreatStack::new(net.hidden_size);
+            ts.active = true;
+            ts.refresh(&net.threat_weights, nf_threat, &board, WHITE);
+            ts.refresh(&net.threat_weights, nf_threat, &board, BLACK);
+            let mut eng = [[0i64; NNUE_OUTPUT_BUCKETS]; 2];
+            for p in [WHITE, BLACK] {
+                let a = acc.psqt_lanes(p);
+                let t = ts.psqt_lanes(p);
+                for k in 0..ob {
+                    eng[p as usize][k] = a[k] as i64 + t[k] as i64;
+                }
+            }
+
+            let pc = piece_count(&board);
+            let bucket = net.output_bucket(pc);
+            let stm = board.side_to_move as usize;
+            let ntm = 1 - stm;
+            let term_cp = |lanes: &[[i64; NNUE_OUTPUT_BUCKETS]; 2]| -> f32 {
+                (lanes[stm][bucket] - lanes[ntm][bucket]) as f32 / QA as f32 * 0.5
+                    * EVAL_SCALE as f32
+            };
+
+            let eval = net.forward_with_threats(&acc, board.side_to_move, pc, &ts);
+
+            eprintln!("--- {} (bucket {}, stm {}) ---", name, bucket, stm);
+            eprintln!("  engine lanes stm  = {:?}", eng[stm]);
+            eprintln!("  layoutA lanes stm = {:?}", lanes_a[stm]);
+            eprintln!("  layoutB lanes stm = {:?}", lanes_b[stm]);
+            eprintln!("  engine lanes ntm  = {:?}", eng[ntm]);
+            eprintln!("  layoutA lanes ntm = {:?}", lanes_a[ntm]);
+            eprintln!("  layoutB lanes ntm = {:?}", lanes_b[ntm]);
+            eprintln!("  psqt term (cp): engine {:+.1}  layoutA {:+.1}  layoutB {:+.1}",
+                term_cp(&eng), term_cp(&lanes_a), term_cp(&lanes_b));
+            eprintln!("  full engine eval: {} cp", eval);
+
+            // Dump active features for the external trainer-forward oracle
+            // (scripts/psqt_trainer_forward.py): one line per perspective,
+            // global trainer feature indices.
+            {
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new().create(true).append(true)
+                    .open("/tmp/psqt_oracle_feats.txt").unwrap();
+                writeln!(f, "fen\t{}\tstm\t{}\tbucket\t{}\teval\t{}", fen, stm, bucket, eval).unwrap();
+                for p in 0..2 {
+                    let list: Vec<String> = feats[p].iter().map(|x| x.to_string()).collect();
+                    writeln!(f, "persp\t{}\t{}", p, list.join(",")).unwrap();
+                }
+            }
+
+            assert_eq!(eng, lanes_a,
+                "{}: engine psqt lanes != trainer formula under [feature][8] layout", name);
+        }
+
+        // Cross-check: control net static evals on the same FENs (engine
+        // quantised path vs trainer f64 forward run externally).
+        if let Ok(ctl) = NNUENet::load("nets/crelu-ctl-s200.nnue") {
+            for (name, fen) in fens {
+                let mut board = Board::new();
+                board.set_fen(fen);
+                let mut acc = NNUEAccumulator::new(ctl.hidden_size);
+                acc.force_recompute(&ctl, &board);
+                let mut ts = crate::threat_accum::ThreatStack::new(ctl.hidden_size);
+                ts.active = true;
+                ts.refresh(&ctl.threat_weights, ctl.num_threat_features, &board, WHITE);
+                ts.refresh(&ctl.threat_weights, ctl.num_threat_features, &board, BLACK);
+                let eval = ctl.forward_with_threats(&acc, board.side_to_move, piece_count(&board), &ts);
+                eprintln!("control engine eval {}: {} cp", name, eval);
+            }
+        }
     }
 }
