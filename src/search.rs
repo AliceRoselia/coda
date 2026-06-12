@@ -4235,10 +4235,15 @@ fn negamax(
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         // Fixed-point divisor (stored × 10).
                         let bonus = raw_bonus + raw_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
-                        // Malus magnitude: separate constants, same scaling chain
-                        // (identical to bonus at default tunables → bench-identical).
-                        let raw_malus = history_malus(bonus_depth);
-                        let malus = raw_malus + raw_malus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
+                        // Malus magnitude: UN-BOOSTED (audit T2.15 probe). The
+                        // NFH cascade and depth boosts are best-move-confidence
+                        // signals — amplifying the penalty applied to up to 63
+                        // unrelated quiets with them conflates "this cutoff is
+                        // trustworthy" with "those moves were extra bad". 3/4
+                        // engines with separate maluses keep them un-boosted.
+                        // #1922 couldn't reach this (tuner scaled the base, but
+                        // both sides shared the boost chain).
+                        let malus = history_malus(depth);
 
                         // Update main history
                         History::update_history(
