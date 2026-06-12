@@ -145,6 +145,12 @@ tunables!(
     // 4 → 6 first; ttPv add deferred to a follow-up if H1.
     (SE_DEPTH_10X, 44, 40, 200, 20.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
+    // B3 (TM audit 2026-06-13): within-iteration best-move-instability
+    // factor coefficient x100. factor = 1 + COEF/100 * decayed_changes,
+    // cap 2.5. SF's 2.315 is calibrated to its ~2%-of-clock optimum;
+    // Coda's opt base is larger with factors already stacking to ~14x,
+    // so default conservative at 0.40/change — SPSA explores.
+    (TM_BMC_COEF_100, 40, 0, 300, 15.0, false),
     (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, false),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
     // use LMP_BASE=3 with the same `(BASE + d²)/(2 - improving)` formula.
@@ -652,6 +658,13 @@ pub struct SearchInfo {
     /// dropped. Candidate for re-use as an SF/Reckless-style
     /// within-iteration instability factor (TM audit 2026-06-13, B3).
     tm_best_move_changes: u32,
+    /// SF-style within-iteration root best-move instability (TM audit
+    /// 2026-06-13 B3): incremented on every ply-0 best-move CHANGE during
+    /// an iteration (aspiration re-searches included), halved at each
+    /// iteration end (SF decay). Orthogonal to tm_best_stable, which only
+    /// sees the iteration-end winner — this catches "stable at the end
+    /// but churning inside".
+    tm_iter_bmc: f64,
     /// Forced-move detection state (Viridithas pattern). Set after an ID iteration
     /// at the root when `detect_forced_move` finds that excluding the current best
     /// move collapses the alternative score by a meaningful margin. Sticky once
@@ -778,6 +791,7 @@ impl SearchInfo {
             move_overhead: 100,
             tm_prev_best: NO_MOVE,
             tm_best_move_changes: 0,
+            tm_iter_bmc: 0.0,
             tm_forced_state: ForcedState::None,
             tm_prev_score: 0,
             tm_best_stable: 0,
@@ -1781,6 +1795,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     info.tm_has_data = false;
     info.tm_best_stable = 0;
     info.tm_best_move_changes = 0;
+    info.tm_iter_bmc = 0.0;
     info.tm_asp_fail_low = 0;
     info.tm_asp_fail_high = 0;
     info.tm_forced_state = ForcedState::None;
@@ -1915,6 +1930,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.tm_prev_score = 0;
     info.tm_best_stable = 0;
     info.tm_best_move_changes = 0;
+    info.tm_iter_bmc = 0.0;
     info.tm_asp_fail_low = 0;
     info.tm_asp_fail_high = 0;
     info.tm_forced_state = ForcedState::None;
@@ -2004,6 +2020,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         info.tm_has_data = false;
         info.tm_best_stable = 0;
         info.tm_best_move_changes = 0;
+        info.tm_iter_bmc = 0.0;
+    info.tm_iter_bmc = 0.0;
         info.tm_asp_fail_low = 0;
         info.tm_asp_fail_high = 0;
     } else if !limits.infinite {
@@ -2329,6 +2347,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // `1.096 + 2.29 * totBestMoveChanges` patterns).
                     info.tm_best_move_changes = info.tm_best_move_changes.saturating_add(1);
                 }
+                // B3: SF-style per-iteration decay of the within-iteration
+                // instability accumulator (consumed by the BMC factor below).
+                info.tm_iter_bmc *= 0.5;
             }
             let drop = if info.tm_has_data && !is_mate_score(prev_score) && !is_mate_score(info.tm_prev_score) {
                 info.tm_prev_score - prev_score
@@ -2534,6 +2555,15 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 (1.0 + 0.0025 * drop).clamp(0.80, 1.45)
             };
 
+            // Factor 6 (B3, TM audit 2026-06-13): within-iteration root
+            // best-move instability — SF bestMoveInstability shape
+            // 1.088 + 2.315 * decayed_changes (SF divides by threads; Coda
+            // counts main-thread only, same scale). Capped: SF's value is
+            // naturally bounded by the x0.5/iteration decay, but clamp
+            // defensively against pathological churn.
+            let bmc_multiplier = (1.0 + TM_BMC_COEF_100.load(Ordering::Relaxed) as f64 / 100.0 * info.tm_iter_bmc)
+                .min(2.5);
+
             // Combined multiplier — Viridithas's 4 factors + score-trend.
             // Max product ~ 2.50 × 1.68 × 1.0 × 2.27 × 1.45 = 13.8×
             // Min product ~ 0.75 × 1.0  × 0.386 × 0.87 × 0.80 = 0.20×
@@ -2541,7 +2571,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 * failed_low_multiplier
                 * forced_move_multiplier
                 * subtree_size_multiplier
-                * score_trend_multiplier;
+                * score_trend_multiplier
+                * bmc_multiplier;
             // No-inc clamp: factor product up to 6.5× at no-inc TCs blows
             // adjusted_soft past hard_time via iteration-overflow even with
             // the smaller no-inc opt baseline. lichess MJ442247 (3+0):
@@ -4216,6 +4247,13 @@ fn negamax(
         }
 
         if score > best_score {
+            // B3 (TM audit 2026-06-13): count within-iteration root
+            // best-move CHANGES (not the first establishment) for the
+            // SF bestMoveInstability factor. Main thread only — helpers
+            // have their own SearchInfo and no TM.
+            if ply_u == 0 && best_move != NO_MOVE && mv != best_move {
+                info.tm_iter_bmc += 1.0;
+            }
             best_score = score;
             best_move = mv;
 
