@@ -2565,8 +2565,21 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // counts main-thread only, same scale). Capped: SF's value is
             // naturally bounded by the x0.5/iteration decay, but clamp
             // defensively against pathological churn.
-            let bmc_multiplier = (1.0 + TM_BMC_COEF_100.load(Ordering::Relaxed) as f64 / 100.0 * info.tm_iter_bmc)
-                .min(2.5);
+            // v2 (#1950 post-mortem): gate on tm_best_stable >= 1 — fire
+            // ONLY in the "stable at iteration end but churned inside"
+            // case, the one configuration the stability table cannot see.
+            // v1 stacked on stability-reset moves where the table (x1.71),
+            // score-trend, and this factor all responded to the SAME flip —
+            // geometric overspend on unstable moves (-7 at LTC). SF avoids
+            // the triple-count because its stability factor is shaped
+            // differently; in Coda's stack the signals must be kept
+            // orthogonal by construction.
+            let bmc_multiplier = if info.tm_best_stable >= 1 {
+                (1.0 + TM_BMC_COEF_100.load(Ordering::Relaxed) as f64 / 100.0 * info.tm_iter_bmc)
+                    .min(2.5)
+            } else {
+                1.0
+            };
 
             // Combined multiplier — Viridithas's 4 factors + score-trend.
             // Max product ~ 2.50 × 1.68 × 1.0 × 2.27 × 1.45 = 13.8×
