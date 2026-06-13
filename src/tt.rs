@@ -481,8 +481,23 @@ impl TT {
             // GENERATION_DELTA=8). Stale entries depreciate twice as fast as
             // the previous `*4`, freeing slots for fresh shallow entries
             // when TT pressure is high.
+            //
+            // Bound/PV protection (TT audit 2026-06-13): we degrade faster
+            // than peers under hash pressure partly because eviction ignored
+            // bound type — a high-value EXACT/PV node was evicted on the same
+            // depth/age basis as a fail-low all-node, throwing away exactly
+            // the entries that gate PV stability and cutoffs. SF/Obsidian/
+            // Berserk force-keep EXACT; Viridithas adds a +3/+2/+1 bound
+            // bonus + pv to the eviction priority. Match the Viri gradient so
+            // valuable entries survive a full bucket.
             let age = gen.wrapping_sub(slot_gen) as i32;
-            let slot_score = slot_depth - age * 8;
+            let bound_bonus = match slot_flag {
+                TT_FLAG_EXACT => 3,
+                TT_FLAG_LOWER => 2,
+                _ => 1, // UPPER (NONE is the empty-slot fast path above)
+            };
+            let pv_bonus = if unpack_tt_pv(slot_data) { 2 } else { 0 };
+            let slot_score = slot_depth - age * 8 + bound_bonus + pv_bonus;
             if slot_score < replace_score {
                 replace_score = slot_score;
                 replace_idx = i;
