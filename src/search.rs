@@ -152,6 +152,15 @@ tunables!(
     // Bisecting 9 → 5 first.
     (LMP_BASE, 6, 1, 15, 2.0, true),
     (LMP_DEPTH, 8, 4, 20, 2.0, true),
+    // First TM tunables (TM was 0/82 params). Log-time soft-target scale:
+    // the per-move time FRACTION should rise with the clock (SF scales
+    // optConstant with log10(time) — the marginal second is worth more at LTC,
+    // forfeit risk lower). Coda's base is purely linear in time_left -> flat
+    // ~2.5%/move at all TCs -> systematic LTC UNDER-thinking (the 7th->13th
+    // collapse). Neutral at/below ~12.6s (THRESH=11 = log10*10) so STC is
+    // unaffected; boosts at LTC. (TM change: self-play-VISIBLE per #1568.)
+    (TM_LOGTIME_THRESH, 11, 0, 25, 1.0, true),
+    (TM_LOGTIME_COEF, 33, 0, 150, 7.5, true),
     (BAD_NOISY_MARGIN, 73, 30, 150, 6.0, true),
     (PROBCUT_MARGIN, 117, 80, 300, 11.0, true),
     (HINDSIGHT_THRESH, 179, 50, 400, 17.5, true),
@@ -1661,6 +1670,15 @@ pub fn compute_tm_budgets(
         // closer to Coda's prior calibrated level.
         let phase_mult = 0.22 + 0.78 * (1.0 - (-0.045 * fullmove as f64).exp());
         ((opt_time_base as f64) * phase_mult.clamp(0.22, 1.0)) as u64
+    };
+    // Log-time scale: opt_time *= 1 + max(0, log10(time_left_s) - THRESH/10)*COEF/100.
+    // Neutral when time_left_s <= 10^(THRESH/10) (STC + time scrambles);
+    // grows the per-move soft target as the clock lengthens (LTC).
+    let opt_time = {
+        let t_s = (time_left as f64 / 1000.0).max(1.0);
+        let excess = (t_s.log10() - tp(&TM_LOGTIME_THRESH) as f64 / 10.0).max(0.0);
+        let scale = 1.0 + excess * (tp(&TM_LOGTIME_COEF) as f64 / 100.0);
+        ((opt_time as f64) * scale) as u64
     };
     let opt_time = opt_time.max(1).min(hard_time);
 
