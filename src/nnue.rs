@@ -2769,6 +2769,18 @@ impl NNUENet {
             println!("info string Loaded {} threat features ({}×{}, {}MB)",
                 num_threat_features, num_threat_features, hidden_size,
                 total / (1024 * 1024));
+            // Fix A: relocate hot threat rows to the front of the matrix so the
+            // hot working set is physically contiguous (better LLC residency
+            // under multi-instance contention). Eval stays bit-identical — all
+            // weight reads funnel through threats::threat_row(). Only applied
+            // when the net's feature count matches the profiled permutation.
+            if crate::threats::set_threat_perm_active(num_threat_features) {
+                crate::threats::permute_threat_weights(
+                    &mut threat_weights, num_threat_features, hidden_size);
+                println!("info string Threat rows importance-reordered (Fix A: hot set contiguous)");
+            }
+        } else {
+            crate::threats::set_threat_perm_active(num_threat_features);
         }
 
         // Read L1 hidden layer weights (v7)
@@ -4896,13 +4908,13 @@ impl NNUEAccumulator {
         crate::threats::enumerate_threats(
             &board.pieces, &board.colors, &board.mailbox,
             occ, WHITE, (wk_sq % 8) >= 4,
-            |idx| { if idx < net.num_threat_features { let w = idx * h; for j in 0..h { check_w[j] += net.threat_weights[w + j] as i16; } } },
+            |idx| { if idx < net.num_threat_features { let w = crate::threats::threat_row(idx) * h; for j in 0..h { check_w[j] += net.threat_weights[w + j] as i16; } } },
         );
         let mut check_b = vec![0i16; h];
         crate::threats::enumerate_threats(
             &board.pieces, &board.colors, &board.mailbox,
             occ, BLACK, (bk_sq % 8) >= 4,
-            |idx| { if idx < net.num_threat_features { let w = idx * h; for j in 0..h { check_b[j] += net.threat_weights[w + j] as i16; } } },
+            |idx| { if idx < net.num_threat_features { let w = crate::threats::threat_row(idx) * h; for j in 0..h { check_b[j] += net.threat_weights[w + j] as i16; } } },
         );
 
         let curr_tw = self.threat.view(self.top, WHITE as usize);
@@ -4938,7 +4950,7 @@ impl NNUEAccumulator {
                 occ, WHITE, w_mirrored,
                 |feat_idx| {
                     if feat_idx < net.num_threat_features {
-                        let w_off = feat_idx * h;
+                        let w_off = crate::threats::threat_row(feat_idx) * h;
                         for j in 0..h {
                             dst[j] += net.threat_weights[w_off + j] as i16;
                         }
@@ -4958,7 +4970,7 @@ impl NNUEAccumulator {
                 occ, BLACK, b_mirrored,
                 |feat_idx| {
                     if feat_idx < net.num_threat_features {
-                        let w_off = feat_idx * h;
+                        let w_off = crate::threats::threat_row(feat_idx) * h;
                         for j in 0..h {
                             dst[j] += net.threat_weights[w_off + j] as i16;
                         }

@@ -7,6 +7,102 @@
 /// Reference: Reckless engine (src/nnue/threats.rs) — same encoding pattern.
 /// Total features: ~66,864 (depends on piece-pair filtering).
 
+// ===========================================================================
+// Threat-row importance permutation (Fix A, 2026-06-14)
+// ===========================================================================
+//
+// The threat-weight matrix is [num_threat_features × hidden_size] i8 ≈ 65 MB.
+// Feature firings are heavily power-law (profile-threats, 50k-pos corpus):
+// 53% of rows never fire, the top 1% (668 rows) account for 69% of firings,
+// the top 10% (6686 rows) for 94%. In STRUCTURAL order those hot rows are
+// scattered across the full 65 MB, so under multi-instance shared-LLC
+// contention Coda's ~6.8 MB hot set evicts ~2× harder than SF's
+// (LLC-load-miss 1.69%→19.1% under 16× load vs SF 2.05%→9.5%).
+//
+// Fix: at net-load time relocate the hottest rows to the FRONT of the matrix
+// so the hot working set is physically contiguous (streams/stays-resident
+// far better). The ordering is profiled OFFLINE and committed as a fixed
+// little-endian u32 blob (`threat_perm.bin`): `perm[structural] = physical`.
+// Eval is BIT-IDENTICAL — a structural feature `s`'s weights live at physical
+// row `threat_row(s)`, and every weight read funnels through `threat_row()`.
+static THREAT_PERM_RAW: &[u8] = include_bytes!("threat_perm.bin");
+/// Threat-feature count the committed permutation was built for. The perm is
+/// only applied to nets whose `num_threat_features` matches this (all current
+/// v9 nets); any other net falls back to identity (structural) ordering.
+pub const THREAT_PERM_LEN: usize = 66864;
+
+static THREAT_PERM: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
+/// Whether the importance permutation is active for the currently-loaded net.
+/// Single-active-net assumption: set once at `NNUENet::load`. A no-threat net
+/// (count 0) or a future net with a different feature count disables it and
+/// also leaves its weights unpermuted, so `threat_row` stays consistent.
+static PERM_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn threat_perm() -> &'static [u32] {
+    THREAT_PERM.get_or_init(|| {
+        assert_eq!(
+            THREAT_PERM_RAW.len(),
+            THREAT_PERM_LEN * 4,
+            "threat_perm.bin size mismatch ({} bytes, expected {})",
+            THREAT_PERM_RAW.len(),
+            THREAT_PERM_LEN * 4
+        );
+        THREAT_PERM_RAW
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    })
+}
+
+/// Enable the importance permutation iff the net's threat-feature count
+/// matches the profiled permutation. Returns whether it is now active.
+/// Called once per `NNUENet::load`.
+pub fn set_threat_perm_active(num_threat_features: usize) -> bool {
+    let active = num_threat_features == THREAT_PERM_LEN;
+    PERM_ACTIVE.store(active, std::sync::atomic::Ordering::Release);
+    active
+}
+
+/// Map a structural threat-feature index to its physical weight-row index.
+/// Identity unless the importance permutation is active for the loaded net.
+///
+/// Relaxed load is correct: `PERM_ACTIVE` and the permuted weights are both
+/// published during single-threaded `NNUENet::load`, which happens-before any
+/// search/helper thread is spawned (the spawn is the synchronization edge).
+#[inline(always)]
+pub fn threat_row(idx: usize) -> usize {
+    if PERM_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+        let perm = threat_perm();
+        if idx < perm.len() {
+            return perm[idx] as usize;
+        }
+    }
+    idx
+}
+
+/// Relocate a freshly-loaded structural-ordered threat-weight matrix in place
+/// into physical (importance) order: physical row `threat_row(s)` receives
+/// structural row `s`. No-op unless the feature count matches the permutation.
+pub fn permute_threat_weights(
+    weights: &mut Vec<i8>,
+    num_threat_features: usize,
+    hidden_size: usize,
+) {
+    if num_threat_features != THREAT_PERM_LEN {
+        return;
+    }
+    debug_assert_eq!(weights.len(), num_threat_features * hidden_size);
+    let perm = threat_perm();
+    let mut out = vec![0i8; weights.len()];
+    for s in 0..num_threat_features {
+        let p = perm[s] as usize;
+        out[p * hidden_size..p * hidden_size + hidden_size]
+            .copy_from_slice(&weights[s * hidden_size..s * hidden_size + hidden_size]);
+    }
+    *weights = out;
+}
+
 #[cfg(feature = "profile-threats")]
 pub mod apply_stats {
     //! apply_threat_deltas delta-count histogram.
@@ -1676,11 +1772,15 @@ pub unsafe fn apply_threat_deltas(
             pov,
         );
         if idx < 0 || (idx as usize) >= num_threats { continue; }
+        // Translate structural feature index → physical weight row (Fix A).
+        // The bound check above is on the structural index; downstream SIMD
+        // kernels and prefetch then read `row * hidden_size` directly.
+        let row = threat_row(idx as usize);
         if delta.add() {
-            unsafe { adds_ptr.add(n_adds).write(idx as usize); }
+            unsafe { adds_ptr.add(n_adds).write(row); }
             n_adds += 1;
         } else {
-            unsafe { subs_ptr.add(n_subs).write(idx as usize); }
+            unsafe { subs_ptr.add(n_subs).write(row); }
             n_subs += 1;
         }
     }

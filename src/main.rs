@@ -1927,7 +1927,10 @@ fn run_profile_threats(input: &str, output: &str, limit: usize, net_path: Option
                     let mut row_l1: Vec<u32> = vec![0; total_features];
                     let mut row_max: Vec<u32> = vec![0; total_features];
                     for r in 0..total_features {
-                        let row = &net.threat_weights[r * h..(r + 1) * h];
+                        // `hits` is indexed by structural feature; map to the
+                        // (possibly importance-permuted) physical weight row.
+                        let pr = crate::threats::threat_row(r);
+                        let row = &net.threat_weights[pr * h..(pr + 1) * h];
                         let mut l1 = 0u32;
                         let mut mx = 0u32;
                         for &w in row {

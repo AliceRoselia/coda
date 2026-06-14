@@ -224,7 +224,10 @@ impl ThreatStack {
             |feat_idx| {
                 if feat_idx < num_features {
                     if n_indices < 256 {
-                        unsafe { indices_ptr.add(n_indices).write(feat_idx); }
+                        // Structural index → physical weight row (Fix A); the
+                        // bound check above is on the structural index.
+                        let row = crate::threats::threat_row(feat_idx);
+                        unsafe { indices_ptr.add(n_indices).write(row); }
                         n_indices += 1;
                     } else {
                         overflowed = true;

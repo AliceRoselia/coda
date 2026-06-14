@@ -202,12 +202,12 @@ pub fn evaluate_nnue(
             crate::threats::enumerate_threats(
                 &board.pieces, &board.colors, &board.mailbox,
                 occ, crate::types::WHITE, (wk % 8) >= 4,
-                |idx| { if idx < net.num_threat_features { let w = idx * h; for j in 0..h { check_w[j] += net.threat_weights[w + j] as i16; } } },
+                |idx| { if idx < net.num_threat_features { let w = crate::threats::threat_row(idx) * h; for j in 0..h { check_w[j] += net.threat_weights[w + j] as i16; } } },
             );
             crate::threats::enumerate_threats(
                 &board.pieces, &board.colors, &board.mailbox,
                 occ, crate::types::BLACK, (bk % 8) >= 4,
-                |idx| { if idx < net.num_threat_features { let w = idx * h; for j in 0..h { check_b[j] += net.threat_weights[w + j] as i16; } } },
+                |idx| { if idx < net.num_threat_features { let w = crate::threats::threat_row(idx) * h; for j in 0..h { check_b[j] += net.threat_weights[w + j] as i16; } } },
             );
             let ts_w = threat_stack.values(crate::types::WHITE);
             let ts_b = threat_stack.values(crate::types::BLACK);
