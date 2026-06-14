@@ -7,6 +7,30 @@
 /// Reference: Reckless engine (src/nnue/threats.rs) — same encoding pattern.
 /// Total features: ~66,864 (depends on piece-pair filtering).
 
+/// X-ray threat emission gate. Coda's threat enumeration emits X-ray features
+/// (a slider's threat THROUGH one blocker) that SF/Reckless do NOT. Profiling
+/// (2026-06-14) showed X-ray steps are ~36% of threat-generation cycles and
+/// 73-78% wasted (zero-emit). A net trained `--xray 0` never saw these
+/// features, so its inference MUST skip them (else mismatch corrupts eval) —
+/// and skipping reclaims the cost. Set at net load from `xray_trained`; an
+/// env override (`CODA_NO_XRAY=1`) forces off on ANY net to measure the NPS
+/// upside. Default ON → bit-identical for X-ray-trained (prod) nets.
+static EMIT_XRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Set X-ray emission from the loaded net's `xray_trained` flag (folds in the
+/// `CODA_NO_XRAY` env override). Called once per `NNUENet::load`.
+pub fn set_emit_xray(net_xray_trained: bool) {
+    let env_off = std::env::var("CODA_NO_XRAY").is_ok();
+    EMIT_XRAY.store(net_xray_trained && !env_off, std::sync::atomic::Ordering::Release);
+}
+
+/// Whether X-ray threat features should be emitted. Relaxed load: published at
+/// single-threaded net load, happens-before any search thread spawn.
+#[inline(always)]
+pub fn emit_xray() -> bool {
+    EMIT_XRAY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 #[cfg(feature = "profile-threats")]
 pub mod apply_stats {
     //! apply_threat_deltas delta-count histogram.
@@ -554,8 +578,8 @@ pub fn enumerate_threats<F: FnMut(usize)>(
 
                 // X-ray threats: for sliders, find the second piece on each ray
                 // (the piece behind the directly attacked piece). Matches Bullet
-                // training enumeration at ebdf398.
-                if pt == BISHOP || pt == ROOK || pt == QUEEN {
+                // training enumeration at ebdf398. Gated for no-X-ray nets.
+                if emit_xray() && (pt == BISHOP || pt == ROOK || pt == QUEEN) {
                     // Check each ray direction using attack comparison
                     // For each directly attacked piece, see if removing it reveals another
                     let mut direct_targets = attacks & occ;
@@ -1009,7 +1033,7 @@ fn push_threats_for_piece(
     let s1b_start = crate::threats::thr_stats::rdtsc();
     #[cfg(feature = "profile-threats")]
     let s1b_deltas_before = deltas.len() as u64;
-    if piece_type == BISHOP || piece_type == ROOK || piece_type == QUEEN {
+    if emit_xray() && (piece_type == BISHOP || piece_type == ROOK || piece_type == QUEEN) {
         let mut direct_targets = my_attacks & occ;
         while direct_targets != 0 {
             let blocker_sq = direct_targets.trailing_zeros();
@@ -1070,7 +1094,7 @@ fn push_threats_for_piece(
     let diag_ray_mask  = bishop_attacks(square, 0);
     let rays_from_sq_empty = ortho_ray_mask | diag_ray_mask;
     let past_first_region  = rays_from_sq_empty & !queen_att;
-    let do_z_finding       = (occ & past_first_region) != 0;
+    let do_z_finding       = emit_xray() && (occ & past_first_region) != 0;
 
     let mut sliders = (diagonal_sliders | orthogonal_sliders) & occ;
     while sliders != 0 {
@@ -1184,7 +1208,8 @@ fn push_threats_for_piece(
     // 2b delta. Section 2 applies the same filter (`sliders & occ`).
     let ortho_candidates = (pieces_bb[ROOK as usize] | pieces_bb[QUEEN as usize]) & ortho_ray_mask & occ;
     let diag_candidates  = (pieces_bb[BISHOP as usize] | pieces_bb[QUEEN as usize]) & diag_ray_mask & occ;
-    let mut candidates = ortho_candidates | diag_candidates;
+    // 2b is X-ray (slider-through-blocker); gate on the X-ray emission flag.
+    let mut candidates = if emit_xray() { ortho_candidates | diag_candidates } else { 0 };
 
     while candidates != 0 {
         let s_sq = candidates.trailing_zeros();
