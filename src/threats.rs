@@ -1676,37 +1676,32 @@ pub unsafe fn apply_threat_deltas(
             pov,
         );
         if idx < 0 || (idx as usize) >= num_threats { continue; }
+        let uidx = idx as usize;
+        // SF-style threat-weight prefetch (mirrors full_threats.cpp:331):
+        // issue the prefetch the MOMENT the feature index is known — at
+        // enumerate time, before the SIMD apply below consumes the rows — so
+        // the scattered 65MB-matrix gathers get real lead time to overlap
+        // (raises memory-level parallelism, the measured Coda<->SF contention
+        // gap). LOW locality (T2 / L2-L3, = SF PrefetchLoc::LOW) avoids
+        // evicting the accumulator from L1, which the previous post-collection
+        // take(4)/T0 block risked. Prefetch ALL changed rows, not just 4.
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            std::arch::x86_64::_mm_prefetch(
+                threat_weights.as_ptr().add(uidx * hidden_size) as *const i8,
+                std::arch::x86_64::_MM_HINT_T2,
+            );
+        }
         if delta.add() {
-            unsafe { adds_ptr.add(n_adds).write(idx as usize); }
+            unsafe { adds_ptr.add(n_adds).write(uidx); }
             n_adds += 1;
         } else {
-            unsafe { subs_ptr.add(n_subs).write(idx as usize); }
+            unsafe { subs_ptr.add(n_subs).write(uidx); }
             n_subs += 1;
         }
     }
     let adds = scratch_slice!(adds_ptr, n_adds);
     let subs = scratch_slice!(subs_ptr, n_subs);
-
-    // Prefetch weight rows for upcoming deltas (hide L3 latency)
-    #[cfg(target_arch = "x86_64")]
-    {
-        for &idx in adds.iter().take(4) {
-            unsafe {
-                std::arch::x86_64::_mm_prefetch(
-                    threat_weights.as_ptr().add(idx * hidden_size) as *const i8,
-                    std::arch::x86_64::_MM_HINT_T0,
-                );
-            }
-        }
-        for &idx in subs.iter().take(4) {
-            unsafe {
-                std::arch::x86_64::_mm_prefetch(
-                    threat_weights.as_ptr().add(idx * hidden_size) as *const i8,
-                    std::arch::x86_64::_MM_HINT_T0,
-                );
-            }
-        }
-    }
 
     // Apply weight rows with SIMD when available. Fused pattern: load src
     // chunk into registers, apply all adds/subs, store to dst. Avoids the
