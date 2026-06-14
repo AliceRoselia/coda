@@ -1687,10 +1687,17 @@ pub unsafe fn apply_threat_deltas(
     let adds = scratch_slice!(adds_ptr, n_adds);
     let subs = scratch_slice!(subs_ptr, n_subs);
 
-    // Prefetch weight rows for upcoming deltas (hide L3 latency)
+    // Prefetch weight rows for upcoming deltas (hide L3 latency). Prefetch
+    // ALL delta rows, not just the first 4 (NNUE memory-layout audit
+    // 2026-06-14): threats fire 3-4× more deltas/move than piece features,
+    // scattered near-randomly across the 65MB threat matrix, so taking only
+    // the first 4 left most rows unprefetched — a dominant source of our
+    // LLC-miss bleed under concurrency (we degrade ~2× harder than SF, which
+    // prefetches every threat row). All `adds`/`subs` rows ARE applied below,
+    // so prefetching them all is pure latency-hiding, no cache pollution.
     #[cfg(target_arch = "x86_64")]
     {
-        for &idx in adds.iter().take(4) {
+        for &idx in adds.iter() {
             unsafe {
                 std::arch::x86_64::_mm_prefetch(
                     threat_weights.as_ptr().add(idx * hidden_size) as *const i8,
@@ -1698,7 +1705,7 @@ pub unsafe fn apply_threat_deltas(
                 );
             }
         }
-        for &idx in subs.iter().take(4) {
+        for &idx in subs.iter() {
             unsafe {
                 std::arch::x86_64::_mm_prefetch(
                     threat_weights.as_ptr().add(idx * hidden_size) as *const i8,
