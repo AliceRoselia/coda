@@ -392,6 +392,27 @@ unsafe fn simd_acc_fused_avx2(
     let dst_ptr = dst.as_mut_ptr();
     let src_ptr = src.as_ptr();
 
+    // Front-load weight-row prefetches to raise memory-level parallelism.
+    // The chunk-major compute below otherwise touches each row's first chunk
+    // only when that chunk is reached, serialising the DRAM misses one row at
+    // a time on the critical path (~MLP 1-2). Under multi-instance contention
+    // each such miss is a full DRAM-latency stall, and Coda's lower MLP leaves
+    // it ~1.8x more exposed to that latency than SF (contended L3-stall 33.5%
+    // vs 28.3%, 2026-06-14). Issuing every row's cache lines up front lets the
+    // fetches overlap (fill buffers stay saturated), so the waits pipeline
+    // instead of summing. Bit-identical — prefetch is a hint, results unchanged.
+    {
+        let bytes = h * 2; // i16 rows
+        for row in add_rows.iter().chain(sub_rows.iter()) {
+            let p = row.as_ptr() as *const i8;
+            let mut o = 0;
+            while o < bytes {
+                _mm_prefetch(p.add(o), _MM_HINT_T0);
+                o += 64;
+            }
+        }
+    }
+
     let mut offset = 0;
 
     // Shared body parameterised on the register count so every pass below
@@ -476,6 +497,22 @@ unsafe fn simd_acc_fused_avx512(
 
     let dst_ptr = dst.as_mut_ptr();
     let src_ptr = src.as_ptr();
+
+    // Front-load weight-row prefetches to raise memory-level parallelism — see
+    // simd_acc_fused_avx2 for the rationale (overlap the per-row DRAM misses
+    // instead of serialising them on the critical path under contention).
+    // Bit-identical: prefetch is a hint.
+    {
+        let bytes = h * 2; // i16 rows
+        for row in add_rows.iter().chain(sub_rows.iter()) {
+            let p = row.as_ptr() as *const i8;
+            let mut o = 0;
+            while o < bytes {
+                _mm_prefetch(p.add(o), _MM_HINT_T0);
+                o += 64;
+            }
+        }
+    }
 
     let mut offset = 0;
 
