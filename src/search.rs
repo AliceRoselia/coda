@@ -93,12 +93,12 @@ tunables!(
     //   NMP_UNDEFENDED_MAX float-converged at 0.6 (int rounds to 1, no
     //     change); two consecutive tunes have drifted this toward feature-
     //     disable. Candidate for ablation SPRT (set to 0).
-    (NMP_BASE_R_10X, 78, 20, 80, 15.0, true),
+    (NMP_BASE_R_10X, 75, 20, 80, 15.0, true),
     // Ceiling lifted from 60 → 200 (audit 2026-05-20): SPSA at 55, 90%
     // from min, only ~9% headroom. Symmetric to a floor pin — gradient
     // clamped at the top. Lifting lets SPSA find the true optimum.
     (NMP_DEPTH_DIV_10X, 75, 10, 200, 15.0, true),
-    (NMP_EVAL_DIV, 124, 50, 400, 17.5, true),
+    (NMP_EVAL_DIV, 119, 50, 400, 17.5, true),
     (NMP_EVAL_MAX_10X, 31, 10, 60, 5.0, true),
     // Lifted 74 → 120 (eff 8 → 12, toward consensus 14-16): at 74 the verify
     // gate sat below the old min-depth gate, so 100% of NMP cutoffs paid a
@@ -106,7 +106,7 @@ tunables!(
     // verify=120 alone as neutral/slightly positive, supporting this direction.
     // With min-depth de-gated to 3, depths 3-11 now get the classic unverified
     // cutoff; 12+ verify (zugzwang guard).
-    (NMP_VERIFY_DEPTH_10X, 112, 40, 200, 20.0, true),
+    (NMP_VERIFY_DEPTH_10X, 111, 40, 200, 20.0, true),
     (RFP_DEPTH, 16, 2, 20, 2.0, true),
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
     (RFP_MARGIN_IMP, 33, 0, 150, 6.0, true),
@@ -131,7 +131,7 @@ tunables!(
     // where Reckless prunes confidently. SPSA retune-on-branch expected.
     // Floor lifted from 20 → 0 (audit 2026-05-20): pinned at 23, 2% from floor.
     (FUT_BASE, 32, 0, 200, 9.0, true),
-    (FUT_PER_DEPTH, 89, 40, 250, 10.5, true),
+    (FUT_PER_DEPTH, 91, 40, 250, 10.5, true),
     // HIST_PRUNE_DEPTH_10X / HIST_PRUNE_MULT removed 2026-06-02 — see hist-prune
     // removal block in main negamax body for rationale (three H0 SPRTs).
     (SEE_QUIET_MULT, 33, 5, 80, 3.75, true),
@@ -158,7 +158,7 @@ tunables!(
     // use LMP_BASE=3 with the same `(BASE + d²)/(2 - improving)` formula.
     // Coda's 9 is 3× consensus at d=1: allows 5-10 quiets vs SF's 2-4.
     // Bisecting 9 → 5 first.
-    (LMP_BASE, 6, 1, 15, 2.0, true),
+    (LMP_BASE, 4, 1, 15, 2.0, true),
     (LMP_DEPTH, 8, 4, 20, 2.0, true),
     // Root-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
     // reduce LESS as the OVERALL search depth grows past LMR_ROOT_THRESH
@@ -383,7 +383,7 @@ tunables!(
     // running first, shallow NMP only sees nodes static pruning couldn't cut,
     // removing the free-cutoff interception that killed #1904. SPSA had pushed
     // this to 8 as compensation for NMP-first ordering + per-cutoff verify cost.
-    (NMP_MIN_DEPTH_10X, 25, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
+    (NMP_MIN_DEPTH_10X, 30, 20, 200, 15.0, true),              // was hardcoded 3 (NMP activation gate, 2 sites)
     // Floor lifted from 10 → 0 (audit 2026-05-20): pinned at 25, 8% from floor.
     // 1 -> 17 (eff 0 -> 2, consensus floor): tune #1959 on the post-T1.2
     // trunk. The diagnostic was seeded at eff 2 and SPSA HELD (17.1) rather
