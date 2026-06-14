@@ -153,6 +153,48 @@ impl ThreatStack {
         }
     }
 
+    /// Prefetch the threat weight rows this move's deltas will touch (both
+    /// perspectives), at LOW locality (T2 / L2-L3, = SF PrefetchLoc::LOW).
+    ///
+    /// Called from the search move loop RIGHT AFTER `absorb_deltas`, one line
+    /// from the TT prefetch — so the child node's move-gen, ordering and TT
+    /// probe all run as lead time before eval's `apply_threat_deltas` consumes
+    /// the rows. This is the structural equivalent of SF's enumerate-time
+    /// threat prefetch (full_threats.cpp:331): SF gets its lead time from the
+    /// gap between `append_changed_indices` and the accumulator apply; Coda's
+    /// `apply_threat_deltas` collects-and-applies in one tight function, so an
+    /// in-kernel prefetch fires too late to overlap — issuing here instead
+    /// gives the scattered 65MB-matrix gathers real time to arrive, raising
+    /// memory-level parallelism (the measured Coda<->SF contention gap).
+    /// Bit-identical — prefetch is a hint. (Wasted for children pruned before
+    /// eval, same tradeoff as the adjacent TT prefetch.)
+    #[inline]
+    pub fn prefetch_deltas(&self, board: &crate::board::Board, net_weights: &[i8], num_features: usize) {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let h = self.hidden_size;
+            let wk = (board.pieces[KING as usize] & board.colors[WHITE as usize]).trailing_zeros();
+            let bk = (board.pieces[KING as usize] & board.colors[BLACK as usize]).trailing_zeros();
+            let w_mirror = (wk % 8) >= 4;
+            let b_mirror = (bk % 8) >= 4;
+            let base = net_weights.as_ptr();
+            for d in self.stack[self.index].delta.as_slice() {
+                for (pov, mirror) in [(WHITE, w_mirror), (BLACK, b_mirror)] {
+                    let idx = crate::threats::threat_index(
+                        d.attacker_cp() as usize, d.from_sq() as u32,
+                        d.victim_cp() as usize, d.to_sq() as u32, mirror, pov);
+                    if idx >= 0 && (idx as usize) < num_features {
+                        unsafe {
+                            std::arch::x86_64::_mm_prefetch(
+                                base.add(idx as usize * h) as *const i8,
+                                std::arch::x86_64::_MM_HINT_T2);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Push: increment index, reset flags, clear deltas.
     /// Called BEFORE make_move (mirrors Reckless's Network::push).
     pub fn push(&mut self, mv: Move, moved_pt: u8) {

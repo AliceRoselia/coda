@@ -3965,6 +3965,17 @@ fn negamax(
         // Store threat deltas from make_move into accumulator stack
         if info.threat_stack.active {
             info.threat_stack.absorb_deltas(board);
+            // Early threat-weight prefetch (SF-style, with real lead time):
+            // issue the scattered 65MB-matrix row gathers NOW, so the child's
+            // move-gen/ordering/TT-probe overlap their DRAM latency before
+            // eval's apply_threat_deltas consumes them. Raises MLP under
+            // contention. Bit-identical (prefetch is a hint).
+            if let Some(net) = info.nnue_net.as_deref() {
+                if net.has_threats {
+                    info.threat_stack.prefetch_deltas(
+                        board, &net.threat_weights, net.num_threat_features);
+                }
+            }
         }
 
         // Prefetch TT bucket for the new position
