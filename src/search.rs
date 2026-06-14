@@ -119,6 +119,14 @@ tunables!(
     // -> STC-neutral; relaxes deep RFP at LTC. SPSA tunes both.
     (RFP_ROOT_THRESH, 16, 6, 30, 1.5, true),
     (RFP_ROOT_COEF, 33, 0, 150, 7.5, true),
+    // Tactical-context margin scaling: widen RFP margin per enemy piece-threat
+    // on our non-pawns (any_threat_count). Static eval is progressively less
+    // trustworthy under threats — measured RFP null-FP rate 32%@0t ->
+    // 48/56/63% @1/2/3+. Replaces the old binary has_pawn_threats widen with a
+    // graded signal RFP previously ignored (structural DOF). +COEF% per threat,
+    // capped at CAP threats.
+    (RFP_THREAT_COEF, 33, 0, 100, 5.0, true),
+    (RFP_THREAT_CAP, 3, 1, 6, 0.5, true),
     // Razoring (re-added 2026-06-11, audit T2.6). Consensus band:
     // Obsidian 352/d<=5, Berserk 214/d<=5, Clover 145/d<=2, Integral
     // 393/d<=4, Stormphrax ~290/d<=4.
@@ -615,6 +623,11 @@ pub struct PruneStats {
     // Behavior-preserving: the RFP cutoff is returned regardless.
     pub rfp_audit_attempts: [u64; 24],
     pub rfp_audit_fp: [u64; 24],
+    // Same audit, bucketed by any_threat_count (piece-threat context RFP
+    // currently ignores), clamped 0..=3. Tests whether tactical context
+    // predicts which RFP cuts a null search refuses → candidate gate signal.
+    pub rfp_audit_attempts_by_threat: [u64; 4],
+    pub rfp_audit_fp_by_threat: [u64; 4],
 }
 
 /// Forced-move detection state (Viridithas pattern, set by `detect_forced_move`).
@@ -2854,7 +2867,6 @@ fn negamax(
     };
     let our_non_pawns = board.colors[board.side_to_move as usize]
         & !(board.pieces[PAWN as usize] | board.pieces[KING as usize]);
-    let has_pawn_threats = (enemy_pawn_attacks & our_non_pawns) != 0;
     let threat_count = popcount(enemy_pawn_attacks & our_non_pawns) as i32;
     // our_defenses signal for futility widener: count of our non-pawn
     // pieces under any enemy attack (pawn OR piece). Widens margin in
@@ -3402,8 +3414,11 @@ fn negamax(
             // depth and how deep the overall search is, so deep RFP at LTC
             // demands much more confidence. One formula, one tunable set.
             margin += (depth * (info.root_depth - tp(&RFP_ROOT_THRESH)).max(0) * tp(&RFP_ROOT_COEF)) / 100;
-            // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
-            if has_pawn_threats { margin += margin / 3; }
+            // Graded tactical-context widen (replaces binary has_pawn_threats):
+            // scale margin by enemy piece-threat count on our non-pawns. RFP's
+            // static cutoff is far more often unsound under threats (null-FP
+            // 32%@0t -> 63%@3+); demand more confidence the more threats exist.
+            margin += (margin * any_threat_count.min(tp(&RFP_THREAT_CAP)) * tp(&RFP_THREAT_COEF)) / 100;
             // E2: widen margin when position is unstable (parent-child eval gap
             // > UNSTABLE_THRESH). Static eval can't be trusted for RFP when
             // eval is volatile. Mirrors unstable × ProbCut skip (#542 +6.7).
@@ -3425,7 +3440,9 @@ fn negamax(
                     && !info.stop.load(Ordering::Relaxed)
                 {
                     let d_idx = depth.clamp(0, 23) as usize;
+                    let t_idx = any_threat_count.clamp(0, 3) as usize;
                     info.stats.rfp_audit_attempts[d_idx] += 1;
+                    info.stats.rfp_audit_attempts_by_threat[t_idx] += 1;
                     let mut r = tp10(&NMP_BASE_R_10X) + depth / tp10(&NMP_DEPTH_DIV_10X);
                     if static_eval > beta {
                         let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp10(&NMP_EVAL_MAX_10X));
@@ -3447,6 +3464,7 @@ fn negamax(
                     info.rfp_audit_active = false;
                     if null_score < beta && !info.stop.load(Ordering::Relaxed) {
                         info.stats.rfp_audit_fp[d_idx] += 1;
+                        info.stats.rfp_audit_fp_by_threat[t_idx] += 1;
                     }
                 }
                 return static_eval - margin;
@@ -5308,6 +5326,10 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
             total_stats.rfp_audit_attempts[d] += info.stats.rfp_audit_attempts[d];
             total_stats.rfp_audit_fp[d] += info.stats.rfp_audit_fp[d];
         }
+        for t in 0..4 {
+            total_stats.rfp_audit_attempts_by_threat[t] += info.stats.rfp_audit_attempts_by_threat[t];
+            total_stats.rfp_audit_fp_by_threat[t] += info.stats.rfp_audit_fp_by_threat[t];
+        }
 
         // Accumulate EBF data across all positions
         let max_d = info.completed_depth as usize;
@@ -5403,6 +5425,15 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         }
         eprintln!("TOTAL | {:>8} | {:>8} | {:>6.2}%", audit_total, fp_total,
             fp_total as f64 * 100.0 / audit_total as f64);
+        // By piece-threat context (any_threat_count) — the signal RFP ignores.
+        eprintln!("threat| audited  | rejected | FP rate   (any_threat_count bucket)");
+        for t in 0..4 {
+            let a = s.rfp_audit_attempts_by_threat[t];
+            if a == 0 { continue; }
+            let f = s.rfp_audit_fp_by_threat[t];
+            let label = if t == 3 { "3+".to_string() } else { t.to_string() };
+            eprintln!("{:>5} | {:>8} | {:>8} | {:>6.2}%", label, a, f, f as f64 * 100.0 / a as f64);
+        }
     }
 
     // Eval-path decomposition — supports the "evals/node" investigation
