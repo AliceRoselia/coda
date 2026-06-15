@@ -1049,6 +1049,16 @@ pub fn push_threats_on_change(
     push_threats_for_piece(deltas, pieces_bb, colors_bb, mailbox, occ, white_bb, cp, piece_color, piece_type, square, add);
 }
 
+/// Ablation flag (CODA_NO_RECAPTURE_COMBINE=1): disable the recapture-combine
+/// (double_inc_update) optimization in ThreatStack::update, for A/B NPS testing.
+/// Default off (combine enabled). Bit-identical either way. Cached once.
+#[inline]
+pub fn no_recapture_combine() -> bool {
+    use std::sync::OnceLock;
+    static F: OnceLock<bool> = OnceLock::new();
+    *F.get_or_init(|| std::env::var("CODA_NO_RECAPTURE_COMBINE").is_ok())
+}
+
 /// Ablation flag (CODA_NO_SLIDER_SEES=1): skip emitting step-2 "slider-sees"
 /// threat deltas (incoming slider attacks on the square). NOT bit-identical —
 /// the net was trained with these features, so eval is wrong/weaker; this is a
@@ -1761,6 +1771,13 @@ pub unsafe fn apply_threat_deltas(
     num_threats: usize,
     pov: Color,
     mirrored: bool,
+    // When true, cancel net-zero add/sub index pairs before streaming weight
+    // rows (a feature added then subtracted nets to zero). Used by the
+    // recapture-combine path in ThreatStack::update where cross-ply toggles
+    // cancel; per-ply/refresh callers pass false (the lists rarely cancel and
+    // the sort would be net overhead). Bit-identical: removing net-zero pairs
+    // doesn't change the accumulator sum.
+    cancel: bool,
 ) {
     #[cfg(feature = "profile-threats")]
     crate::threats::apply_stats::record(deltas.len());
@@ -1794,6 +1811,27 @@ pub unsafe fn apply_threat_deltas(
             unsafe { subs_ptr.add(n_subs).write(idx as usize); }
             n_subs += 1;
         }
+    }
+    // Cancel net-zero add/sub index pairs (recapture-combine path only).
+    // Sort both lists, then merge-drop matched indices in place.
+    if cancel && n_adds > 0 && n_subs > 0 {
+        let a = unsafe { std::slice::from_raw_parts_mut(adds_ptr, n_adds) };
+        let s = unsafe { std::slice::from_raw_parts_mut(subs_ptr, n_subs) };
+        a.sort_unstable();
+        s.sort_unstable();
+        let (mut i, mut j, mut wi, mut wj) = (0usize, 0usize, 0usize, 0usize);
+        while i < n_adds && j < n_subs {
+            if a[i] == s[j] {
+                i += 1; j += 1; // cancel one add/sub pair
+            } else if a[i] < s[j] {
+                a[wi] = a[i]; wi += 1; i += 1;
+            } else {
+                s[wj] = s[j]; wj += 1; j += 1;
+            }
+        }
+        while i < n_adds { a[wi] = a[i]; wi += 1; i += 1; }
+        while j < n_subs { s[wj] = s[j]; wj += 1; j += 1; }
+        n_adds = wi; n_subs = wj;
     }
     let adds = scratch_slice!(adds_ptr, n_adds);
     let subs = scratch_slice!(subs_ptr, n_subs);

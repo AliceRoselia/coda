@@ -318,20 +318,62 @@ impl ThreatStack {
             crate::threats::apply_stats::record_crossply(&adds, &subs);
         }
 
-        for ply in (ancestor + 1)..=self.index {
-            let entry_mv = self.stack[ply].mv;
+        let mut ply = ancestor + 1;
+        while ply <= self.index {
+            // Recapture combine (double_inc_update port): when ply and ply+1
+            // land on the SAME square, ply's piece is captured at ply+1, so the
+            // threat features it added cancel against ply+1's removes. Apply
+            // ply-1 -> ply+1 directly with cross-ply cancellation (cancel=true),
+            // skipping the transient middle ply's materialization. The combine
+            // is bit-identical for ANY adjacent plies (additive deltas); the
+            // same-square gate targets the high-cancellation recapture case and
+            // avoids losing sibling cache hits on the (rare) non-recapture case.
+            // Gated to combined deltas <= MAX_THREAT_DELTAS so the apply's index
+            // arrays don't overflow.
+            if ply < self.index && !crate::threats::no_recapture_combine() {
+                let n1 = self.stack[ply].delta.len;
+                let n2 = self.stack[ply + 1].delta.len;
+                let mv1 = self.stack[ply].mv;
+                let mv2 = self.stack[ply + 1].mv;
+                if mv1 != NO_MOVE && mv2 != NO_MOVE
+                    && move_to(mv1) == move_to(mv2)
+                    && n1 + n2 <= MAX_THREAT_DELTAS
+                {
+                    let total = n1 + n2;
+                    let mut local_storage = std::mem::MaybeUninit::<
+                        [crate::threats::RawThreatDelta; MAX_THREAT_DELTAS]>::uninit();
+                    let lptr = scratch_ptr!(local_storage, crate::threats::RawThreatDelta);
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(self.stack[ply].delta.data.as_ptr(), lptr, n1);
+                        std::ptr::copy_nonoverlapping(
+                            self.stack[ply + 1].delta.data.as_ptr(), lptr.add(n1), n2);
+                    }
+                    let combined = scratch_slice!(lptr, total);
+                    // src = stack[ply-1], dst = stack[ply+1]
+                    let (prev, curr) = self.stack.split_at_mut(ply + 1);
+                    unsafe {
+                        crate::threats::apply_threat_deltas(
+                            &mut curr[0].values[p][..h],
+                            &prev[ply - 1].values[p][..h],
+                            combined,
+                            net_weights, h, num_features,
+                            pov, mirrored, true,
+                        );
+                    }
+                    self.stack[ply + 1].accurate[p] = true;
+                    // middle ply (ply) left non-accurate — transient, skipped.
+                    ply += 2;
+                    continue;
+                }
+            }
 
+            let entry_mv = self.stack[ply].mv;
             if entry_mv == NO_MOVE || self.stack[ply].delta.is_empty() {
                 // Null move or no deltas: copy from previous
                 let (prev, curr) = self.stack.split_at_mut(ply);
                 curr[0].values[p][..h].copy_from_slice(&prev[ply - 1].values[p][..h]);
             } else {
                 // Copy deltas to local buffer to avoid borrow conflict with split_at_mut.
-                // MaybeUninit skips the per-iteration 512-byte zero-init memset that
-                // perf annotate showed on the inlined `[ZERO; 128]` initialiser. The
-                // copy_from_slice below fully writes [..n_deltas]; consumers only
-                // read &local_deltas[..n_deltas]. Same pattern as forward_with_l1
-                // pairwise inner (#927) and apply_threat_deltas (#921).
                 let n_deltas = self.stack[ply].delta.len;
                 let mut local_deltas_storage =
                     std::mem::MaybeUninit::<[crate::threats::RawThreatDelta; 128]>::uninit();
@@ -345,7 +387,6 @@ impl ThreatStack {
                     );
                 }
                 let local_deltas = scratch_slice!(local_deltas_ptr, n_deltas);
-                // Use SIMD apply_threat_deltas (copies src + applies adds/subs)
                 let (prev, curr) = self.stack.split_at_mut(ply);
                 unsafe {
                     crate::threats::apply_threat_deltas(
@@ -353,12 +394,13 @@ impl ThreatStack {
                         &prev[ply - 1].values[p][..h],
                         local_deltas,
                         net_weights, h, num_features,
-                        pov, mirrored,
+                        pov, mirrored, false,
                     );
                 }
             }
 
             self.stack[ply].accurate[p] = true;
+            ply += 1;
         }
     }
 

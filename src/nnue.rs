@@ -4868,7 +4868,7 @@ impl NNUEAccumulator {
                     crate::threats::apply_threat_deltas(
                         curr_w, prev_w,
                         &deltas, &net.threat_weights, h, net.num_threat_features,
-                        WHITE, w_mirrored,
+                        WHITE, w_mirrored, false,
                     );
                 }
                 let (prev_b, curr_b) = self.threat.parent_and_current(src, ply, BLACK as usize);
@@ -4876,7 +4876,7 @@ impl NNUEAccumulator {
                     crate::threats::apply_threat_deltas(
                         curr_b, prev_b,
                         &deltas, &net.threat_weights, h, net.num_threat_features,
-                        BLACK, b_mirrored,
+                        BLACK, b_mirrored, false,
                     );
                 }
                 // Swap back
