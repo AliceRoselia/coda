@@ -76,18 +76,18 @@ impl ThreatStack {
         Self { stack, index: 0, hidden_size, active: false }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn index(&self) -> usize { self.index }
 
-    #[inline]
+    #[inline(always)]
     pub fn current(&self) -> &ThreatEntry { &self.stack[self.index] }
 
-    #[inline]
+    #[inline(always)]
     pub fn current_mut(&mut self) -> &mut ThreatEntry { &mut self.stack[self.index] }
 
     /// Copy `Board::threat_deltas` into the current entry after a successful
     /// `make_move`, and record the move metadata needed by mirror checks.
-    #[inline]
+    #[inline(always)]
     pub fn absorb_deltas(&mut self, board: &crate::board::Board) {
         #[cfg(feature = "profile-threats")]
         crate::threats::apply_stats::record_generated(board.threat_deltas.len());
@@ -105,6 +105,7 @@ impl ThreatStack {
 
     /// Push: increment index, reset flags, clear deltas.
     /// Called BEFORE make_move (mirrors Reckless's Network::push).
+    #[inline(always)]
     pub fn push(&mut self, mv: Move, moved_pt: u8) {
         self.index += 1;
         if self.index >= self.stack.len() {
@@ -122,6 +123,7 @@ impl ThreatStack {
     /// and crashing on the next slice access. The debug_assert still
     /// catches the bug in dev builds; release silently no-ops at the
     /// boundary. Audit 2026-04-25 §"Confirmed-clean / orderings".
+    #[inline(always)]
     pub fn pop(&mut self) {
         debug_assert!(self.index > 0);
         self.index = self.index.saturating_sub(1);

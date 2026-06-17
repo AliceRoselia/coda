@@ -1121,13 +1121,13 @@ impl ThreatDeltaBuffer {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn clear(&mut self) {
         self.len = 0;
         self.overflowed = false;
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn push(&mut self, d: RawThreatDelta) {
         if self.len < MAX_THREAT_DELTAS {
             self.data[self.len] = d;
@@ -1137,7 +1137,7 @@ impl ThreatDeltaBuffer {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn copy_from_slice(&mut self, src: &[RawThreatDelta]) {
         let n = src.len().min(MAX_THREAT_DELTAS);
         self.len = n;
@@ -1147,7 +1147,7 @@ impl ThreatDeltaBuffer {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn copy_from_buffer(&mut self, src: &ThreatDeltaBuffer) {
         self.len = src.len;
         self.overflowed = src.overflowed;
@@ -1156,23 +1156,23 @@ impl ThreatDeltaBuffer {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn as_slice(&self) -> &[RawThreatDelta] {
         &self.data[..self.len]
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn iter(&self) -> std::slice::Iter<'_, RawThreatDelta> {
         self.as_slice().iter()
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn len(&self) -> usize { self.len }
 
-    #[inline]
+    #[inline(always)]
     pub fn is_empty(&self) -> bool { self.len == 0 }
 
-    #[inline]
+    #[inline(always)]
     pub fn overflowed(&self) -> bool { self.overflowed }
 }
 
