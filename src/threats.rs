@@ -1088,11 +1088,120 @@ impl RawThreatDelta {
     #[inline(always)] pub fn add(self) -> bool { self.0 & (1 << 31) != 0 }
 }
 
+/// Fixed-capacity threat-delta buffer used on hot make/unmake paths.
+///
+/// Moves that exceed the cap are marked overflowed so the accumulator can
+/// refresh instead of replaying incomplete deltas.
+#[derive(Clone)]
+pub struct ThreatDeltaBuffer {
+    data: [RawThreatDelta; MAX_THREAT_DELTAS],
+    len: usize,
+    overflowed: bool,
+}
+
+impl Default for ThreatDeltaBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ThreatDeltaBuffer {
+    pub const fn new() -> Self {
+        Self {
+            data: [RawThreatDelta::ZERO; MAX_THREAT_DELTAS],
+            len: 0,
+            overflowed: false,
+        }
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.len = 0;
+        self.overflowed = false;
+    }
+
+    #[inline]
+    pub fn push(&mut self, d: RawThreatDelta) {
+        if self.len < MAX_THREAT_DELTAS {
+            self.data[self.len] = d;
+            self.len += 1;
+        } else {
+            self.overflowed = true;
+        }
+    }
+
+    #[inline]
+    pub fn copy_from_slice(&mut self, src: &[RawThreatDelta]) {
+        let n = src.len().min(MAX_THREAT_DELTAS);
+        self.len = n;
+        self.overflowed = src.len() > MAX_THREAT_DELTAS;
+        unsafe {
+            std::ptr::copy_nonoverlapping(src.as_ptr(), self.data.as_mut_ptr(), n);
+        }
+    }
+
+    #[inline]
+    pub fn copy_from_buffer(&mut self, src: &ThreatDeltaBuffer) {
+        self.len = src.len;
+        self.overflowed = src.overflowed;
+        unsafe {
+            std::ptr::copy_nonoverlapping(src.data.as_ptr(), self.data.as_mut_ptr(), src.len);
+        }
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[RawThreatDelta] {
+        &self.data[..self.len]
+    }
+
+    #[inline]
+    pub fn iter(&self) -> std::slice::Iter<'_, RawThreatDelta> {
+        self.as_slice().iter()
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize { self.len }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool { self.len == 0 }
+
+    #[inline]
+    pub fn overflowed(&self) -> bool { self.overflowed }
+}
+
+pub trait ThreatDeltaSink {
+    fn push(&mut self, d: RawThreatDelta);
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool;
+}
+
+impl ThreatDeltaSink for Vec<RawThreatDelta> {
+    #[inline(always)]
+    fn push(&mut self, d: RawThreatDelta) { Vec::push(self, d); }
+
+    #[inline(always)]
+    fn len(&self) -> usize { Vec::len(self) }
+
+    #[inline(always)]
+    fn is_empty(&self) -> bool { Vec::is_empty(self) }
+}
+
+impl ThreatDeltaSink for ThreatDeltaBuffer {
+    #[inline(always)]
+    fn push(&mut self, d: RawThreatDelta) { ThreatDeltaBuffer::push(self, d); }
+
+    #[inline(always)]
+    fn len(&self) -> usize { ThreatDeltaBuffer::len(self) }
+
+    #[inline(always)]
+    fn is_empty(&self) -> bool { ThreatDeltaBuffer::is_empty(self) }
+}
+
 /// Compute raw threat deltas when a piece moves from `from` to `to`.
 /// Must be called BEFORE the move is applied on the board (board still has old state).
 /// `occ_without_dest` = occupancy with `from` removed but `to` not yet occupied.
-pub fn push_threats_on_move(
-    deltas: &mut Vec<RawThreatDelta>,
+pub fn push_threats_on_move<S: ThreatDeltaSink + ?Sized>(
+    deltas: &mut S,
     pieces_bb: &[Bitboard; 6],
     colors_bb: &[Bitboard; 2],
     mailbox: &[u8; 64],
@@ -1115,8 +1224,8 @@ pub fn push_threats_on_move(
 }
 
 /// Compute raw threat deltas when a piece appears or disappears.
-pub fn push_threats_on_change(
-    deltas: &mut Vec<RawThreatDelta>,
+pub fn push_threats_on_change<S: ThreatDeltaSink + ?Sized>(
+    deltas: &mut S,
     pieces_bb: &[Bitboard; 6],
     colors_bb: &[Bitboard; 2],
     mailbox: &[u8; 64],
@@ -1147,8 +1256,8 @@ fn skip_slider_sees() -> bool {
 /// 1. Threats FROM this piece to occupied squares
 /// 2. Sliders that see this square + x-ray targets behind it
 /// 3. Non-sliders (pawns, knights, kings) that attack this square
-fn push_threats_for_piece(
-    deltas: &mut Vec<RawThreatDelta>,
+fn push_threats_for_piece<S: ThreatDeltaSink + ?Sized>(
+    deltas: &mut S,
     pieces_bb: &[Bitboard; 6],
     colors_bb: &[Bitboard; 2],
     mailbox: &[u8; 64],

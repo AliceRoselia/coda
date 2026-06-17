@@ -10,7 +10,7 @@
 //! BoardObserver callbacks during make_move push deltas directly.
 //! Evaluate walks back to find an accurate ancestor and replays forward.
 
-use crate::threats::{RawThreatDelta, MAX_THREAT_DELTAS};
+use crate::threats::ThreatDeltaBuffer;
 use crate::types::*;
 
 const MAX_PLY: usize = 256;
@@ -20,66 +20,7 @@ const MAX_PLY: usize = 256;
 /// Sized as a power of two to keep SIMD chunk paths well-tiled.
 pub const MAX_FT_SIZE: usize = 1024;
 
-/// Fixed-capacity array (no heap, like ArrayVec but simpler).
-/// Tracks overflow so callers can force full recompute instead of
-/// silently using incomplete deltas.
-#[derive(Clone)]
-pub struct DeltaVec {
-    data: [RawThreatDelta; MAX_THREAT_DELTAS],
-    len: usize,
-    overflowed: bool,
-}
-
-impl Default for DeltaVec {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl DeltaVec {
-    pub const fn new() -> Self {
-        Self {
-            data: [RawThreatDelta::ZERO; MAX_THREAT_DELTAS],
-            len: 0,
-            overflowed: false,
-        }
-    }
-
-    #[inline]
-    pub fn clear(&mut self) { self.len = 0; self.overflowed = false; }
-
-    #[inline]
-    pub fn push(&mut self, d: RawThreatDelta) {
-        if self.len < MAX_THREAT_DELTAS {
-            self.data[self.len] = d;
-            self.len += 1;
-        } else {
-            self.overflowed = true;
-        }
-    }
-
-    #[inline]
-    pub fn copy_from_slice(&mut self, src: &[RawThreatDelta]) {
-        let n = src.len().min(MAX_THREAT_DELTAS);
-        self.len = n;
-        self.overflowed = src.len() > MAX_THREAT_DELTAS;
-        unsafe {
-            std::ptr::copy_nonoverlapping(src.as_ptr(), self.data.as_mut_ptr(), n);
-        }
-    }
-
-    #[inline]
-    pub fn as_slice(&self) -> &[RawThreatDelta] { &self.data[..self.len] }
-
-    #[inline]
-    pub fn len(&self) -> usize { self.len }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool { self.len == 0 }
-
-    #[inline]
-    pub fn overflowed(&self) -> bool { self.overflowed }
-}
+pub type DeltaVec = ThreatDeltaBuffer;
 
 /// Single threat accumulator entry (one ply).
 #[repr(C, align(64))]
@@ -151,7 +92,7 @@ impl ThreatStack {
         #[cfg(feature = "profile-threats")]
         crate::threats::apply_stats::record_generated(board.threat_deltas.len());
         let entry = self.current_mut();
-        entry.delta.copy_from_slice(&board.threat_deltas);
+        entry.delta.copy_from_buffer(&board.threat_deltas);
 
         if let Some(undo) = board.undo_stack.last() {
             entry.mv = undo.mv;
@@ -314,7 +255,7 @@ impl ThreatStack {
             let mut adds: Vec<usize> = Vec::new();
             let mut subs: Vec<usize> = Vec::new();
             for ply in (ancestor + 1)..=self.index {
-                for d in &self.stack[ply].delta.data[..self.stack[ply].delta.len] {
+                for d in self.stack[ply].delta.as_slice() {
                     let idx = crate::threats::threat_index(
                         d.attacker_cp() as usize, d.from_sq() as u32,
                         d.victim_cp() as usize, d.to_sq() as u32, mirrored, pov);

@@ -45,7 +45,7 @@ pub struct Board {
     pub undo_stack: Vec<UndoInfo>,
     /// Threat deltas accumulated during make_move (cleared on each make_move).
     /// Used by the NNUE threat accumulator for incremental updates.
-    pub threat_deltas: Vec<crate::threats::RawThreatDelta>,
+    pub threat_deltas: crate::threats::ThreatDeltaBuffer,
     /// Whether to generate threat deltas during make_move (set when threat net is loaded).
     pub generate_threat_deltas: bool,
 }
@@ -128,7 +128,7 @@ impl Board {
             pawn_hash: 0,
             non_pawn_key: [0; 2],
             undo_stack: Vec::with_capacity(512),
-            threat_deltas: Vec::with_capacity(128),
+            threat_deltas: crate::threats::ThreatDeltaBuffer::new(),
             generate_threat_deltas: false,
         }
     }

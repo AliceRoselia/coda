@@ -4748,8 +4748,10 @@ impl NNUEAccumulator {
     pub fn store_threat_deltas(&mut self, board: &mut crate::board::Board) {
         if board.generate_threat_deltas {
             let entry = &mut self.stack[self.top];
-            // Swap deltas from board into stack entry (avoids copy, board gets the old buffer)
-            std::mem::swap(&mut entry.threat_deltas, &mut board.threat_deltas);
+            entry.threat_deltas.clear();
+            if !board.threat_deltas.overflowed() {
+                entry.threat_deltas.extend_from_slice(board.threat_deltas.as_slice());
+            }
             // Store move info for king mirror check (Reckless pattern)
             let undo_len = board.undo_stack.len();
             if undo_len > 0 {
