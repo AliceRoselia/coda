@@ -2145,27 +2145,6 @@ unsafe fn apply_threat_indices(
     adds: &[usize],
     subs: &[usize],
 ) {
-    // Prefetch weight rows for upcoming deltas (hide L3 latency)
-    #[cfg(target_arch = "x86_64")]
-    {
-        for &idx in adds.iter().take(4) {
-            unsafe {
-                std::arch::x86_64::_mm_prefetch(
-                    threat_weights.as_ptr().add(idx * hidden_size) as *const i8,
-                    std::arch::x86_64::_MM_HINT_T0,
-                );
-            }
-        }
-        for &idx in subs.iter().take(4) {
-            unsafe {
-                std::arch::x86_64::_mm_prefetch(
-                    threat_weights.as_ptr().add(idx * hidden_size) as *const i8,
-                    std::arch::x86_64::_MM_HINT_T0,
-                );
-            }
-        }
-    }
-
     // Apply weight rows with SIMD when available. Fused pattern: load src
     // chunk into registers, apply all adds/subs, store to dst. Avoids the
     // separate copy_from_slice pass that used to precede apply_deltas_avx2.
