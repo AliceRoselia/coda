@@ -153,6 +153,13 @@ tunables!(
     (LMR_HIST_DIV_CAP, 2775, 1000, 20000, 1500.0, true),
     (LMR_C_QUIET, 143, 40, 300, 13.0, true),
     (LMR_C_CAP, 161, 80, 350, 12.5, true),
+    // Cut-node LMR bump. Coda historically reduced all non-PV late moves by a
+    // flat +1, NOT distinguishing expected cut nodes (fail-high) from all-nodes.
+    // SF reduces ~+4 plies at cutNode (+1 more with no TT move). This exposes an
+    // explicit, larger cut-node reduction (all-nodes stay +1); +1 extra when
+    // there is no TT move to guide ordering. Default 2 is a halfway-house first
+    // step; SPSA can push it toward SF on retune. Search audit #1.
+    (LMR_CUTNODE_BUMP, 2, 1, 5, 0.4, true),
     // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv,
     // Reckless at >=5+ttPv. Coda's 4 fires SE at shallower depth where
     // singular_depth is too low to judge singularity reliably. Bumping
@@ -4104,9 +4111,17 @@ fn negamax(
                     reduction -= 1;
                 }
 
-                // Reduce more at expected cut nodes (zero window, not first move)
-                if !is_pv && move_count > 1 {
-                    reduction += 1;
+                // Reduce more at expected cut nodes. Coda historically applied a
+                // flat +1 at every non-PV node; SF reduces ~+4 plies specifically
+                // at cutNode (expected fail-high), +1 more with no TT move, while
+                // all-nodes get a smaller bump. Split them: cut nodes get the
+                // tunable LMR_CUTNODE_BUMP (+1 if no TT move); all-nodes keep +1.
+                if !is_pv {
+                    reduction += if cut_node {
+                        tp(&LMR_CUTNODE_BUMP) + (tt_move == NO_MOVE) as i32
+                    } else {
+                        1
+                    };
                 }
 
                 // Reduce less when the position is improving
