@@ -486,6 +486,13 @@ struct ThreatTables {
 }
 
 static THREAT_TABLES: std::sync::OnceLock<ThreatTables> = std::sync::OnceLock::new();
+const FLIPPED_COLORED_PIECE: [usize; NUM_COLORED_PIECES] = [6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5];
+
+#[inline(always)]
+fn flipped_colored_piece(cp: usize) -> usize {
+    debug_assert!(cp < NUM_COLORED_PIECES);
+    unsafe { *FLIPPED_COLORED_PIECE.get_unchecked(cp) }
+}
 
 /// SAFETY: caller must ensure init_threats() has completed before invoking.
 #[inline(always)]
@@ -658,12 +665,12 @@ pub fn threat_index(
 ) -> i32 {
     // Remap piece colors relative to POV
     let attacking = if pov == BLACK {
-        (attacker_cp + 6) % 12
+        flipped_colored_piece(attacker_cp)
     } else {
         attacker_cp
     };
     let attacked = if pov == BLACK {
-        (victim_cp + 6) % 12
+        flipped_colored_piece(victim_cp)
     } else {
         victim_cp
     };
