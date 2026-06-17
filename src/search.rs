@@ -360,6 +360,11 @@ tunables!(
     // core: false — newly exposed, not yet validated Elo-positive (mini-tune
     // #1385 was flat). Keep out of --core to avoid loose-knob false gradients.
     (PAWN_HIST_MULT_10X, 10, 0, 80, 10.0, false),
+    // Main-history weight in quiet ordering. SF (movepick.cpp) weights
+    // mainHistory ×2 relative to a single continuation-history plane; Coda
+    // historically weighted it ×1 (equal to each cont plane), under-weighting
+    // its lowest-variance, most-populated table. Default 2 = SF.
+    (MAIN_HIST_MULT, 2, 1, 4, 0.4, true),
     (KNIGHT_FORK_BONUS, 8722, 0, 20000, 1000.0, false),
     // LMR endgame gate: skip LMR when popcount(occupied) <= this value.
     // +5.0 Elo H1 in SPRT #583. Fixes endgame-conversion blunders where

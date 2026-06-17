@@ -597,6 +597,7 @@ impl MovePicker {
         let escape_bonus_r = crate::search::ESCAPE_BONUS_R.load(Ordering::Relaxed);
         let escape_bonus_minor = crate::search::ESCAPE_BONUS_MINOR.load(Ordering::Relaxed);
         let quiet_check_bonus = crate::search::QUIET_CHECK_BONUS.load(Ordering::Relaxed);
+        let main_hist_mult = crate::search::MAIN_HIST_MULT.load(Ordering::Relaxed);
         let discovered_attack_bonus = crate::search::DISCOVERED_ATTACK_BONUS.load(Ordering::Relaxed);
         let mobility_delta_weight = crate::search::MOBILITY_DELTA_WEIGHT.load(Ordering::Relaxed);
         let kf_bonus = crate::search::KNIGHT_FORK_BONUS.load(Ordering::Relaxed);
@@ -625,7 +626,7 @@ impl MovePicker {
             // to 4 score-term blocks below.
             let pt = board.piece_type_at(from);
 
-            let mut score = history.main_score(from, to, self.threats);
+            let mut score = main_hist_mult * history.main_score(from, to, self.threats);
 
             // Continuation history: plies 1,2 at CONT_HIST_MULT weight, plies 4,6 at 1x weight.
             // Matches Obsidian/Alexandria/Berserk pattern (default 3).
