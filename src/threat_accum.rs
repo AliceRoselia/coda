@@ -124,6 +124,7 @@ impl ThreatEntry {
 /// The threat accumulator stack.
 pub struct ThreatStack {
     stack: Vec<ThreatEntry>,
+    delta_scratch: Vec<RawThreatDelta>,
     index: usize,
     hidden_size: usize,
     /// Whether threat features are active (net has threats)
@@ -136,7 +137,13 @@ impl ThreatStack {
         for _ in 0..MAX_PLY {
             stack.push(ThreatEntry::new());
         }
-        Self { stack, index: 0, hidden_size, active: false }
+        Self {
+            stack,
+            delta_scratch: Vec::with_capacity(MAX_THREAT_DELTAS),
+            index: 0,
+            hidden_size,
+            active: false,
+        }
     }
 
     #[inline]
@@ -194,10 +201,10 @@ impl ThreatStack {
             return;
         }
 
-        let mut deltas = Vec::with_capacity(MAX_THREAT_DELTAS);
-        board.reconstruct_last_move_threat_deltas(&mut deltas);
+        self.delta_scratch.clear();
+        board.reconstruct_last_move_threat_deltas(&mut self.delta_scratch);
         let entry = &mut self.stack[self.index];
-        entry.delta.copy_from_slice(&deltas);
+        entry.delta.copy_from_slice(&self.delta_scratch);
         entry.delta_pending = false;
 
         #[cfg(feature = "profile-threats")]
