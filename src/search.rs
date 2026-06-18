@@ -140,7 +140,14 @@ tunables!(
     (FUT_LMR_DEPTH, 15, 6, 24, 2.0, true),
     // HIST_PRUNE_DEPTH_10X / HIST_PRUNE_MULT removed 2026-06-02 — see hist-prune
     // removal block in main negamax body for rationale (three H0 SPRTs).
-    (SEE_QUIET_MULT, 33, 5, 80, 3.75, true),
+    // Quiet-SEE prune margin = SEE_QUIET_MULT*lmr_d² + main_hist*SEE_QUIET_HIST/1024.
+    // Coda's flat 33 (0.33 pawn/lmr_d²) was ~2.7× wider than SF's 0.12, pruning
+    // too few quiets, and had NO history term — SF folds move history into
+    // lmrDepth so historically-good quiets survive. Lower the base to 26 (toward
+    // SF) and add the capt-SEE-style history relaxation (#3) so good-history
+    // quiets are protected while bad-history ones prune harder. Audit #4.
+    (SEE_QUIET_MULT, 26, 5, 80, 3.75, true),
+    (SEE_QUIET_HIST, 11, 0, 40, 2.0, true),
     (LMR_HIST_DIV, 8731, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
@@ -3804,8 +3811,17 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
-            let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
-            if !see_ge(board, mv, see_quiet_threshold) {
+            // History relaxation (SF folds move history into lmrDepth): protect
+            // historically-good quiets from the tighter base, prune bad ones harder.
+            // Borrow history explicitly (matches the capture-SEE path) and reuse the
+            // already-computed from/to.
+            let q_hist = {
+                let hist = &info.history;
+                hist.main_score(from, to, enemy_attacks)
+            };
+            let see_quiet_margin =
+                (tp(&SEE_QUIET_MULT) * lmr_d * lmr_d + q_hist * tp(&SEE_QUIET_HIST) / 1024).max(0);
+            if !see_ge(board, mv, -see_quiet_margin) {
                 info.stats.see_prunes += 1;
                 continue;
             }
