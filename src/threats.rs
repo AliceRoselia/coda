@@ -43,12 +43,38 @@ pub mod apply_stats {
     // This is the architecture-pure "threat-model density" number.
     static GEN_MOVES: AtomicU64 = AtomicU64::new(0);
     static GEN_DELTAS: AtomicU64 = AtomicU64::new(0);
+    static DELTA_POPPED: AtomicU64 = AtomicU64::new(0);
+    static DELTA_ZERO_POPPED: AtomicU64 = AtomicU64::new(0);
+    static DELTA_USED_MOVES: AtomicU64 = AtomicU64::new(0);
+    static DELTA_UNUSED_MOVES: AtomicU64 = AtomicU64::new(0);
+    static DELTA_USED_ROWS: AtomicU64 = AtomicU64::new(0);
+    static DELTA_UNUSED_ROWS: AtomicU64 = AtomicU64::new(0);
 
     /// Record per-move generated delta count (once per make_move, at absorb).
     #[inline(always)]
     pub fn record_generated(n: usize) {
         GEN_MOVES.fetch_add(1, Ordering::Relaxed);
         GEN_DELTAS.fetch_add(n as u64, Ordering::Relaxed);
+    }
+
+    /// Record whether the raw deltas generated for one made move were ever
+    /// consumed by an incremental threat replay before the move was unmade.
+    ///
+    /// A nonzero unused entry is the direct upper bound for lazy threat-delta
+    /// generation: these rows were generated on make_move but never helped
+    /// produce a threat accumulator value for this search branch.
+    #[inline(always)]
+    pub fn record_delta_entry_popped(rows: usize, used: bool) {
+        DELTA_POPPED.fetch_add(1, Ordering::Relaxed);
+        if rows == 0 {
+            DELTA_ZERO_POPPED.fetch_add(1, Ordering::Relaxed);
+        } else if used {
+            DELTA_USED_MOVES.fetch_add(1, Ordering::Relaxed);
+            DELTA_USED_ROWS.fetch_add(rows as u64, Ordering::Relaxed);
+        } else {
+            DELTA_UNUSED_MOVES.fetch_add(1, Ordering::Relaxed);
+            DELTA_UNUSED_ROWS.fetch_add(rows as u64, Ordering::Relaxed);
+        }
     }
 
     // Replay-gap distribution: plies replayed per materialization (index -
@@ -163,6 +189,34 @@ pub mod apply_stats {
         eprintln!(
             "  GENERATED (caching-immune): {} moves, {} deltas, avg {:.2} deltas/move (vs deltas/apply-call above which lazy-replay inflates)",
             gm, gd, gd as f64 / gm.max(1) as f64
+        );
+        let popped = DELTA_POPPED.load(Ordering::Relaxed);
+        let zero_popped = DELTA_ZERO_POPPED.load(Ordering::Relaxed);
+        let used_moves = DELTA_USED_MOVES.load(Ordering::Relaxed);
+        let unused_moves = DELTA_UNUSED_MOVES.load(Ordering::Relaxed);
+        let used_rows = DELTA_USED_ROWS.load(Ordering::Relaxed);
+        let unused_rows = DELTA_UNUSED_ROWS.load(Ordering::Relaxed);
+        let nonzero_moves = used_moves + unused_moves;
+        eprintln!(
+            "  DELTA LIFECYCLE: {} popped entries, {} zero-delta ({:.1}%), {} nonzero",
+            popped, zero_popped,
+            100.0 * zero_popped as f64 / popped.max(1) as f64,
+            nonzero_moves
+        );
+        eprintln!(
+            "    consumed by replay: {} moves ({:.1}% of nonzero), {} rows ({:.1}% of nonzero rows)",
+            used_moves,
+            100.0 * used_moves as f64 / nonzero_moves.max(1) as f64,
+            used_rows,
+            100.0 * used_rows as f64 / (used_rows + unused_rows).max(1) as f64
+        );
+        eprintln!(
+            "    generated but unused: {} moves ({:.1}% of nonzero), {} rows ({:.1}% of nonzero rows, {:.1}% of all generated rows)",
+            unused_moves,
+            100.0 * unused_moves as f64 / nonzero_moves.max(1) as f64,
+            unused_rows,
+            100.0 * unused_rows as f64 / (used_rows + unused_rows).max(1) as f64,
+            100.0 * unused_rows as f64 / gd.max(1) as f64
         );
         let rc = REPLAY_CALLS.load(Ordering::Relaxed);
         let g2p = REPLAY_GAP2P.load(Ordering::Relaxed);

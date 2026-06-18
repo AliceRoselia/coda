@@ -96,6 +96,9 @@ pub struct ThreatEntry {
     pub moved_pt: u8,
     /// Color that moved (for per-perspective king mirror check)
     pub moved_color: u8,
+    /// Whether this ply's generated deltas were consumed by incremental replay.
+    #[cfg(feature = "profile-threats")]
+    pub delta_used: bool,
 }
 
 impl Default for ThreatEntry {
@@ -113,6 +116,8 @@ impl ThreatEntry {
             mv: NO_MOVE,
             moved_pt: NO_PIECE_TYPE,
             moved_color: WHITE,
+            #[cfg(feature = "profile-threats")]
+            delta_used: false,
         }
     }
 }
@@ -152,6 +157,10 @@ impl ThreatStack {
         crate::threats::apply_stats::record_generated(board.threat_deltas.len());
         let entry = self.current_mut();
         entry.delta.copy_from_slice(&board.threat_deltas);
+        #[cfg(feature = "profile-threats")]
+        {
+            entry.delta_used = false;
+        }
 
         if let Some(undo) = board.undo_stack.last() {
             entry.mv = undo.mv;
@@ -174,6 +183,10 @@ impl ThreatStack {
         entry.delta.clear();
         entry.mv = mv;
         entry.moved_pt = moved_pt;
+        #[cfg(feature = "profile-threats")]
+        {
+            entry.delta_used = false;
+        }
     }
 
     /// Pop: decrement index. Saturates at 0 — if push/pop balance is
@@ -183,6 +196,14 @@ impl ThreatStack {
     /// boundary. Audit 2026-04-25 §"Confirmed-clean / orderings".
     pub fn pop(&mut self) {
         debug_assert!(self.index > 0);
+        #[cfg(feature = "profile-threats")]
+        if self.index > 0 {
+            let entry = &self.stack[self.index];
+            crate::threats::apply_stats::record_delta_entry_popped(
+                entry.delta.len(),
+                entry.delta_used,
+            );
+        }
         self.index = self.index.saturating_sub(1);
     }
 
@@ -336,6 +357,10 @@ impl ThreatStack {
                 // Use SIMD apply_threat_deltas (copies src + applies adds/subs)
                 let (prev, curr) = self.stack.split_at_mut(ply);
                 let entry = &mut curr[0];
+                #[cfg(feature = "profile-threats")]
+                {
+                    entry.delta_used = true;
+                }
                 let local_deltas = entry.delta.as_slice();
                 unsafe {
                     crate::threats::apply_threat_deltas(
@@ -384,6 +409,10 @@ impl ThreatStack {
                 entry.values[BLACK as usize][..h]
                     .copy_from_slice(&prev_entry.values[BLACK as usize][..h]);
             } else {
+                #[cfg(feature = "profile-threats")]
+                {
+                    entry.delta_used = true;
+                }
                 let local_deltas = entry.delta.as_slice();
                 let (dst_w, dst_b) = {
                     let (w, b) = entry.values.split_at_mut(1);
