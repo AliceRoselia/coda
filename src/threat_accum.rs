@@ -90,6 +90,9 @@ pub struct ThreatEntry {
     pub accurate: [bool; 2],
     /// Threat deltas for the move that produced this ply
     pub delta: DeltaVec,
+    /// True when search deferred generation for this ply and `delta` must be
+    /// reconstructed while the board still represents this exact ply.
+    pub delta_pending: bool,
     /// The move that produced this ply (for king mirror check)
     pub mv: Move,
     /// Piece type that moved (for king mirror detection)
@@ -110,6 +113,7 @@ impl ThreatEntry {
             values: [[0i16; MAX_FT_SIZE]; 2],
             accurate: [false; 2],
             delta: DeltaVec::new(),
+            delta_pending: false,
             mv: NO_MOVE,
             moved_pt: NO_PIECE_TYPE,
             moved_color: WHITE,
@@ -152,6 +156,7 @@ impl ThreatStack {
         crate::threats::apply_stats::record_generated(board.threat_deltas.len());
         let entry = self.current_mut();
         entry.delta.copy_from_slice(&board.threat_deltas);
+        entry.delta_pending = board.threat_deltas_pending;
 
         if let Some(undo) = board.undo_stack.last() {
             entry.mv = undo.mv;
@@ -165,6 +170,10 @@ impl ThreatStack {
     /// Push: increment index, reset flags, clear deltas.
     /// Called BEFORE make_move (mirrors Reckless's Network::push).
     pub fn push(&mut self, mv: Move, moved_pt: u8) {
+        debug_assert!(
+            !self.stack[self.index].delta_pending,
+            "lazy threat delta was still pending before pushing child ply",
+        );
         self.index += 1;
         if self.index >= self.stack.len() {
             self.stack.push(ThreatEntry::new());
@@ -172,8 +181,27 @@ impl ThreatStack {
         let entry = &mut self.stack[self.index];
         entry.accurate = [false; 2];
         entry.delta.clear();
+        entry.delta_pending = false;
         entry.mv = mv;
         entry.moved_pt = moved_pt;
+    }
+
+    /// Materialize deferred deltas for the current ply while the board still
+    /// represents that ply. Search calls this after immediate cutoffs fail but
+    /// before evaluating or making a child move.
+    pub fn materialize_current_delta(&mut self, board: &crate::board::Board) {
+        if !self.active || !self.stack[self.index].delta_pending {
+            return;
+        }
+
+        let mut deltas = Vec::with_capacity(MAX_THREAT_DELTAS);
+        board.reconstruct_last_move_threat_deltas(&mut deltas);
+        let entry = &mut self.stack[self.index];
+        entry.delta.copy_from_slice(&deltas);
+        entry.delta_pending = false;
+
+        #[cfg(feature = "profile-threats")]
+        crate::threats::apply_stats::record_generated(entry.delta.len());
     }
 
     /// Pop: decrement index. Saturates at 0 — if push/pop balance is

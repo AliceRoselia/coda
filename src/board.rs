@@ -48,6 +48,12 @@ pub struct Board {
     pub threat_deltas: Vec<crate::threats::RawThreatDelta>,
     /// Whether to generate threat deltas during make_move (set when threat net is loaded).
     pub generate_threat_deltas: bool,
+    /// Search-only mode: defer threat-delta generation until the accumulator
+    /// proves the current ply needs it. Direct Board users keep eager behavior.
+    pub lazy_threat_deltas: bool,
+    /// True when the last make_move skipped eager generation and the current
+    /// position's deltas can be reconstructed from undo metadata on demand.
+    pub threat_deltas_pending: bool,
 }
 
 /// Castling rook positions (from, to) indexed by castling flag bit.
@@ -130,6 +136,8 @@ impl Board {
             undo_stack: Vec::with_capacity(512),
             threat_deltas: Vec::with_capacity(128),
             generate_threat_deltas: false,
+            lazy_threat_deltas: false,
+            threat_deltas_pending: false,
         }
     }
 
@@ -860,26 +868,32 @@ impl Board {
 
         // Clear threat deltas for this move
         let gen_threats = self.generate_threat_deltas;
-        if gen_threats { self.threat_deltas.clear(); }
+        let gen_threats_now = gen_threats && !self.lazy_threat_deltas;
+        if gen_threats {
+            self.threat_deltas.clear();
+            self.threat_deltas_pending = self.lazy_threat_deltas;
+        } else {
+            self.threat_deltas_pending = false;
+        }
 
         // Handle captures
         if flags == FLAG_EN_PASSANT {
             let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
             debug_assert!(cap_sq < 64, "EP cap_sq out of bounds: {}", cap_sq);
             self.remove_piece(them, PAWN, cap_sq);
-            if gen_threats { crate::threats::push_threats_on_change(
+            if gen_threats_now { crate::threats::push_threats_on_change(
                 &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
                 self.colors[0] | self.colors[1], them, PAWN, cap_sq as u32, false); }
         } else if captured != NO_PIECE_TYPE {
             self.remove_piece(them, captured, to);
-            if gen_threats { crate::threats::push_threats_on_change(
+            if gen_threats_now { crate::threats::push_threats_on_change(
                 &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
                 self.colors[0] | self.colors[1], them, captured, to as u32, false); }
         }
 
         // Move the piece
         self.move_piece(us, pt, from, to);
-        if gen_threats { crate::threats::push_threats_on_move(
+        if gen_threats_now { crate::threats::push_threats_on_move(
             &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
             self.colors[0] | self.colors[1], us, pt, from as u32, to as u32); }
 
@@ -888,7 +902,7 @@ impl Board {
             let promo_pt = promotion_piece_type(mv);
             self.remove_piece(us, pt, to);   // remove pawn
             self.put_piece(us, promo_pt, to); // put promoted piece
-            if gen_threats {
+            if gen_threats_now {
                 crate::threats::push_threats_on_change(
                     &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
                     self.colors[0] | self.colors[1], us, pt, to as u32, false);
@@ -906,7 +920,7 @@ impl Board {
                 if us == WHITE { (0u8, 3u8) } else { (56u8, 59u8) }
             };
             self.move_piece(us, ROOK, rook_from, rook_to);
-            if gen_threats { crate::threats::push_threats_on_move(
+            if gen_threats_now { crate::threats::push_threats_on_move(
                 &mut self.threat_deltas, &self.pieces, &self.colors, &self.mailbox,
                 self.colors[0] | self.colors[1], us, ROOK, rook_from as u32, rook_to as u32); }
         }
@@ -954,8 +968,168 @@ impl Board {
 
     // Threat delta methods use free functions to avoid borrow issues with &mut self
 
+    /// Reconstruct threat deltas for the last made move without mutating the
+    /// real board. Used by search's lazy threat mode after TT/draw cutoffs
+    /// have failed and a threat accumulator value is actually needed.
+    pub fn reconstruct_last_move_threat_deltas(
+        &self,
+        out: &mut Vec<crate::threats::RawThreatDelta>,
+    ) {
+        out.clear();
+
+        let Some(undo) = self.undo_stack.last() else { return; };
+        let mv = undo.mv;
+        if mv == NO_MOVE { return; }
+
+        let them = self.side_to_move;
+        let us = flip_color(them);
+        let from = move_from(mv);
+        let to = move_to(mv);
+        let flags = move_flags(mv);
+        let moved_pt = if is_promotion(mv) {
+            PAWN
+        } else {
+            self.piece_type_at(to)
+        };
+        if moved_pt == NO_PIECE_TYPE {
+            return;
+        }
+
+        let mut pieces = self.pieces;
+        let mut colors = self.colors;
+        let mut mailbox = self.mailbox;
+
+        #[inline]
+        fn local_remove(
+            pieces: &mut [Bitboard; 6],
+            colors: &mut [Bitboard; 2],
+            mailbox: &mut [u8; 64],
+            color: Color,
+            pt: u8,
+            sq: u8,
+        ) {
+            let bb = 1u64 << sq;
+            pieces[pt as usize] &= !bb;
+            colors[color as usize] &= !bb;
+            mailbox[sq as usize] = NO_PIECE_TYPE;
+        }
+
+        #[inline]
+        fn local_put(
+            pieces: &mut [Bitboard; 6],
+            colors: &mut [Bitboard; 2],
+            mailbox: &mut [u8; 64],
+            color: Color,
+            pt: u8,
+            sq: u8,
+        ) {
+            let bb = 1u64 << sq;
+            pieces[pt as usize] |= bb;
+            colors[color as usize] |= bb;
+            mailbox[sq as usize] = pt;
+        }
+
+        #[inline]
+        fn local_move(
+            pieces: &mut [Bitboard; 6],
+            colors: &mut [Bitboard; 2],
+            mailbox: &mut [u8; 64],
+            color: Color,
+            pt: u8,
+            from: u8,
+            to: u8,
+        ) {
+            let bb = (1u64 << from) | (1u64 << to);
+            pieces[pt as usize] ^= bb;
+            colors[color as usize] ^= bb;
+            mailbox[from as usize] = NO_PIECE_TYPE;
+            mailbox[to as usize] = pt;
+        }
+
+        // Reconstruct the parent board arrays from the current post-move
+        // arrays, mirroring unmake_move but without touching hashes/clocks.
+        if flags == FLAG_CASTLE {
+            let (rook_from, rook_to) = if to > from {
+                if us == WHITE { (7u8, 5u8) } else { (63u8, 61u8) }
+            } else {
+                if us == WHITE { (0u8, 3u8) } else { (56u8, 59u8) }
+            };
+            local_move(&mut pieces, &mut colors, &mut mailbox, us, ROOK, rook_to, rook_from);
+        }
+
+        if is_promotion(mv) {
+            let promo_pt = promotion_piece_type(mv);
+            local_remove(&mut pieces, &mut colors, &mut mailbox, us, promo_pt, to);
+            local_put(&mut pieces, &mut colors, &mut mailbox, us, PAWN, to);
+        }
+
+        local_move(&mut pieces, &mut colors, &mut mailbox, us, moved_pt, to, from);
+
+        if flags == FLAG_EN_PASSANT {
+            let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
+            if cap_sq < 64 {
+                local_put(&mut pieces, &mut colors, &mut mailbox, them, PAWN, cap_sq);
+            }
+        } else if undo.captured != NO_PIECE_TYPE {
+            local_put(&mut pieces, &mut colors, &mut mailbox, them, undo.captured, to);
+        }
+
+        // Replay make_move's threat-generation sequence against the local
+        // arrays so the emitted raw deltas are byte-identical to eager mode.
+        if flags == FLAG_EN_PASSANT {
+            let cap_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
+            if cap_sq < 64 {
+                local_remove(&mut pieces, &mut colors, &mut mailbox, them, PAWN, cap_sq);
+                crate::threats::push_threats_on_change(
+                    out, &pieces, &colors, &mailbox,
+                    colors[0] | colors[1], them, PAWN, cap_sq as u32, false,
+                );
+            }
+        } else if undo.captured != NO_PIECE_TYPE {
+            local_remove(&mut pieces, &mut colors, &mut mailbox, them, undo.captured, to);
+            crate::threats::push_threats_on_change(
+                out, &pieces, &colors, &mailbox,
+                colors[0] | colors[1], them, undo.captured, to as u32, false,
+            );
+        }
+
+        local_move(&mut pieces, &mut colors, &mut mailbox, us, moved_pt, from, to);
+        crate::threats::push_threats_on_move(
+            out, &pieces, &colors, &mailbox,
+            colors[0] | colors[1], us, moved_pt, from as u32, to as u32,
+        );
+
+        if is_promotion(mv) {
+            let promo_pt = promotion_piece_type(mv);
+            local_remove(&mut pieces, &mut colors, &mut mailbox, us, PAWN, to);
+            crate::threats::push_threats_on_change(
+                out, &pieces, &colors, &mailbox,
+                colors[0] | colors[1], us, PAWN, to as u32, false,
+            );
+            local_put(&mut pieces, &mut colors, &mut mailbox, us, promo_pt, to);
+            crate::threats::push_threats_on_change(
+                out, &pieces, &colors, &mailbox,
+                colors[0] | colors[1], us, promo_pt, to as u32, true,
+            );
+        }
+
+        if flags == FLAG_CASTLE {
+            let (rook_from, rook_to) = if to > from {
+                if us == WHITE { (7u8, 5u8) } else { (63u8, 61u8) }
+            } else {
+                if us == WHITE { (0u8, 3u8) } else { (56u8, 59u8) }
+            };
+            local_move(&mut pieces, &mut colors, &mut mailbox, us, ROOK, rook_from, rook_to);
+            crate::threats::push_threats_on_move(
+                out, &pieces, &colors, &mailbox,
+                colors[0] | colors[1], us, ROOK, rook_from as u32, rook_to as u32,
+            );
+        }
+    }
+
     /// Unmake the last move.
     pub fn unmake_move(&mut self) {
+        self.threat_deltas_pending = false;
         let undo = self.undo_stack.pop().expect("unmake_move: empty undo stack");
         let mv = undo.mv;
         let them = self.side_to_move; // after unmake, "them" is who just moved
@@ -1049,6 +1223,7 @@ impl Board {
     /// Make a null move (just flip side, update EP).
     pub fn make_null_move(&mut self) {
         self.threat_deltas.clear(); // null move = no piece changes = no threat deltas
+        self.threat_deltas_pending = false;
         self.undo_stack.push(UndoInfo {
             mv: NO_MOVE,
             captured: NO_PIECE_TYPE,
@@ -2022,6 +2197,61 @@ mod tests {
                             board.to_fen(),
                         );
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn threat_delta_reconstruction_matches_eager() {
+        use crate::movegen::generate_legal_moves;
+        init();
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            *state = x; x
+        }
+
+        const FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "4k3/PPPPPPPP/8/8/8/8/pppppppp/4K3 w - - 0 1",
+            "rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3",
+        ];
+
+        for (fen_idx, fen) in FENS.iter().enumerate() {
+            for game in 0..16 {
+                let mut rng = 0x7A17_DE17u32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1009))
+                    .wrapping_add((game as u32).wrapping_mul(9176));
+                let mut eager = Board::from_fen(fen);
+                let mut lazy = Board::from_fen(fen);
+                eager.generate_threat_deltas = true;
+                lazy.generate_threat_deltas = true;
+                lazy.lazy_threat_deltas = true;
+
+                for ply in 0..96 {
+                    let legal = generate_legal_moves(&eager);
+                    if legal.len == 0 { break; }
+                    let mv = legal.get((next_u32(&mut rng) as usize) % legal.len);
+
+                    assert!(eager.make_move(mv));
+                    assert!(lazy.make_move(mv));
+
+                    let mut reconstructed = Vec::with_capacity(crate::threats::MAX_THREAT_DELTAS);
+                    lazy.reconstruct_last_move_threat_deltas(&mut reconstructed);
+                    let eager_rows: Vec<_> = eager.threat_deltas.iter()
+                        .map(|d| (d.attacker_cp(), d.from_sq(), d.victim_cp(), d.to_sq(), d.add()))
+                        .collect();
+                    let reconstructed_rows: Vec<_> = reconstructed.iter()
+                        .map(|d| (d.attacker_cp(), d.from_sq(), d.victim_cp(), d.to_sq(), d.add()))
+                        .collect();
+                    assert_eq!(
+                        eager_rows,
+                        reconstructed_rows,
+                        "reconstructed threat deltas differ fen_idx={fen_idx} game={game} ply={ply} mv={mv:?}",
+                    );
                 }
             }
         }

@@ -1081,6 +1081,7 @@ impl SearchInfo {
 
     /// Evaluate using NNUE if loaded, otherwise classical PeSTO.
     fn eval(&mut self, board: &Board) -> i32 {
+        self.materialize_current_threat_delta(board);
         // Ensure threat accumulator is computed before eval
         if self.threat_stack.active {
             if let Some(ref net) = self.nnue_net {
@@ -1141,6 +1142,13 @@ impl SearchInfo {
         // we caught this. The fix is structural: keep TT storage
         // halfmove-independent, apply scale freshly on read.
         score * (22400 + material) / 32 / 1024
+    }
+
+    #[inline]
+    fn materialize_current_threat_delta(&mut self, board: &Board) {
+        if self.threat_stack.active {
+            self.threat_stack.materialize_current_delta(board);
+        }
     }
 
     #[inline]
@@ -1885,6 +1893,7 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
     // Mirror search()'s threat setup — helpers must evaluate consistently
     // with main or shared-TT entries disagree and search diverges at T>1.
     board.generate_threat_deltas = info.nnue_net.as_ref().is_some_and(|n| n.has_threats);
+    board.lazy_threat_deltas = board.generate_threat_deltas;
     if info.threat_stack.active {
         info.threat_stack.reset();
         if let Some(ref net) = info.nnue_net {
@@ -1961,6 +1970,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
     // Enable threat delta generation if we have a threat net
     board.generate_threat_deltas = info.nnue_net.as_ref().is_some_and(|n| n.has_threats);
+    board.lazy_threat_deltas = board.generate_threat_deltas;
 
     // Initialize root position threat accumulator
     if info.threat_stack.active {
@@ -3477,6 +3487,7 @@ fn negamax(
                     }
                     if depth - r < 1 { r = depth - 1; }
                     info.rfp_audit_active = true;
+                    info.materialize_current_threat_delta(board);
                     board.make_null_move();
                     if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::incremental(&[])); }
                     if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
@@ -3497,6 +3508,8 @@ fn negamax(
             }
         }
     }
+
+    info.materialize_current_threat_delta(board);
 
     let nmp_threat_margin =
         (king_zone_pressure - (tp10(&NMP_KING_ZONE_MAX_10X) - 1)).max(0) * 64
@@ -4853,6 +4866,7 @@ fn quiescence_with_depth(
     // When in check, generate all evasion moves using main MovePicker
     // Full history scoring for quiet evasions
     if qs_in_check {
+        info.materialize_current_threat_delta(board);
         let qs_prev_move = if !board.undo_stack.is_empty() {
             board.undo_stack[board.undo_stack.len() - 1].mv
         } else {
@@ -5032,6 +5046,8 @@ fn quiescence_with_depth(
     if !FEAT_QS_CAPTURES.load(Ordering::Relaxed) {
         return best_score;
     }
+
+    info.materialize_current_threat_delta(board);
 
     // Use main MovePicker in quiescence mode.
     // This partitions captures into good (SEE>=0) and bad, and uses staged ordering.
