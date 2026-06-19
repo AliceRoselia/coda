@@ -4076,6 +4076,9 @@ fn negamax(
             // Direct-check carve-out: don't prune moves that give direct check
             // (Reckless #410 +1.62 STC).
             if futility_value <= alpha && main_hist < 12000 && !board.gives_direct_check(mv) {
+                if !is_decisive(best_score) && !is_decisive(futility_value) {
+                    best_score = best_score.max(futility_value);
+                }
                 info.stats.futility_prunes += 1;
                 skip_quiets = true;
                 picker.skip_remaining_quiets();
@@ -4111,12 +4114,16 @@ fn negamax(
         // Bad noisy pruning: skip losing captures when eval is far below alpha.
         // Applied before MakeMove. Direct-check carve-out: don't prune moves
         // that give direct check (Reckless #630 +1.85 STC).
+        let noisy_futility_value = static_eval + depth * tp(&BAD_NOISY_MARGIN);
         if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= tp(&BAD_NOISY_DEPTH) && mv != tt_move
             && !is_promo && best_score > -(MATE_SCORE - 100)
-            && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
+            && static_eval > -INFINITY && noisy_futility_value <= alpha
             && !see_ge(board, mv, 0)
             && !board.gives_direct_check(mv)
         {
+            if !is_decisive(best_score) && !is_decisive(noisy_futility_value) {
+                best_score = best_score.max(noisy_futility_value);
+            }
             continue;
         }
 
