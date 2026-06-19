@@ -169,13 +169,17 @@ tunables!(
     // multiplier DOWN as it lifts the base — base and factor-centers MUST move
     // together (Phase-13.1 double-count trap). All defaults = current values →
     // bench-neutral scaffold; the first-ever LTC TM SPSA does the work.
-    (TM_LOG10_SLOPE_100, 0, -20, 80, 6.0, true),
-    (TM_BASE_MTG, 24, 12, 45, 2.0, true),
-    (TM_PHASE_FLOOR_100, 22, 10, 70, 4.0, true),
-    (TM_STAB0_100, 171, 100, 280, 12.0, true),
-    (TM_FAILLOW_100, 34, 0, 100, 8.0, true),
-    (TM_SUBTREE_CTR_100, 162, 110, 220, 8.0, true),
-    (TM_SUBTREE_SCALE_100, 140, 80, 220, 10.0, true),
+    // Applied from LTC TM SPSA #2108 (40+0.4, 1000 iters). Small, coherent
+    // movement: STAB0/FAILLOW up ("think more when unstable"), base divisor
+    // slightly down. log10 slope stayed ~0 (single-TC SPSA can't learn the
+    // cross-TC effect — that's a hand-set + tm_ceiling-validated lever).
+    (TM_LOG10_SLOPE_100, 1, -20, 80, 6.0, true),
+    (TM_BASE_MTG, 23, 12, 45, 2.0, true),
+    (TM_PHASE_FLOOR_100, 23, 10, 70, 4.0, true),
+    (TM_STAB0_100, 177, 100, 280, 12.0, true),
+    (TM_FAILLOW_100, 36, 0, 100, 8.0, true),
+    (TM_SUBTREE_CTR_100, 163, 110, 220, 8.0, true),
+    (TM_SUBTREE_SCALE_100, 141, 80, 220, 10.0, true),
     (TM_TREND_SLOPE_10000, 25, 0, 100, 8.0, true),
     (LMR_HIST_DIV, 8731, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
