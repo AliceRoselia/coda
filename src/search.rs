@@ -415,7 +415,7 @@ tunables!(
     // aggressive ProbCut activation.
     (PROBCUT_MIN_DEPTH_10X, 21, 10, 120, 15.0, true),     // was hardcoded 5 (ProbCut activation gate)
     (PROBCUT_ROOT_MIN_DEPTH_10X, 24, 0, 80, 8.0, true),
-    (SEE_CAP_DEPTH, 7, 3, 15, 1.5, true),         // was hardcoded 6 (SEE capture prune depth cap)
+    (SEE_CAP_DEPTH, 16, 3, 20, 1.5, true),        // raised from 7: at LTC depths 12-25 the hard ceiling disabled all SEE capture pruning; peers use self-disabling formulas (audit S2)
     // Capture-SEE prune margin, SF-shaped (search.cpp): margin = depth*MULT +
     // capt_hist*HIST/1024, prune if SEE < -margin. Was sharing the hardcoded
     // SEE_MATERIAL_SCALE=215 (a QS-delta constant) with NO history term, giving
