@@ -158,6 +158,25 @@ tunables!(
     (TM_INC_COVER_REF, 20, 5, 60, 4.0, true),
     (TM_MULT_CEIL_MIN_10X, 15, 10, 40, 2.0, true),
     (TM_MULT_CEIL_MAX_10X, 130, 40, 140, 8.0, true),
+    // LTC-TM cluster (2026-06-19, ltc_audit_2026-06-13): TM was 0-of-82 SPSA
+    // params — every constant hand-eyeballed. The mechanistic LTC gap is a FLAT
+    // per-move fraction (no time-scale dependence): ~2.8% of clock at both
+    // 10+0.1 and 40+0.4, so Coda under-thinks at LTC vs SF (which scales the
+    // fraction up with log10(total clock)). TM_LOG10_SLOPE_100 adds that scaling
+    // (default 0 = inert, pivots at 10s clock so STC is unchanged; LTC SPSA
+    // discovers the slope). The base divisor + opening floor + the four factor
+    // CENTERS are exposed so the LTC SPSA can re-center the (factor-dominated)
+    // multiplier DOWN as it lifts the base — base and factor-centers MUST move
+    // together (Phase-13.1 double-count trap). All defaults = current values →
+    // bench-neutral scaffold; the first-ever LTC TM SPSA does the work.
+    (TM_LOG10_SLOPE_100, 0, -20, 80, 6.0, true),
+    (TM_BASE_MTG, 24, 12, 45, 2.0, true),
+    (TM_PHASE_FLOOR_100, 22, 10, 70, 4.0, true),
+    (TM_STAB0_100, 171, 100, 280, 12.0, true),
+    (TM_FAILLOW_100, 34, 0, 100, 8.0, true),
+    (TM_SUBTREE_CTR_100, 162, 110, 220, 8.0, true),
+    (TM_SUBTREE_SCALE_100, 140, 80, 220, 10.0, true),
+    (TM_TREND_SLOPE_10000, 25, 0, 100, 8.0, true),
     (LMR_HIST_DIV, 8731, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
@@ -1701,7 +1720,7 @@ pub fn compute_tm_budgets(
     // making hard the binding constraint every move (uniform-spend
     // pattern, lichess MJ442247 / 3+0).
     const NO_INC_MOVES_TO_GO: u64 = 40;
-    let mtg_divisor = if no_inc_sd { NO_INC_MOVES_TO_GO } else { DEFAULT_MOVES_TO_GO };
+    let mtg_divisor = if no_inc_sd { NO_INC_MOVES_TO_GO } else { (tp(&TM_BASE_MTG) as u64).max(1) };
 
     let opt_time_base = if movestogo > 0 {
         // Movestogo: divisor is clamped to [2, default_mtg]. TM audit
@@ -1745,9 +1764,18 @@ pub fn compute_tm_budgets(
         // p13_2 still 66% of games over 35% opening-overspend threshold (main: 23%).
         // Lowering floor cuts fm=1 from 0.39× to 0.25×, bringing opening allocation
         // closer to Coda's prior calibrated level.
-        let phase_mult = 0.22 + 0.78 * (1.0 - (-0.045 * fullmove as f64).exp());
-        ((opt_time_base as f64) * phase_mult.clamp(0.22, 1.0)) as u64
+        let pf = (tp(&TM_PHASE_FLOOR_100) as f64 / 100.0).clamp(0.0, 1.0);
+        let phase_mult = pf + (1.0 - pf) * (1.0 - (-0.045 * fullmove as f64).exp());
+        ((opt_time_base as f64) * phase_mult.clamp(pf, 1.0)) as u64
     };
+    // LTC base scaling (ltc_audit): grow the per-move fraction with log10 of the
+    // total clock (SF pattern), pivoting at 10s so STC is unchanged. SLOPE 0 =
+    // inert. Clamp keeps it sane at bullet (≥0.85×) and very long TC (≤2.0×).
+    let log_scale = (1.0
+        + (tp(&TM_LOG10_SLOPE_100) as f64 / 100.0)
+            * (time_left as f64 / 10_000.0).max(1e-3).log10())
+        .clamp(0.85, 2.0);
+    let opt_time = ((opt_time as f64) * log_scale) as u64;
     let opt_time = opt_time.max(1).min(hard_time);
 
     // soft_floor: preserved at a small value (10ms) for stockpile sleep
@@ -2618,9 +2646,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // calibrated opening allocation. 1.71 matches Coda's prior
             // stability_factor ceiling; preserves variety in middlegame
             // (where stab=0 only briefly) while reducing opening spike.
-            const STABILITY_TABLE: [f64; 5] = [1.71, 1.20, 0.90, 0.80, 0.75];
+            // STAB0 (the stability-0 "uncertain, think more" center) exposed for
+            // the LTC factor re-center; the rest of the table stays fixed.
+            let stability_table: [f64; 5] =
+                [tp(&TM_STAB0_100) as f64 / 100.0, 1.20, 0.90, 0.80, 0.75];
             let stability_idx = (info.tm_best_stable as usize).min(4);
-            let stability_multiplier = STABILITY_TABLE[stability_idx];
+            let stability_multiplier = stability_table[stability_idx];
 
             // Factor 2: Aspiration fail-low bonus (Viridithas event accumulator).
             // Formula: 1.0 + 0.34 × min(2, count), range [1.00, 1.68]
@@ -2628,7 +2659,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             //   1 fail:  1.34×
             //   2+ fails: 1.68× (cap)
             // Captures the upward instability signal.
-            let failed_low_multiplier = 1.0 + 0.34 * (info.tm_asp_fail_low.min(2) as f64);
+            let failed_low_multiplier =
+                1.0 + (tp(&TM_FAILLOW_100) as f64 / 100.0) * (info.tm_asp_fail_low.min(2) as f64);
 
             // Factor 3: Forced-move multiplier (Viridithas, position-intrinsic).
             //   Strong: 0.386× (alternative -400cp behind)
@@ -2652,7 +2684,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 let total = info.nodes;
                 if total > 0 {
                     let frac = best_nodes as f64 / total as f64;
-                    (1.62 - frac) * 1.4
+                    (tp(&TM_SUBTREE_CTR_100) as f64 / 100.0 - frac)
+                        * (tp(&TM_SUBTREE_SCALE_100) as f64 / 100.0)
                 } else {
                     1.0  // default when no node data
                 }
@@ -2674,7 +2707,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // test direction. Range [0.80, 1.45].
             let score_trend_multiplier = {
                 let drop = score_drop as f64;
-                (1.0 + 0.0025 * drop).clamp(0.80, 1.45)
+                (1.0 + (tp(&TM_TREND_SLOPE_10000) as f64 / 10000.0) * drop).clamp(0.80, 1.45)
             };
 
             // Combined multiplier — Viridithas's 4 factors + score-trend.
