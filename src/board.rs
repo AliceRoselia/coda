@@ -105,6 +105,9 @@ pub fn ep_capture_available(
     };
     if pushed_sq >= 64 { return false; }
     let pushed_bb = 1u64 << pushed_sq;
+    if pushed_bb & pieces[PAWN as usize] & colors[flip_color(capturing_side) as usize] == 0 {
+        return false;
+    }
     // Enemy (capturing_side) pawns that could EP-capture sit on files adjacent
     // to pushed_sq on the same rank.
     let adj = ((pushed_bb << 1) & NOT_FILE_A) | ((pushed_bb >> 1) & NOT_FILE_H);
@@ -311,12 +314,12 @@ impl Board {
             }
         }
 
-        // Only hash ep_square if an enemy pawn can actually make the EP capture.
+        // Only hash ep_square if an enemy pawn can legally make the EP capture.
         // Without this guard, the same physical position reached with or without
         // a recent double-push would hash differently, breaking rep detection
         // (Stockfish/Viridithas pattern).
         if self.ep_square != NO_SQUARE
-            && ep_capture_available(&self.pieces, &self.colors, self.side_to_move, self.ep_square)
+            && self.ep_capture_legal_for(self.side_to_move, self.ep_square)
         {
             h ^= ep_key(file_of(self.ep_square));
         }
@@ -328,6 +331,50 @@ impl Board {
         }
 
         h
+    }
+
+    /// True if `capturing_side` has at least one legal en-passant capture to
+    /// `ep_sq` in the current physical position. Used for EP Zobrist gating:
+    /// pinned/discovered-illegal EP rights must not distinguish repetitions.
+    #[inline]
+    pub fn ep_capture_legal_for(&self, capturing_side: Color, ep_sq: u8) -> bool {
+        if !ep_capture_available(&self.pieces, &self.colors, capturing_side, ep_sq) {
+            return false;
+        }
+        if self.occupied() & (1u64 << ep_sq) != 0 {
+            return false;
+        }
+
+        let pushed_sq = if capturing_side == BLACK {
+            ep_sq.wrapping_add(8)
+        } else {
+            ep_sq.wrapping_sub(8)
+        };
+        if pushed_sq >= 64 {
+            return false;
+        }
+
+        let pushed_bb = 1u64 << pushed_sq;
+        let adj = ((pushed_bb << 1) & NOT_FILE_A) | ((pushed_bb >> 1) & NOT_FILE_H);
+        let mut pawns = adj & self.pieces[PAWN as usize] & self.colors[capturing_side as usize];
+        let them = flip_color(capturing_side);
+        let ksq = self.king_sq(capturing_side) as u32;
+        let their_bishops = (self.pieces[BISHOP as usize] | self.pieces[QUEEN as usize])
+            & self.colors[them as usize];
+        let their_rooks = (self.pieces[ROOK as usize] | self.pieces[QUEEN as usize])
+            & self.colors[them as usize];
+
+        while pawns != 0 {
+            let from = pop_lsb(&mut pawns);
+            let occ = (self.occupied() ^ (1u64 << from) ^ (1u64 << pushed_sq)) | (1u64 << ep_sq);
+            if bishop_attacks(ksq, occ) & their_bishops == 0
+                && rook_attacks(ksq, occ) & their_rooks == 0
+            {
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Parse a FEN string and set the board state.
@@ -526,14 +573,9 @@ impl Board {
         attacks
     }
 
-    /// Approximate pre-move direct-check detection for pruning carve-outs.
-    /// Returns true if `mv`'s moved piece would directly attack the enemy
-    /// king from its destination square, using the post-move occupancy.
-    ///
-    /// Does NOT cover discovered checks, castling rook-checks, EP discovered
-    /// checks, or promotion-to-checker. Intended as a cheap "don't prune
-    /// obviously aggressive moves" filter, not a ground-truth check detector.
-    /// Reckless pattern (commits #410, #630): `might_give_check_if_you_squint`.
+    /// Pre-move check detection for pruning carve-outs.
+    /// Covers direct, promotion, discovered, castling-rook, and EP-discovered
+    /// checks using the post-move occupancy.
     #[inline]
     pub fn gives_direct_check(&self, mv: Move) -> bool {
         let from = move_from(mv);
@@ -548,44 +590,67 @@ impl Board {
         let their_king_bb = 1u64 << their_king;
         let flags = move_flags(mv);
 
-        // Castling: the king itself never gives direct check, but the ROOK
-        // landing on f1/d1/f8/d8 can. Compute rook destination from the
-        // king's from/to (same encoding as make_move at board.rs:855-860)
-        // and check rook attacks from there with the post-castle occupancy
-        // (both king and rook moved). 2026-05-31 audit: prior version
-        // returned false for FLAG_CASTLE, so futility/LMP/bad-noisy
-        // direct-check carve-outs pruned check-giving castles.
+        let from_bb = 1u64 << from;
+        let to_bb = 1u64 << to;
+        let mut occ = self.occupied() ^ from_bb;
+        let mut our_diag = (self.pieces[BISHOP as usize] | self.pieces[QUEEN as usize])
+            & self.colors[us as usize] & !from_bb;
+        let mut our_orth = (self.pieces[ROOK as usize] | self.pieces[QUEEN as usize])
+            & self.colors[us as usize] & !from_bb;
+
         if flags == FLAG_CASTLE {
             let (rook_from, rook_to) = if to > from {
                 if us == WHITE { (7u8, 5u8) } else { (63u8, 61u8) }
             } else {
                 if us == WHITE { (0u8, 3u8) } else { (56u8, 59u8) }
             };
-            let occ = (self.occupied() ^ (1u64 << from) ^ (1u64 << rook_from))
-                | (1u64 << to) | (1u64 << rook_to);
-            return rook_attacks(rook_to as u32, occ) & their_king_bb != 0;
+            occ = (occ ^ (1u64 << rook_from)) | to_bb | (1u64 << rook_to);
+            our_orth = (our_orth & !(1u64 << rook_from)) | (1u64 << rook_to);
+        } else {
+            if flags == FLAG_EN_PASSANT {
+                let captured_sq = if us == WHITE { to.wrapping_sub(8) } else { to.wrapping_add(8) };
+                if captured_sq >= 64 {
+                    return false;
+                }
+                occ ^= 1u64 << captured_sq;
+            }
+            occ |= to_bb;
         }
 
-        // Post-move occupancy: lift from-square, place on to-square.
-        let occ = (self.occupied() ^ (1u64 << from)) | (1u64 << to);
-
-        // For promotions, attack pattern comes from the promoted piece type.
         let effective_pt = if is_promotion(mv) {
             promotion_piece_type(mv)
         } else {
             pt
         };
 
-        let attacks: Bitboard = match effective_pt {
-            PAWN => pawn_attacks(us, to as u32),
-            KNIGHT => knight_attacks(to as u32),
-            BISHOP => bishop_attacks(to as u32, occ),
-            ROOK => rook_attacks(to as u32, occ),
-            QUEEN => queen_attacks(to as u32, occ),
-            _ => 0, // King moves can't give direct check.
-        };
+        match effective_pt {
+            PAWN => {
+                if pawn_attacks(us, to as u32) & their_king_bb != 0 {
+                    return true;
+                }
+            }
+            KNIGHT => {
+                if knight_attacks(to as u32) & their_king_bb != 0 {
+                    return true;
+                }
+            }
+            BISHOP => our_diag |= to_bb,
+            ROOK => our_orth |= to_bb,
+            QUEEN => {
+                our_diag |= to_bb;
+                our_orth |= to_bb;
+            }
+            _ => {}
+        }
 
-        attacks & their_king_bb != 0
+        let needs_slider_check = matches!(effective_pt, BISHOP | ROOK | QUEEN)
+            || flags == FLAG_CASTLE
+            || flags == FLAG_EN_PASSANT
+            || line(from as u32, their_king as u32) != 0;
+
+        needs_slider_check
+            && (bishop_attacks(their_king as u32, occ) & our_diag != 0
+                || rook_attacks(their_king as u32, occ) & our_orth != 0)
     }
 
     /// Squares of `color`'s pieces that are currently blocking one of
@@ -744,13 +809,13 @@ impl Board {
             // lie. make_move still rejects defensively if this ever slips by.
             // 2026-05-31 audit (H2).
             if captured_sq >= 64 { return false; }
-            // If in check, EP only resolves it if the captured pawn is the checker
             if checkers != 0 {
-                // Double check: only king moves resolve (EP is never a king move)
                 if checkers & (checkers - 1) != 0 { return false; }
                 let checker_sq = crate::bitboard::lsb(checkers);
-                // EP only resolves check if captured pawn is the checker
-                if checker_sq != captured_sq { return false; }
+                let check_mask = (1u64 << checker_sq) | between(checker_sq, ksq);
+                if checker_sq != captured_sq && (check_mask & (1u64 << to)) == 0 {
+                    return false;
+                }
             }
             let occ = (self.occupied() ^ (1u64 << from) ^ (1u64 << captured_sq)) | (1u64 << to);
             let their_bishops = (self.pieces[BISHOP as usize] | self.pieces[QUEEN as usize])
@@ -850,7 +915,7 @@ impl Board {
         // have a pawn that could actually make the EP capture). Must mirror
         // the condition used when the key was XOR'd in, or the hash breaks.
         if self.ep_square != NO_SQUARE
-            && ep_capture_available(&self.pieces, &self.colors, self.side_to_move, self.ep_square)
+            && self.ep_capture_legal_for(self.side_to_move, self.ep_square)
         {
             self.hash ^= ep_key(file_of(self.ep_square));
         }
@@ -924,7 +989,7 @@ impl Board {
         if pt == PAWN && ((to as i32) - (from as i32)).unsigned_abs() == 16 {
             let new_ep = if us == WHITE { from.wrapping_add(8) } else { from.wrapping_sub(8) };
             self.ep_square = new_ep;
-            if ep_capture_available(&self.pieces, &self.colors, them, new_ep) {
+            if self.ep_capture_legal_for(them, new_ep) {
                 self.hash ^= ep_key(file_of(new_ep));
             }
         }
@@ -1063,7 +1128,7 @@ impl Board {
 
         if self.ep_square != NO_SQUARE {
             // Mirror the conditional XOR used when the key was added.
-            if ep_capture_available(&self.pieces, &self.colors, self.side_to_move, self.ep_square) {
+            if self.ep_capture_legal_for(self.side_to_move, self.ep_square) {
                 self.hash ^= ep_key(file_of(self.ep_square));
             }
             self.ep_square = NO_SQUARE;
@@ -1239,6 +1304,14 @@ mod tests {
         assert_eq!(b.side_to_move, WHITE);
         assert_eq!(b.castling, CASTLE_WK | CASTLE_WQ | CASTLE_BK | CASTLE_BQ);
         assert_eq!(b.ep_square, NO_SQUARE);
+    }
+
+    #[test]
+    fn discovered_check_detected_for_pruning_carveouts() {
+        init();
+        let b = Board::from_fen("k7/8/8/8/8/8/N7/R3K3 w - - 0 1");
+        let nb4 = make_move(8, 25, FLAG_NONE); // Na2-b4 uncovers Ra1-a8+
+        assert!(b.gives_direct_check(nb4));
     }
 
     #[test]
@@ -1566,6 +1639,19 @@ mod tests {
         // in both cases (hash invariant).
         assert_eq!(fen_after_double.hash, fen_after_double.compute_hash());
         assert_eq!(ep_legal_pos.hash, ep_legal_pos.compute_hash());
+    }
+
+    #[test]
+    fn zobrist_ep_ignores_pinned_illegal_capture() {
+        init();
+        let mut b = Board::from_fen("4r1k1/3p4/8/4P3/8/8/8/4K3 b - - 0 1");
+        let d7d5 = make_move(51, 35, FLAG_NONE);
+        assert!(b.make_move(d7d5));
+
+        assert_eq!(b.ep_square, 43); // d6
+        assert!(ep_capture_available(&b.pieces, &b.colors, WHITE, b.ep_square));
+        assert!(!b.ep_capture_legal_for(WHITE, b.ep_square));
+        assert_eq!(b.hash, b.compute_hash(), "illegal pinned EP must not be hashed");
     }
 
     /// Recompute the four auxiliary Zobrist keys (pawn_hash, non_pawn_key,
