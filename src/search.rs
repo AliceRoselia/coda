@@ -4283,15 +4283,7 @@ fn negamax(
                 reduction = lmr_cap_reduction(d as i32, m as i32);
 
                 if reduction > 0 {
-                    // Continuous capture history adjustment — replaced the
-                    // prior step function (±1 at |capt_hist|>2000) with
-                    // continuous `capt_hist / LMR_HIST_DIV_CAP` to mirror
-                    // quiet-LMR's `hist_score / LMR_HIST_DIV` and Obsidian's
-                    // `R -= hist/(isQuiet?Q_DIV:C_DIV)`. 2026-05-18 outlier
-                    // audit traced LMR_C_CAP<LMR_C_QUIET inversion to this
-                    // step-vs-continuous asymmetry — SPSA had to compress
-                    // C_CAP because there was no per-feature carve-out for
-                    // tactical capt_hist signal beyond the binary fire.
+                    // Continuous capture history adjustment
                     if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                         let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
                         let capt_hist_val = info.history.capture[go_piece(moved_piece)][to as usize][ct] as i32;
@@ -4300,6 +4292,25 @@ fn negamax(
 
                     // Reduce less for captures that give check
                     if gives_check {
+                        reduction -= 1;
+                    }
+
+                    // Port from quiet-LMR: adjustments missing from capture LMR
+                    // that all reference engines (Obsidian, Berserk, Alexandria,
+                    // Reckless) apply to captures. (audit S3)
+
+                    // Reduce less when position is improving (Obsidian/Berserk/Alexandria)
+                    if improving {
+                        reduction -= 1;
+                    }
+
+                    // Reduce more at expected cut nodes (Obsidian/Berserk/Alexandria/Reckless)
+                    if cut_node {
+                        reduction += 1;
+                    }
+
+                    // Reduce less at PV-flagged nodes (Obsidian/Alexandria/Reckless)
+                    if tt_pv {
                         reduction -= 1;
                     }
 
