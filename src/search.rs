@@ -3306,7 +3306,12 @@ fn negamax(
             //     position on later visits.
             //   - tt_pv carries current node's is_pv context so PV
             //     propagation is correct on re-visit.
-            if !tt_hit && FEAT_TT_STORE.load(Ordering::Relaxed) {
+            // Gate eval-seed stub writes to PV nodes only (audit T1a).
+            // At non-PV nodes these depth=-2 stubs can flood the TT at small Hash
+            // sizes. PV nodes are ~1/BF ≈ 2.5% of nodes; gating eliminates 97%+
+            // of stub pressure while preserving the eval-cache benefit on lines
+            // that matter. Full removal is T1b.
+            if !tt_hit && is_pv && FEAT_TT_STORE.load(Ordering::Relaxed) {
                 info.tt.store(board.hash, -2, -INFINITY, TT_FLAG_UPPER, NO_MOVE, raw_eval, is_pv);
             }
         }
