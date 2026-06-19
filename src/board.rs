@@ -105,6 +105,9 @@ pub fn ep_capture_available(
     };
     if pushed_sq >= 64 { return false; }
     let pushed_bb = 1u64 << pushed_sq;
+    if pushed_bb & pieces[PAWN as usize] & colors[flip_color(capturing_side) as usize] == 0 {
+        return false;
+    }
     // Enemy (capturing_side) pawns that could EP-capture sit on files adjacent
     // to pushed_sq on the same rank.
     let adj = ((pushed_bb << 1) & NOT_FILE_A) | ((pushed_bb >> 1) & NOT_FILE_H);
@@ -311,12 +314,12 @@ impl Board {
             }
         }
 
-        // Only hash ep_square if an enemy pawn can actually make the EP capture.
+        // Only hash ep_square if an enemy pawn can legally make the EP capture.
         // Without this guard, the same physical position reached with or without
         // a recent double-push would hash differently, breaking rep detection
         // (Stockfish/Viridithas pattern).
         if self.ep_square != NO_SQUARE
-            && ep_capture_available(&self.pieces, &self.colors, self.side_to_move, self.ep_square)
+            && self.ep_capture_legal_for(self.side_to_move, self.ep_square)
         {
             h ^= ep_key(file_of(self.ep_square));
         }
@@ -328,6 +331,45 @@ impl Board {
         }
 
         h
+    }
+
+    /// True if `capturing_side` has at least one legal en-passant capture to
+    /// `ep_sq` in the current physical position. Used for EP Zobrist gating:
+    /// illegal EP rights must not distinguish repetitions.
+    #[inline]
+    pub fn ep_capture_legal_for(&self, capturing_side: Color, ep_sq: u8) -> bool {
+        if !ep_capture_available(&self.pieces, &self.colors, capturing_side, ep_sq) {
+            return false;
+        }
+        if self.occupied() & (1u64 << ep_sq) != 0 {
+            return false;
+        }
+
+        let pushed_sq = if capturing_side == BLACK {
+            ep_sq.wrapping_add(8)
+        } else {
+            ep_sq.wrapping_sub(8)
+        };
+        if pushed_sq >= 64 {
+            return false;
+        }
+
+        let pushed_bb = 1u64 << pushed_sq;
+        let adj = ((pushed_bb << 1) & NOT_FILE_A) | ((pushed_bb >> 1) & NOT_FILE_H);
+        let mut pawns = adj & self.pieces[PAWN as usize] & self.colors[capturing_side as usize];
+        let them = flip_color(capturing_side);
+        let ksq = self.king_sq(capturing_side) as u32;
+        let enemy_after_ep = self.colors[them as usize] & !pushed_bb;
+
+        while pawns != 0 {
+            let from = pop_lsb(&mut pawns);
+            let occ = (self.occupied() ^ (1u64 << from) ^ pushed_bb) | (1u64 << ep_sq);
+            if self.attackers_to(ksq, occ) & enemy_after_ep == 0 {
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Parse a FEN string and set the board state.
@@ -850,7 +892,7 @@ impl Board {
         // have a pawn that could actually make the EP capture). Must mirror
         // the condition used when the key was XOR'd in, or the hash breaks.
         if self.ep_square != NO_SQUARE
-            && ep_capture_available(&self.pieces, &self.colors, self.side_to_move, self.ep_square)
+            && self.ep_capture_legal_for(self.side_to_move, self.ep_square)
         {
             self.hash ^= ep_key(file_of(self.ep_square));
         }
@@ -924,7 +966,7 @@ impl Board {
         if pt == PAWN && ((to as i32) - (from as i32)).unsigned_abs() == 16 {
             let new_ep = if us == WHITE { from.wrapping_add(8) } else { from.wrapping_sub(8) };
             self.ep_square = new_ep;
-            if ep_capture_available(&self.pieces, &self.colors, them, new_ep) {
+            if self.ep_capture_legal_for(them, new_ep) {
                 self.hash ^= ep_key(file_of(new_ep));
             }
         }
@@ -1063,7 +1105,7 @@ impl Board {
 
         if self.ep_square != NO_SQUARE {
             // Mirror the conditional XOR used when the key was added.
-            if ep_capture_available(&self.pieces, &self.colors, self.side_to_move, self.ep_square) {
+            if self.ep_capture_legal_for(self.side_to_move, self.ep_square) {
                 self.hash ^= ep_key(file_of(self.ep_square));
             }
             self.ep_square = NO_SQUARE;
@@ -1566,6 +1608,33 @@ mod tests {
         // in both cases (hash invariant).
         assert_eq!(fen_after_double.hash, fen_after_double.compute_hash());
         assert_eq!(ep_legal_pos.hash, ep_legal_pos.compute_hash());
+    }
+
+    #[test]
+    fn zobrist_ep_ignores_geometric_capture_that_does_not_evade_check() {
+        init();
+        let with_ep = Board::from_fen("6k1/8/8/3pP3/8/5n2/8/4K3 w - d6 0 1");
+        let without_ep = Board::from_fen("6k1/8/8/3pP3/8/5n2/8/4K3 w - - 0 1");
+
+        assert!(ep_capture_available(&with_ep.pieces, &with_ep.colors, WHITE, with_ep.ep_square));
+        assert!(!with_ep.ep_capture_legal_for(WHITE, with_ep.ep_square));
+        assert_eq!(with_ep.pieces, without_ep.pieces);
+        assert_eq!(with_ep.colors, without_ep.colors);
+        assert_eq!(with_ep.hash, without_ep.hash);
+        assert_eq!(with_ep.hash, with_ep.compute_hash());
+    }
+
+    #[test]
+    fn zobrist_ep_ignores_pinned_illegal_capture() {
+        init();
+        let mut b = Board::from_fen("4r1k1/3p4/8/4P3/8/8/8/4K3 b - - 0 1");
+        let d7d5 = make_move(51, 35, FLAG_NONE);
+        assert!(b.make_move(d7d5));
+
+        assert_eq!(b.ep_square, 43); // d6
+        assert!(ep_capture_available(&b.pieces, &b.colors, WHITE, b.ep_square));
+        assert!(!b.ep_capture_legal_for(WHITE, b.ep_square));
+        assert_eq!(b.hash, b.compute_hash(), "illegal pinned EP must not be hashed");
     }
 
     /// Recompute the four auxiliary Zobrist keys (pawn_hash, non_pawn_key,
