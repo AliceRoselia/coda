@@ -179,6 +179,17 @@ tunables!(
     (TM_BANK_TARGET_10X, 16, 10, 40, 2.0, true),
     (TM_BANK_DECAY_100, 60, 20, 90, 5.0, true),
     (TM_BANK_DAMP_FLOOR_10X, 6, 1, 10, 1.0, true),
+    // SELECTIVITY (2026-06-19): make the governor's damp position-aware. The
+    // multiplier = stability×subtree (DISCRETIONARY exploration) × failed_low×
+    // forced×score_trend (CRITICALITY: instability / only-move / falling eval =
+    // "this move genuinely deserves time"). The blanket damp trims all of it;
+    // when the bank is hot it can deny a game-defining move its think. This
+    // floors the damped multiplier at the criticality baseline scaled by
+    // SELECTIVITY/100: 0 = full blanket (old behaviour), 100 = never trim below
+    // what the criticality signals alone ask for (preserve the good big-thinks,
+    // only shave the discretionary overspend). Tuned at LTC with target/floor
+    // (non-core: keep OUT of STC full-sweeps — the gain is an LTC phenomenon).
+    (TM_BANK_SELECTIVITY_100, 50, 0, 100, 8.0, true),
     (LMR_HIST_DIV, 8731, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
@@ -2756,7 +2767,23 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 if info.tm_bank > bank_target {
                     let damp_floor = tp(&TM_BANK_DAMP_FLOOR_10X) as f64 / 10.0;
                     let damp = (bank_target / info.tm_bank).clamp(damp_floor, 1.0);
-                    multiplier *= damp;
+                    let blanket = multiplier * damp;
+                    // Selective floor: shield the CRITICALITY-driven part of the
+                    // multiplier (failed_low × forced × score_trend — the
+                    // position-intrinsic "this move deserves time" signals) from
+                    // the damp, scaled by SELECTIVITY. At 0 this is the plain
+                    // blanket damp; at 1.0 the damp can never pull the multiplier
+                    // below what the criticality signals alone ask for, so a
+                    // genuinely game-defining move keeps its think even when the
+                    // bank is hot. Discretionary stability/subtree time is still
+                    // trimmed. Floor is capped at the (already inc-capped)
+                    // multiplier so selectivity can only RAISE the damped value.
+                    let sel = (tp(&TM_BANK_SELECTIVITY_100) as f64 / 100.0).clamp(0.0, 1.0);
+                    let crit = failed_low_multiplier
+                        * forced_move_multiplier
+                        * score_trend_multiplier;
+                    let protect = (crit * sel).min(multiplier);
+                    multiplier = blanket.max(protect);
                 }
             }
 
