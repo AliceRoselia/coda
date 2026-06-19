@@ -166,14 +166,19 @@ tunables!(
     // (info.tm_bank) and damps the current factor multiplier when the bank runs
     // hot, mean-reverting the per-move spend so a RUN of complex moves can't
     // drain the clock early (the 15+0.1 repro burned 53% of base in mv6-20,
-    // crashing the clock to ~0 by mv30 — lichess shape). TC-regime-independent:
-    // at OB STC the bank sits near 1.0 (no sustained overspend) so it's inert.
-    // TARGET is the steady-state avg spend/opt the bank reverts toward (×10);
-    // DECAY is the EMA weight on history (/100, so 60 = 0.60 history, 0.40 new);
-    // DAMP_FLOOR is the strongest single-move damp (×10).
-    (TM_BANK_TARGET_10X, 12, 10, 40, 2.0, true),
+    // crashing the clock to ~0 by mv30 — lichess shape). The SAME shape
+    // reproduces in plain ponder-off self-play AT STC (10+0.1: 55% of base in
+    // mv6-20), so STC is a valid signal — NOT ponder-only. The bank runs hot at
+    // STC too (~1.7-2.0), so this is NOT inert there; the first cut (target 1.2,
+    // floor 0.3 = #2095) trimmed the early thinking too much and lost ~8-15 STC.
+    // "Trim a bit less" (2026-06-19): some extra thinking on complex game-
+    // defining positions is genuinely good — TARGET 1.6 only curbs SUSTAINED
+    // overspend (bank>1.6×), DAMP_FLOOR 0.6 never cuts a move below 60% of its
+    // multiplier. TARGET is the steady-state avg spend/opt the bank reverts
+    // toward (×10); DECAY is the EMA history weight (/100); DAMP_FLOOR ×10.
+    (TM_BANK_TARGET_10X, 16, 10, 40, 2.0, true),
     (TM_BANK_DECAY_100, 60, 20, 90, 5.0, true),
-    (TM_BANK_DAMP_FLOOR_10X, 3, 1, 10, 1.0, true),
+    (TM_BANK_DAMP_FLOOR_10X, 6, 1, 10, 1.0, true),
     (LMR_HIST_DIV, 8731, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
