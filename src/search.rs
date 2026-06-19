@@ -3076,7 +3076,8 @@ fn negamax(
             if tt_depth >= depth && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 // Unified TT cutoff with node-type guard (Alexandria pattern):
                 // At non-PV nodes, accept TT cutoff when:
-                // - cut_node matches score direction (cut expects fail-high, all expects fail-low)
+                // - cut_node matches score direction (cut expects fail-high, all expects fail-low),
+                //   or the TT entry is deep enough to trust despite node-type mismatch
                 // - TT bound type matches (LOWER for fail-high, UPPER for fail-low)
                 let score_above_beta = tt_score >= beta;
                 let bound_matches = if score_above_beta {
@@ -3092,7 +3093,7 @@ fn negamax(
                 // narrowing happens at line 2776+ after this check).
                 // 2026-05-31 audit finding B.
                 let tt_cut_is_pv = beta - alpha > 1;
-                if !tt_cut_is_pv && cut_node == score_above_beta && bound_matches
+                if !tt_cut_is_pv && (cut_node == score_above_beta || depth > 5) && bound_matches
                     && halfmove_ok
                 {
                     info.stats.tt_cutoffs += 1;
