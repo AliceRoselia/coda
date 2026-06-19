@@ -3537,7 +3537,11 @@ fn negamax(
                         info.stats.rfp_audit_fp[d_idx] += 1;
                     }
                 }
-                return static_eval - margin;
+                // Blend return toward beta — prevents score inflation in TT when
+                // static_eval - margin >> beta. Unanimous across all 5 reference engines
+                // (Obsidian/Stormphrax: (eval+beta)/2; Alexandria: (eval-margin+beta)/2).
+                // (audit B3)
+                return (static_eval - margin + beta) / 2;
             }
         }
     }
