@@ -158,6 +158,22 @@ tunables!(
     (TM_INC_COVER_REF, 20, 5, 60, 4.0, true),
     (TM_MULT_CEIL_MIN_10X, 15, 10, 40, 2.0, true),
     (TM_MULT_CEIL_MAX_10X, 130, 40, 140, 8.0, true),
+    // Banking governor (2026-06-19). The inc_cover ceiling above keys on the
+    // TC regime; it can't separate lichess blitz (5+2, inc_cover 0.16) from the
+    // OB-STC frame (10+0.1, inc_cover 0.24) that must stay uncapped, so blitz
+    // overspend slips through. This governor instead keys on REALIZED spend
+    // behaviour: it tracks an EMA of (actual_spent / opt_budget) across moves
+    // (info.tm_bank) and damps the current factor multiplier when the bank runs
+    // hot, mean-reverting the per-move spend so a RUN of complex moves can't
+    // drain the clock early (the 15+0.1 repro burned 53% of base in mv6-20,
+    // crashing the clock to ~0 by mv30 — lichess shape). TC-regime-independent:
+    // at OB STC the bank sits near 1.0 (no sustained overspend) so it's inert.
+    // TARGET is the steady-state avg spend/opt the bank reverts toward (×10);
+    // DECAY is the EMA weight on history (/100, so 60 = 0.60 history, 0.40 new);
+    // DAMP_FLOOR is the strongest single-move damp (×10).
+    (TM_BANK_TARGET_10X, 12, 10, 40, 2.0, true),
+    (TM_BANK_DECAY_100, 60, 20, 90, 5.0, true),
+    (TM_BANK_DAMP_FLOOR_10X, 3, 1, 10, 1.0, true),
     (LMR_HIST_DIV, 8731, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
@@ -729,6 +745,12 @@ pub struct SearchInfo {
     tm_prev_best: Move,
     tm_prev_score: i32,
     tm_best_stable: i32,
+    /// Banking governor EMA of realized (spent / opt_budget) per move, kept
+    /// ACROSS moves (reset on ucinewgame, not per `go`). Updated at the end of
+    /// each timed search; read in the dynamic-TM block to damp the factor
+    /// multiplier when recent spend ran hot. 1.0 = neutral (spent ≈ budget).
+    /// Public: reset from the uci.rs ucinewgame handler (like tm_baseline).
+    pub tm_bank: f64,
     /// Cumulative count of aspiration fail-lows in the current search.
     /// Reset at search start. Consumed by the Phase 13 fail-low factor
     /// `1.0 + 0.34 * min(2, asp_fail_low)` applied to both opt and hard
@@ -888,6 +910,7 @@ impl SearchInfo {
             tm_forced_state: ForcedState::None,
             tm_prev_score: 0,
             tm_best_stable: 0,
+            tm_bank: 1.0,
             tm_asp_fail_low: 0,
             tm_asp_fail_high: 0,
             tm_has_data: false,
@@ -2713,6 +2736,25 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 multiplier = multiplier.min(inc_ceiling);
             }
 
+            // Banking governor damp (2026-06-19). info.tm_bank is an EMA of
+            // realized (spent / opt) over recent moves (updated post-search).
+            // When it exceeds TARGET the engine has been overspending its
+            // budget across a RUN of moves (the blitz/rapid clock-drain), so
+            // pull this move's multiplier down toward the level that
+            // mean-reverts the average to TARGET. Inert when the bank sits at
+            // or below TARGET (calm play / OB-STC), so it doesn't touch the
+            // regime the inc_cover ceiling must leave alone. Skipped for no_inc
+            // (already clamped hard at 2.5× above; the bank EMA is noisier when
+            // every move can spend up to hard).
+            if !info.tm_no_inc {
+                let bank_target = tp(&TM_BANK_TARGET_10X) as f64 / 10.0;
+                if info.tm_bank > bank_target {
+                    let damp_floor = tp(&TM_BANK_DAMP_FLOOR_10X) as f64 / 10.0;
+                    let damp = (bank_target / info.tm_bank).clamp(damp_floor, 1.0);
+                    multiplier *= damp;
+                }
+            }
+
             // Phase 13: adjusted_soft = soft × multiplier, clamped to max_time
             // (the ONLY cap — no separate hard×0.5). Viridithas pattern.
             let adjusted_soft_raw = (info.soft_limit as f64 * multiplier) as u64;
@@ -2830,6 +2872,20 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 info.tm_forced_state,
             );
         }
+    }
+
+    // Banking governor update (2026-06-19): fold this move's realized
+    // spend/opt ratio into the cross-move EMA. Only for timed searches with a
+    // real opt budget (soft_limit > 0) — depth/node/movetime searches don't
+    // pace a clock. ratio is capped so one explosive move can't peg the bank;
+    // the EMA then governs subsequent moves in the dynamic-TM block above.
+    if info.soft_limit > 0 {
+        let total_elapsed = info.start_time.elapsed().as_millis() as u64;
+        let spent = total_elapsed.saturating_sub(info.tm_baseline).max(1) as f64;
+        let opt_base = info.soft_limit.max(1) as f64;
+        let ratio = (spent / opt_base).min(8.0);
+        let decay = (tp(&TM_BANK_DECAY_100) as f64 / 100.0).clamp(0.0, 0.99);
+        info.tm_bank = decay * info.tm_bank + (1.0 - decay) * ratio;
     }
 
     best_move
