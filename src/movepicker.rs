@@ -726,10 +726,13 @@ impl MovePicker {
                         _ => 0,  // king — no offense bonus, too risky
                     };
                     if attacks_from_to & enemy_non_pawns != 0 {
-                        // Safety check: skip if `to` is attacked by enemy pawn
-                        // (which could recapture us).
-                        // Only skip if WE would be a bigger target than a pawn
-                        let unsafe_square = pt != 0 && (enemy_pawn_attacks & (1u64 << to)) != 0;
+                        // Safety check: skip if `to` is attacked by any enemy piece.
+                        // Previously only checked enemy pawn attacks — a piece moving to a
+                        // bishop/rook-threatened square still got the +6000 bonus even if it
+                        // would be immediately lost. Use self.threats (full enemy attack bitmap)
+                        // for the unsafe check. Pawn moves (pt==0) are exempt since they attack
+                        // diagonally rather than occupying the square. (movegen audit Finding 2)
+                        let unsafe_square = pt != 0 && (self.threats & (1u64 << to)) != 0;
                         if !unsafe_square {
                             score += 6000;
                             // T3.2: "good quiet" — the offense move's
