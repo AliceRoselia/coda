@@ -233,6 +233,15 @@ tunables!(
     // TT_DAMP_TT_WEIGHT: weight of tt_score in TT-LOWER non-PV cutoff score
     // dampening. Formula: (W*tt_score + beta) / (W+1). Old hardcoded W=3.
     (TT_DAMP_TT_WEIGHT, 3, 1, 10, 0.5, false),
+    // TT replacement (Viridithas-style quadratic age, Step A). The worst-slot
+    // selector scores each slot `depth + exact_bonus + pv_bonus - age²/quad_div`
+    // and evicts the minimum. Quadratic age keeps moderately-old deep entries
+    // but flushes *very* old ones regardless of depth (vs the old linear
+    // `depth - age*8`). Read by tt.rs::store. Validate at LTC, hash>=256 — TT-
+    // pressure-bound, can invert STC->LTC.
+    (TT_REPL_AGE_QUAD_DIV, 4, 1, 16, 1.5, true),
+    (TT_REPL_EXACT_BONUS, 3, 0, 16, 1.5, true),
+    (TT_REPL_PV_BONUS, 1, 0, 8, 1.0, true),
     // PROBCUT_TT_DEPTH_SLACK: TT depth must be >= current depth - SLACK for
     // ProbCut-TT-noshot to consider the entry. Old hardcoded 3.
     (PROBCUT_TT_DEPTH_SLACK, 3, 0, 10, 0.5, false),

@@ -447,6 +447,12 @@ impl TT {
         let mut replace_idx = 0;
         let mut replace_score = i32::MAX;
 
+        // TT replacement params (Viridithas-style quadratic age, Step A).
+        // Loaded once per store (not per slot) to keep the hot path cheap.
+        let age_quad_div = crate::search::TT_REPL_AGE_QUAD_DIV.load(Ordering::Relaxed).max(1);
+        let exact_bonus = crate::search::TT_REPL_EXACT_BONUS.load(Ordering::Relaxed);
+        let pv_bonus = crate::search::TT_REPL_PV_BONUS.load(Ordering::Relaxed);
+
         for i in 0..BUCKET_SIZE {
             // Probe-equivalent loads: key first (Acquire) so we see the
             // matching data write on aarch64.
@@ -490,12 +496,15 @@ impl TT {
                 return;
             }
 
-            // Track worst slot for replacement: depth - 8*age (matches SF's
-            // GENERATION_DELTA=8). Stale entries depreciate twice as fast as
-            // the previous `*4`, freeing slots for fresh shallow entries
-            // when TT pressure is high.
+            // Track worst slot for replacement (Viridithas-style quadratic age,
+            // Step A): keep-priority = depth + exact_bonus + pv_bonus - age²/div.
+            // Quadratic age keeps moderately-old deep entries but flushes *very*
+            // old ones regardless of depth (vs the old linear `depth - age*8`).
+            // Exact/PV entries get a retention bonus. Evict the minimum.
             let age = gen.wrapping_sub(slot_gen) as i32;
-            let slot_score = slot_depth - age * 8;
+            let fb = if slot_flag == TT_FLAG_EXACT { exact_bonus } else { 0 };
+            let pb = if unpack_tt_pv(slot_data) { pv_bonus } else { 0 };
+            let slot_score = slot_depth + fb + pb - (age * age) / age_quad_div;
             if slot_score < replace_score {
                 replace_score = slot_score;
                 replace_idx = i;
