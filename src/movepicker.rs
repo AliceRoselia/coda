@@ -530,7 +530,13 @@ impl MovePicker {
             // forgiving threshold. Use captHist only (not MVV) to avoid inflation.
             let capt_hist = capt_hist_score_static(board, history, m);
             let cap_score = mvv_lva(board, m) + capt_hist;
-            let see_threshold = -capt_hist / 18;
+            // Include full cap_score (MVV + capt_hist) in SEE threshold, matching SF.
+            // Using capt_hist-only meant high-MVV captures with negative history got a
+            // stricter threshold than warranted — a queen capture historically bad could
+            // need SEE > +100 to be classified as "good" even though it's high-value.
+            // SF: see_threshold = -total_score / 18 where total_score = MVV + captHist.
+            // (movegen audit Finding 1)
+            let see_threshold = -cap_score / 18;
             if !see_ge(board, m, see_threshold) {
                 // Bad capture.
                 // C8 audit LIKELY #24: limit raised to 256 (from 64). 64
