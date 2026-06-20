@@ -206,7 +206,12 @@ tunables!(
     (PROBCUT_ROOT_MARGIN, 53, 0, 120, 8.0, true),
     (HINDSIGHT_THRESH, 179, 50, 400, 17.5, true),
     (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
-    (QS_DELTA_MARGIN, 352, 100, 500, 20.0, true),
+    (QS_DELTA_MARGIN, 200, 50, 600, 20.0, true),  // lowered default: 352 assumed 2.15x piece value; now 1.0x so margin needs to include material
+    // Captured-piece multiplier in QS delta pruning (audit QS-B2).
+    // Peers use 1.0x (SF: piece value + flat margin). Coda had 2.15x
+    // (SEE_MATERIAL_SCALE=215), making delta pruning almost never fire for
+    // piece captures. Defaulting to 100 = 1.0x, matching consensus.
+    (QS_DELTA_SCALE, 100, 50, 250, 10.0, true),
     // 24 -> 5 with the T2.10 counting fix: the old counter charged
     // delta/SEE-pruned moves against the budget, so SPSA detuned the cap
     // to near-off. Counting searched-only, consensus is 3 (Obsidian/
@@ -5121,7 +5126,7 @@ fn quiescence_with_depth(
                 board.piece_type_at(cap_to)
             };
             if cap_pt != NO_PIECE_TYPE && (cap_pt as usize) < 6
-                && stand_pat + see_value(cap_pt) * tp(&SEE_MATERIAL_SCALE) / 100 + tp(&QS_DELTA_MARGIN) <= alpha {
+                && stand_pat + see_value(cap_pt) * tp(&QS_DELTA_SCALE) / 100 + tp(&QS_DELTA_MARGIN) <= alpha {
                     continue;
                 }
         }
