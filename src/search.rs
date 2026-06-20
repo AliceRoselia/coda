@@ -5009,6 +5009,16 @@ fn quiescence_with_depth(
         // EXACT cutoffs and the stand-pat refinement at full confidence.
         // SF/Reckless/Obsidian all store only LOWER/UPPER in QS
         // (2026-06-11 audit T1.5).
+        // QS beta blending for evasion path (audit QS-B1): SF/Reckless/Obsidian/
+        // Alexandria all blend fail-high scores toward beta before storing to TT,
+        // for both in-check and not-in-check paths. Coda previously had no
+        // blending in the evasion path — store then return unblended, making the
+        // evasion path inconsistent with the non-check path.
+        if best_score >= beta && best_score < MATE_SCORE - 100 && best_score > -(MATE_SCORE - 100)
+            && beta - alpha_orig == 1
+        {
+            best_score = (best_score + beta) / 2;
+        }
         let store_score = score_to_tt(best_score, ply);
         let flag = if best_score >= beta {
             TT_FLAG_LOWER
@@ -5179,6 +5189,16 @@ fn quiescence_with_depth(
         }
     }
 
+    // QS beta blending BEFORE TT store (audit QS-B1): all reference engines
+    // (SF, Reckless, Obsidian, Alexandria) blend the score first, then store
+    // the blended value. Coda previously stored unblended and returned blended,
+    // causing TT to hold an inflated lower bound that over-truncates on re-probe.
+    if best_score >= beta && beta - alpha_orig == 1
+        && best_score < MATE_SCORE - 100 && best_score > -(MATE_SCORE - 100)
+    {
+        best_score = (best_score + beta) / 2;
+    }
+
     // Store in TT (skip if stopped — partial QS results corrupt TT).
     // Never EXACT — see the note at the evasion-path store above (audit T1.5).
     let store_score = score_to_tt(best_score, ply);
@@ -5188,17 +5208,7 @@ fn quiescence_with_depth(
         TT_FLAG_UPPER
     };
     if FEAT_TT_STORE.load(Ordering::Relaxed) && !info.stop.load(Ordering::Relaxed) {
-        // Store the halfmove-INDEPENDENT value so later probes at a
-        // different halfmove get a correct scale — see the doc comment
-        // in `SearchInfo::eval`.
         info.tt.store(board.hash, -1, store_score, flag, best_move, raw_stand_pat, false);
-    }
-
-    // QS beta blending: dampen capture fail-high at non-PV nodes
-    if best_score >= beta && beta - alpha_orig == 1
-        && best_score < MATE_SCORE - 100 && best_score > -(MATE_SCORE - 100)
-    {
-        return (best_score + beta) / 2;
     }
 
     best_score
