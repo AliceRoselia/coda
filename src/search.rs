@@ -352,6 +352,10 @@ tunables!(
     (LMR_THREAT_DIV_10X, 18, 10, 50, 15.0, true),
     // Was 68 (tp10→7). Now FIXED-POINT. Default 70 → eff 7.0 ≡ old behavior.
     (LMR_KING_PRESSURE_DIV_10X, 67, 20, 90, 15.0, true),
+    // Reduce MORE at TTPV nodes whose cached TT value already looks like a
+    // fail-low (<= alpha) — partially offsets the tt_pv-reduces-less below
+    // (Viridithas #432 ttpv_fail_low). Fixed-point ×10; default 10 = +1.0 ply.
+    (LMR_TTPV_FAIL_LOW_10X, 10, 0, 30, 5.0, true),
     (FUT_THREATS_MARGIN, 20, 0, 200, 10.0, true),
     (DISCOVERED_ATTACK_BONUS, 3534, 0, 30000, 1500.0, false),
     // BATTERY_BONUS removed 2026-05-17: ablation #1278 at [0, 3] H0
@@ -3063,6 +3067,9 @@ fn negamax(
     // Sticky PV flag: once a position is searched as PV, it stays PV in the TT.
     // Used to reduce LMR for moves that lead to historically important positions.
     let tt_pv = is_pv || (tt_hit && tt_entry.tt_pv);
+    // Node-level ply-adjusted TT value, for the ttpv_fail_low LMR term below.
+    // INFINITY when no TT hit so the `<= alpha` test can never false-fire.
+    let tt_value = if tt_hit { score_from_tt(tt_entry.score, ply) } else { INFINITY };
 
     if tt_hit {
         tt_move = tt_entry.best_move;
@@ -4228,6 +4235,13 @@ fn negamax(
                 // Sticky: once a position is searched as PV, tt_pv stays set even at non-PV nodes.
                 if tt_pv {
                     reduction -= 1;
+                }
+
+                // ...but if that TTPV node's cached value already looks like a
+                // fail-low (<= alpha), reduce MORE — it partially offsets the
+                // reduces-less above (Viridithas #432 ttpv_fail_low).
+                if tt_hit && tt_pv && tt_value <= alpha {
+                    reduction += LMR_TTPV_FAIL_LOW_10X.load(Ordering::Relaxed) / 10;
                 }
 
                 // Continuous history adjustment: good history reduces less, bad more
