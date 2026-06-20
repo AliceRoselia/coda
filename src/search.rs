@@ -2628,7 +2628,25 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             //   1 fail:  1.34×
             //   2+ fails: 1.68× (cap)
             // Captures the upward instability signal.
-            let failed_low_multiplier = 1.0 + 0.34 * (info.tm_asp_fail_low.min(2) as f64);
+            let bmc_count = info.tm_best_move_changes.min(3) as f64;
+            // BMC replacement test: best-move changes should be the explicit
+            // "root is actually volatile" signal, not another full-strength
+            // multiplier piled on top of fail-low / score-drop / subtree noise.
+            //
+            // When BMC is low, compress the upward side of those other
+            // amplifiers but preserve their downward side. If the root move
+            // really keeps changing, BMC restores some upward budget directly.
+            let upward_gate = 0.25 + 0.50 * (bmc_count / 3.0);
+            let damp_up = |raw: f64| {
+                if raw > 1.0 {
+                    1.0 + (raw - 1.0) * upward_gate
+                } else {
+                    raw
+                }
+            };
+
+            let failed_low_raw = 1.0 + 0.34 * (info.tm_asp_fail_low.min(2) as f64);
+            let failed_low_multiplier = damp_up(failed_low_raw);
 
             // Factor 3: Forced-move multiplier (Viridithas, position-intrinsic).
             //   Strong: 0.386× (alternative -400cp behind)
@@ -2645,7 +2663,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             //   nodes_fraction = best_move_nodes / total_nodes
             //   high fraction (>0.6): confident → reduce time
             //   low fraction (<0.3):  uncertain → increase time
-            let subtree_size_multiplier = if depth > 9 && best_move != NO_MOVE {
+            let subtree_size_raw = if depth > 9 && best_move != NO_MOVE {
                 let bm_from = move_from(best_move) as usize;
                 let bm_to = move_to(best_move) as usize;
                 let best_nodes = info.root_move_nodes[bm_from * 64 + bm_to];
@@ -2659,6 +2677,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             } else {
                 1.0  // early depths: neutral
             };
+            let subtree_size_multiplier = damp_up(subtree_size_raw);
 
             // Factor 5: Score-trend multiplier (falling-eval). The signal
             // `score_drop` (= tm_prev_score - prev_score, in cp; positive =
@@ -2672,10 +2691,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // when drop==0, so the flat-eval common case (most moves) leaves
             // the baseline allocation untouched and no retune is required to
             // test direction. Range [0.80, 1.45].
-            let score_trend_multiplier = {
+            let score_trend_raw = {
                 let drop = score_drop as f64;
                 (1.0 + 0.0025 * drop).clamp(0.80, 1.45)
             };
+            let score_trend_multiplier = damp_up(score_trend_raw);
+            let bmc_multiplier = 1.0 + 0.12 * bmc_count;
 
             // Combined multiplier — Viridithas's 4 factors + score-trend.
             // Max product ~ 2.50 × 1.68 × 1.0 × 2.27 × 1.45 = 13.8×
@@ -2684,7 +2705,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 * failed_low_multiplier
                 * forced_move_multiplier
                 * subtree_size_multiplier
-                * score_trend_multiplier;
+                * score_trend_multiplier
+                * bmc_multiplier;
             // No-inc clamp: factor product up to 6.5× at no-inc TCs blows
             // adjusted_soft past hard_time via iteration-overflow even with
             // the smaller no-inc opt baseline. lichess MJ442247 (3+0):
