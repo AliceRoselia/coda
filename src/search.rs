@@ -2529,9 +2529,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // this, the gate was disabling the forced-move detector at STC
         // (~-3 Elo). Now keyed directly on `tm_no_inc`, which is true
         // only when our increment is exactly zero (sudden-death).
+        const ENABLE_FORCED_MOVE_TM: bool = false;
         let floor_dominates = info.soft_floor * 3 >= info.soft_limit;
         let no_inc = info.tm_no_inc;
-        if info.tm_forced_state == ForcedState::None
+        if ENABLE_FORCED_MOVE_TM
+            && info.tm_forced_state == ForcedState::None
             && depth >= 8
             && best_move != NO_MOVE
             && info.soft_limit > 0
