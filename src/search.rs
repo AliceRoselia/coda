@@ -5121,7 +5121,7 @@ fn quiescence_with_depth(
                 board.piece_type_at(cap_to)
             };
             if cap_pt != NO_PIECE_TYPE && (cap_pt as usize) < 6
-                && stand_pat + see_value(cap_pt) * tp(&SEE_MATERIAL_SCALE) / 100 + tp(&QS_DELTA_MARGIN) <= alpha {
+                && stand_pat + see_value(cap_pt) * 125 / 100 + tp(&QS_DELTA_MARGIN) <= alpha {
                     continue;
                 }
         }
