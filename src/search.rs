@@ -170,13 +170,22 @@ tunables!(
     // together (Phase-13.1 double-count trap). All defaults = current values →
     // bench-neutral scaffold; the first-ever LTC TM SPSA does the work.
     (TM_LOG10_SLOPE_100, 0, -20, 80, 6.0, true),
-    (TM_BASE_MTG, 24, 12, 45, 2.0, true),
+    (TM_BASE_MTG, 34, 12, 45, 2.0, true),
     (TM_PHASE_FLOOR_100, 22, 10, 70, 4.0, true),
-    (TM_STAB0_100, 171, 100, 280, 12.0, true),
-    (TM_FAILLOW_100, 34, 0, 100, 8.0, true),
+    (TM_STAB0_100, 270, 100, 280, 12.0, true),
+    (TM_FAILLOW_100, 80, 0, 100, 8.0, true),
     (TM_SUBTREE_CTR_100, 162, 110, 220, 8.0, true),
-    (TM_SUBTREE_SCALE_100, 140, 80, 220, 10.0, true),
+    (TM_SUBTREE_SCALE_100, 210, 80, 220, 10.0, true),
     (TM_TREND_SLOPE_10000, 25, 0, 100, 8.0, true),
+    // Diagnostic levers (2026-06-20, default-inert). TM_BMC_100: wire the
+    // within-search best-move-changes counter as a factor (`1 + k*changes`,
+    // k=TM_BMC_100/100) — the #2 difficulty predictor (prior-vol r=+0.047) that
+    // SF/Reckless use and Coda currently ignores. TM_FLATTEN=1 forces the whole
+    // factor multiplier to 1.0 (zero-variance / pure-base allocation) — the
+    // bisection arm to test whether the factor VARIANCE is net-harmful (fixed
+    // beats active). Both off by default = bench-neutral.
+    (TM_BMC_100, 0, 0, 200, 10.0, true),
+    (TM_FLATTEN, 0, 0, 1, 1.0, true),
     (LMR_HIST_DIV, 8731, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
@@ -2718,11 +2727,22 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Combined multiplier — Viridithas's 4 factors + score-trend.
             // Max product ~ 2.50 × 1.68 × 1.0 × 2.27 × 1.45 = 13.8×
             // Min product ~ 0.75 × 1.0  × 0.386 × 0.87 × 0.80 = 0.20×
+            // BMC factor (diagnostic, default off). Within-search best-move
+            // changes — the #2 difficulty predictor, used by SF/Reckless,
+            // ignored by Coda. `1 + k*changes` (Reckless shape). k=0 → inert.
+            let bmc_multiplier = 1.0
+                + (tp(&TM_BMC_100) as f64 / 100.0) * (info.tm_best_move_changes as f64);
             let mut multiplier = stability_multiplier
                 * failed_low_multiplier
                 * forced_move_multiplier
                 * subtree_size_multiplier
-                * score_trend_multiplier;
+                * score_trend_multiplier
+                * bmc_multiplier;
+            // FLATTEN (diagnostic): force zero variance (pure base allocation)
+            // to test whether the factor variance is net-harmful vs fixed.
+            if tp(&TM_FLATTEN) != 0 {
+                multiplier = 1.0;
+            }
             // No-inc clamp: factor product up to 6.5× at no-inc TCs blows
             // adjusted_soft past hard_time via iteration-overflow even with
             // the smaller no-inc opt baseline. lichess MJ442247 (3+0):
@@ -2851,7 +2871,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 f,
                 "tm-debug depth={} bestmove={} score={} \
                  elapsed={} elapsed_since_ph={} soft={} hard={} floor={} \
-                 tm_baseline={} stab={} bmc={} asp_fl={} asp_fh={} forced={:?}",
+                 tm_baseline={} stab={} bmc={} asp_fl={} asp_fh={} forced={:?} \
+                 subtree_frac={:.3}",
                 info.completed_depth,
                 move_to_uci(best_move),
                 info.last_score,
@@ -2866,6 +2887,18 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 info.tm_asp_fail_low,
                 info.tm_asp_fail_high,
                 info.tm_forced_state,
+                // Diagnostic (2026-06-20): subtree-frac (best move's node share)
+                // — the noisy proxy Coda uses where SF/Reckless use within-iter
+                // BMC. Logged alongside bmc so we can measure WHICH signal
+                // better predicts move difficulty (eval swing), and whether
+                // spend tracks either. best_move's root node share.
+                {
+                    let bm_from = move_from(best_move) as usize;
+                    let bm_to = move_to(best_move) as usize;
+                    let bn = info.root_move_nodes[bm_from * 64 + bm_to] as f64;
+                    let tot = info.nodes.max(1) as f64;
+                    bn / tot
+                },
             );
         }
     }
