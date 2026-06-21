@@ -164,9 +164,9 @@ tunables!(
     // not perturbed incidentally by a broad ~33-iter/param STC core retune where
     // a noisy TM movement could regress lichess. Still UCI-loadable for
     // deliberate TM tunes; just not swept by --core.
-    (TM_INC_COVER_REF, 20, 5, 60, 4.0, false),
-    (TM_MULT_CEIL_MIN_10X, 15, 10, 40, 2.0, false),
-    (TM_MULT_CEIL_MAX_10X, 130, 40, 140, 8.0, false),
+    (TM_INC_COVER_REF, 25, 5, 60, 4.0, false),
+    (TM_MULT_CEIL_MIN_10X, 16, 10, 40, 2.0, false),
+    (TM_MULT_CEIL_MAX_10X, 132, 40, 140, 8.0, false),
     (LMR_HIST_DIV, 8731, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
