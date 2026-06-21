@@ -186,11 +186,17 @@ tunables!(
     (SE_DEPTH_10X, 44, 40, 200, 20.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, false),
-    // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
-    // use LMP_BASE=3 with the same `(BASE + d²)/(2 - improving)` formula.
-    // Coda's 9 is 3× consensus at d=1: allows 5-10 quiets vs SF's 2-4.
-    // Bisecting 9 → 5 first.
-    (LMP_BASE, 6, 1, 15, 2.0, true),
+    // 2026-06-21 LMP "flex" cluster (TC-scaling methodology). Formula now
+    // `(LMP_BASE*10 + LMP_QUAD_10X*d²) / ((2-improving)*10)` — LMP_QUAD_10X
+    // exposes the d² coefficient that was hardcoded at 1.0. Seeded at the
+    // SF/Obsidian/Reckless consensus (LMP_BASE=3, quad coef 1.0 → QUAD_10X=10);
+    // STC vs LTC SPSA find each TC's optimum, and divergence between them flags
+    // which knob needs root-depth parameterisation. NB Coda previously bisected
+    // LMP_BASE 9→6 (consensus 3 was too aggressive FOR CODA) — if SPSA drifts
+    // BASE back toward 6, that's the signal to investigate why Coda's LMP
+    // context differs (move ordering / a missing guard), not just accept it.
+    (LMP_BASE, 3, 1, 15, 2.0, true),
+    (LMP_QUAD_10X, 10, 3, 30, 2.0, true),
     (LMP_DEPTH, 8, 4, 20, 2.0, true),
     // Root-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
     // reduce LESS as the OVERALL search depth grows past LMR_ROOT_THRESH
@@ -4099,7 +4105,8 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
         {
-            let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
+            let lmp_limit = (tp(&LMP_BASE) * 10 + tp(&LMP_QUAD_10X) * depth * depth)
+                / ((2 - improving as i32) * 10);
             if move_count > lmp_limit {
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
