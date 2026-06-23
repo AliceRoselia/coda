@@ -4248,9 +4248,12 @@ fn negamax(
                     reduction -= 1;
                 }
 
-                // Reduce more at expected cut nodes (zero window, not first move)
-                if !is_pv && move_count > 1 {
+                // Reduce more at expected cut nodes. Use actual cut_node bool (not
+                // !is_pv which includes all-nodes). Also add bonus when no TT move
+                // (SF: +985*!ttMove; Reckless: +1 extra). (LMR audit L4/L6)
+                if cut_node {
                     reduction += 1;
+                    if tt_move == NO_MOVE { reduction += 1; }
                 }
 
                 // Reduce later moves more once this node has already raised
