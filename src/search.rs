@@ -237,7 +237,7 @@ tunables!(
     // delta/SEE-pruned moves against the budget, so SPSA detuned the cap
     // to near-off. Counting searched-only, consensus is 3 (Obsidian/
     // Reckless) to ~"2 extra" (SF moveCount > 2).
-    (QS_MAX_CAPTURES, 5, 2, 32, 2.0, false),
+    (QS_MAX_CAPTURES, 3, 2, 32, 2.0, false),
     (CORR_W_PAWN, 293, 100, 600, 25.0, true),
     // Floor lifted from 50 → 0 (audit 2026-05-20): pinned at 63, 4% from floor.
     (CORR_W_NP, 69, 0, 400, 17.5, true),
