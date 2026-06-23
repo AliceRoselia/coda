@@ -5182,6 +5182,21 @@ fn quiescence_with_depth(
             continue;
         }
 
+        // Captures-only invariant (QS audit 2026-06-23): the QS picker
+        // (skip_quiet=true) only yields captures/promotions EXCEPT the TT move,
+        // which it yields regardless of type. A quiet TT move slips past both
+        // the delta block (skipped for non-captures) and see_ge(QS_SEE_THRESHOLD)
+        // (quiet SEE=0 >= negative threshold), so it was being searched —
+        // breaking captures-only and inflating the QS tree. SF and Alexandria
+        // drop a non-tactical QS TT move; Reckless/Berserk never seed one.
+        {
+            let is_cap = board.piece_type_at(move_to(mv)) != NO_PIECE_TYPE
+                || move_flags(mv) == FLAG_EN_PASSANT;
+            if !is_cap && !is_promotion(mv) {
+                continue;
+            }
+        }
+
         // Move-count budget (audit T2.10): count only SEARCHED moves — the
         // old form incremented before delta/SEE pruning, so pruned moves
         // consumed budget and SPSA pushed the cap to near-off (24; comment
