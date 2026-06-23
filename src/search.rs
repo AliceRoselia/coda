@@ -4123,7 +4123,12 @@ fn negamax(
         // that give direct check (Reckless #630 +1.85 STC).
         if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= tp(&BAD_NOISY_DEPTH) && mv != tt_move
             && !is_promo && best_score > -(MATE_SCORE - 100)
-            && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
+            && static_eval > -INFINITY
+            // Add captured piece SEE value to margin: SF and Reckless include the
+            // captured piece value so high-value captures (QxR) are not pruned when
+            // the position is losing. Without it, Coda could prune QxR in a -400cp
+            // position. (SEE audit S3)
+            && static_eval + depth * tp(&BAD_NOISY_MARGIN) + see_value(captured_pt) <= alpha
             && !see_ge(board, mv, 0)
             && !board.gives_direct_check(mv)
         {
