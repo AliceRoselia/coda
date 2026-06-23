@@ -141,6 +141,11 @@ tunables!(
     // HIST_PRUNE_DEPTH_10X / HIST_PRUNE_MULT removed 2026-06-02 — see hist-prune
     // removal block in main negamax body for rationale (three H0 SPRTs).
     (SEE_QUIET_MULT, 30, 5, 80, 3.75, true),
+    // History divisor for SEE quiet threshold: good-history moves get a looser
+    // threshold; bad-history moves get tighter. Every engine above Coda feeds
+    // history into the SEE threshold; Coda previously used a fixed -MULT*d².
+    // Peers use hist/2995 (SF) to hist/8300 (Alexandria). (SEE audit S2)
+    (SEE_QUIET_HIST_DIV, 4096, 1000, 16000, 750.0, true),
     // Low-increment TM multiplier ceiling (2026-06-18). The factor product
     // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
     // clamped for no_inc; at increments that are SMALL RELATIVE TO THE CLOCK
@@ -3940,13 +3945,21 @@ fn negamax(
 
         // SEE quiet pruning: prune quiet moves landing on attacked squares.
         // Use lmrDepth² scaling (matching Stockfish/Berserk/Obsidian).
+        // History-adjusted lmr_d: good-history moves get a more permissive
+        // threshold (larger effective lmr_d reduces threshold); bad-history
+        // moves get tighter. Every engine above Coda does this. (SEE audit S2)
         if ply > 0 && !in_check
             && !is_cap && !is_promo
             && mv != tt_move
             && best_score > -(MATE_SCORE - 100)
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
-            let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
+            let see_main_hist = info.history.main_score(from, to, enemy_attacks);
+            // Add hist/div: good-history moves get LARGER lmr_d (looser threshold = harder
+            // to prune = less pruning); bad-history moves get smaller lmr_d (easier to prune).
+            // Previous attempt subtracted — wrong direction, H0 -5.2. (SEE audit S2 fix)
+            let lmr_d_adj = (lmr_d + see_main_hist / tp(&SEE_QUIET_HIST_DIV)).max(0);
+            let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d_adj * lmr_d_adj;
             if !see_ge(board, mv, see_quiet_threshold) {
                 info.stats.see_prunes += 1;
                 continue;
