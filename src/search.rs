@@ -4265,6 +4265,15 @@ fn negamax(
                     reduction -= 1;
                 }
 
+                // TT fail-low: prior search at this position failed low → reduce more.
+                // Reckless uses +0.59 reduction when tt_score < alpha. (LMR audit L3)
+                if tt_hit && tt_entry.flag == TT_FLAG_UPPER {
+                    let tt_score_node = score_from_tt(tt_entry.score, ply);
+                    if tt_score_node < alpha && tt_score_node.abs() < MATE_SCORE - 100 {
+                        reduction += 1;
+                    }
+                }
+
                 // Reduce more when TT move is a capture
                 if tt_move_noisy {
                     reduction += 1;
