@@ -4272,7 +4272,7 @@ fn negamax(
                 }
 
                 // Next-ply cutoff count reduction (SF/Reckless). (LMR audit L2)
-                if ply_u + 1 < MAX_PLY + 2 && info.cutoff_count[ply_u + 1] > 2 {
+                if ply_u + 1 < MAX_PLY + 2 && info.cutoff_count[ply_u + 1] > 3 { // tighter threshold (LMR L2 retry)
                     reduction += 1;
                 }
 
