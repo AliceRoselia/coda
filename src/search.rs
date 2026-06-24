@@ -194,7 +194,8 @@ tunables!(
     // equivalent reduction magnitude). Coda's quiet div is 7736; same
     // ratio gives ~4500. Defaulting 5000 as a starting point.
     (LMR_HIST_DIV_CAP, 3024, 1000, 20000, 1500.0, true),
-    (LMR_C_QUIET, 144, 40, 300, 13.0, true),
+    (LMR_C_QUIET, 144, 80, 300, 13.0, true),   // widened lower bound: base frees C to rise
+    (LMR_BASE_QUIET, 20, 0, 100, 5.0, true),  // small base lift: 0.20 plies at d=3-5 (L1 retry, was 0.50->H0)
     (LMR_C_CAP, 159, 80, 350, 12.5, true),
     // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv,
     // Reckless at >=5+ttPv. Coda's 4 fires SE at shallower depth where
@@ -1475,10 +1476,11 @@ static LMR_TABLE_CAP: [[AtomicI32; 64]; 64] = {
 pub fn init_lmr() {
     for depth in 1..64 {
         for moves in 1..64 {
-            // Quiet table: C from tunable (default 130 = 1.30)
+            // Quiet table: base + ln(d)*ln(m)/C (L1 retry with smaller base).
             if depth >= 3 && moves >= 3 {
                 let c = tp(&LMR_C_QUIET) as f64 / 100.0;
-                let r = ((depth as f64).ln() * (moves as f64).ln() / c) as i32;
+                let base = tp(&LMR_BASE_QUIET) as f64 / 100.0;
+                let r = (base + (depth as f64).ln() * (moves as f64).ln() / c) as i32;
                 LMR_TABLE[depth][moves].store(r.min((depth - 2) as i32), Ordering::Relaxed);
             }
             // Capture table: C from tunable (default 180 = 1.80)
