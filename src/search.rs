@@ -110,6 +110,10 @@ tunables!(
     (RFP_DEPTH, 17, 2, 20, 2.0, true),
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
     (RFP_MARGIN_IMP, 33, 0, 150, 6.0, true),
+    // Flat improving discount: replaces depth*(NOIMP-IMP) with a depth-flat constant.
+    // Peers use: SF -199, Berserk -118, Obsidian -87, Alexandria -61, Reckless -77.
+    // Coda's depth*4 gap is ~16cp at d=4, negligible vs peer 61-199cp. (RFP audit RFP-2)
+    (RFP_FLAT_IMP, 80, 0, 250, 12.0, true),
     (RFP_MARGIN_NOIMP, 37, 0, 200, 7.5, true),
     // Root-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
     // demand MORE static-eval confidence to RFP-cut as the OVERALL search
@@ -3527,7 +3531,10 @@ fn negamax(
             && move_flags(tt_move) != FLAG_EN_PASSANT
             && !is_promotion(tt_move);
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !is_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed) {
-            let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            // Flat improving discount: depth*NOIMP - FLAT_IMP (depth-independent).
+            // Peers use flat constants (61-199cp); Coda's prior depth*(NOIMP-IMP) was ~16cp at d=4.
+            let base = depth * tp(&RFP_MARGIN_NOIMP);
+            let mut margin = if improving { (base - tp(&RFP_FLAT_IMP)).max(0) } else { base };
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
             // Zero at STC (root_depth <= thresh); grows with both remaining
             // depth and how deep the overall search is, so deep RFP at LTC
