@@ -664,6 +664,23 @@ impl MovePicker {
                 };
             }
 
+            // Move-into-threatened penalty (move-ordering audit 2026-06-24).
+            // 5/6 reference engines (SF/Reckless/Berserk/Obsidian/PlentyChess)
+            // penalize moving a piece ONTO an enemy-attacked square — the
+            // symmetric complement of the escape-from bonus above, which Coda
+            // had only one half of. Reuse the escape magnitudes (exactly
+            // symmetric); O(1) via the precomputed enemy `threats` bitboard. A
+            // move from one threatened square to another nets ~0 (escape minus
+            // this), which is correct — that isn't really an escape.
+            if self.threats & (1u64 << to) != 0 && piece != NO_PIECE {
+                score -= match pt {
+                    4 => escape_bonus_q,
+                    3 => escape_bonus_r,
+                    1 | 2 => escape_bonus_minor,
+                    _ => 0,
+                };
+            }
+
             // Quiet check bonus: moves that give direct check (SF +16384, Viridithas +10000).
             // SEE-gated like SF (movepick.cpp): a check that loses material by more
             // than QUIET_CHECK_SEE_MARGIN is a losing sac — don't order it first.
