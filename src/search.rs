@@ -325,6 +325,16 @@ tunables!(
     (DEXT_MARGIN_CORR, 21, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 34, -50, 150, 6.0, true),
     (DEXT_CAP, 14, 4, 32, 2.0, true),
+    // Triple-extension margin (extensions audit 2026-06-24). ALL SIX of the
+    // stronger reference engines (SF/Reckless/Berserk/Obsidian/PlentyChess/
+    // Alexandria) triple-extend; Coda was the only one without it. Triple
+    // fires when the singular fail margin clears dext_margin + TEXT_MARGIN
+    // (i.e. a WIDER margin than double → a more decisively singular move).
+    // Quiet TT-move only, matching the Berserk/Obsidian/PlentyChess gate
+    // (capture triple-extensions are the riskiest; refs that allow them, SF/
+    // Reckless, also carry more dext machinery). Default 80 keeps triple rare
+    // (refs sit ~50-75 wider than double). Gated by the same DEXT_CAP counter.
+    (TEXT_MARGIN, 80, 0, 300, 12.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
     // SEE gate on the quiet check bonus (SF movepick.cpp: check bonus only
     // applies when see_ge(m, -75)). Without it Coda orders losing check-sacs
@@ -4044,7 +4054,18 @@ fn negamax(
                     if info.double_ext_count[ply_u] < tp(&DEXT_CAP) {
                         let de = (singular_score < singular_beta - dext_margin) as i32;
                         singular_extension += de;
-                        if de > 0 { info.stats.double_ext += 1; }
+                        if de > 0 {
+                            info.stats.double_ext += 1;
+                            // Triple extension (6/6 reference consensus, audit
+                            // 2026-06-24). Builds on a double: a quiet TT move
+                            // whose fail margin also clears the wider TEXT_MARGIN
+                            // is decisively singular → extend a third ply. Quiet
+                            // only (Berserk/Obsidian/PlentyChess gate).
+                            let te = (is_tt_quiet
+                                && singular_score < singular_beta - dext_margin - tp(&TEXT_MARGIN)) as i32;
+                            singular_extension += te;
+                            if te > 0 { info.stats.double_ext += 1; }
+                        }
                     }
                 } else if tt_score_local >= beta {
                     // TT move fails high and alternatives competitive — strong reduce
