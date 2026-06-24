@@ -4055,11 +4055,13 @@ fn negamax(
                     // Cut node with competitive alternatives — moderate reduce
                     singular_extension = -2;
                     info.stats.negative_ext += 1;
-                } else {
-                    // All-node with competitive alternatives — mild reduce
-                    singular_extension = -1;
-                    info.stats.negative_ext += 1;
                 }
+                // All-node case (tt_score < beta, !cut_node): NO negative
+                // extension (extensions audit 2026-06-24). Coda previously
+                // reduced -1 here, but 5/6 stronger references
+                // (SF/Reckless/Obsidian/PlentyChess/Alexandria) leave
+                // extension=0 in this case; only Berserk reduces, and only on
+                // a narrower tt_score<=alpha gate. Ablating the Coda-unique -1.
             }
         }
 
