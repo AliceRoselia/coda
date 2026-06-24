@@ -109,8 +109,8 @@ tunables!(
     (NMP_VERIFY_DEPTH_10X, 104, 40, 200, 20.0, true),
     (RFP_DEPTH, 17, 2, 20, 2.0, true),
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
-    (RFP_MARGIN_IMP, 33, 0, 150, 6.0, true),
-    (RFP_MARGIN_NOIMP, 37, 0, 200, 7.5, true),
+    (RFP_MARGIN_IMP, 50, 0, 200, 10.0, true),   // raised from 33: peer range 30-80 (RFP audit RFP-1)
+    (RFP_MARGIN_NOIMP, 70, 0, 200, 10.0, true), // raised from 37: peer range 70-87 (RFP audit RFP-1)
     // Root-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
     // demand MORE static-eval confidence to RFP-cut as the OVERALL search
     // depth grows past RFP_ROOT_THRESH (diminishing-returns of depth — the
