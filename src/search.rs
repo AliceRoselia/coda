@@ -401,6 +401,16 @@ tunables!(
     // subtracted from singular_beta → easier to judge singular → more
     // extensions for tactically significant moves.
     (SE_XRAY_BLOCKER_MARGIN_10X, 50, 0, 400, 20.0, true),
+    // ttPv-non-PV singular margin widening (extensions audit 2026-06-24).
+    // 4/6 references (SF/Reckless/PlentyChess/Alexandria — incl. both engines
+    // Coda models its dext on) WIDEN the singular margin on a node whose TT
+    // entry is sticky-ttPv but is being searched as non-PV: such nodes were
+    // explored as PV before, so a re-confirmation needs a stiffer bar to count
+    // as singular (avoid over-extending stale PV moves). Reckless & Alexandria
+    // add exactly +depth (coefficient 1.0); SF ~1.19·depth; PlentyChess
+    // doubles. Fixed-point ×10; default 10 = ×1.0 (add depth), matching the
+    // Reckless/Alexandria value. Subtracted from singular_beta like xray.
+    (SE_TTPV_WIDEN_10X, 10, 0, 40, 3.0, true),
     // 2026-05-19 audit: floor was pinned at 10 (=1.0 effective), preventing
     // SPSA from exploring below 1× even though SPSA had repeatedly driven
     // the value to the floor across tunes. Widened to allow 0× (full disable)
@@ -3988,7 +3998,12 @@ fn negamax(
                 let xray_bonus = if our_xray_blockers & (1u64 << move_from(tt_move)) != 0 {
                     tp10(&SE_XRAY_BLOCKER_MARGIN_10X)
                 } else { 0 };
-                let singular_beta = tt_score_local - depth - xray_bonus;
+                // ttPv-non-PV widening: a sticky-ttPv node searched as non-PV
+                // needs a stiffer bar to count as singular (4/6 ref consensus).
+                let ttpv_widen = if tt_entry.tt_pv && !is_pv {
+                    depth * tp(&SE_TTPV_WIDEN_10X) / 10
+                } else { 0 };
+                let singular_beta = tt_score_local - depth - xray_bonus - ttpv_widen;
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
