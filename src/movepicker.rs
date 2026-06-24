@@ -596,6 +596,9 @@ impl MovePicker {
         let escape_bonus_q = crate::search::ESCAPE_BONUS_Q.load(Ordering::Relaxed);
         let escape_bonus_r = crate::search::ESCAPE_BONUS_R.load(Ordering::Relaxed);
         let escape_bonus_minor = crate::search::ESCAPE_BONUS_MINOR.load(Ordering::Relaxed);
+        let to_threat_penalty_q = crate::search::TO_THREAT_PENALTY_Q.load(Ordering::Relaxed);
+        let to_threat_penalty_r = crate::search::TO_THREAT_PENALTY_R.load(Ordering::Relaxed);
+        let to_threat_penalty_minor = crate::search::TO_THREAT_PENALTY_MINOR.load(Ordering::Relaxed);
         let quiet_check_bonus = crate::search::QUIET_CHECK_BONUS.load(Ordering::Relaxed);
         let quiet_check_see_margin = crate::search::QUIET_CHECK_SEE_MARGIN.load(Ordering::Relaxed);
         let discovered_attack_bonus = crate::search::DISCOVERED_ATTACK_BONUS.load(Ordering::Relaxed);
@@ -660,6 +663,25 @@ impl MovePicker {
                     4 => escape_bonus_q,
                     3 => escape_bonus_r,
                     1 | 2 => escape_bonus_minor,
+                    _ => 0,
+                };
+            }
+
+            // Move-into-threat penalty (graded, lower-value-attacker only).
+            // Symmetric complement of the escape bonus above: demote a
+            // NON-PAWN quiet that lands on an enemy-PAWN-attacked square —
+            // the clearest "moving into a strictly-lower-value attacker"
+            // case (a pawn always out-values N/B/R/Q). Graded by our piece
+            // value. enemy_pawn_attacks is already computed (above) and is
+            // the same mask the offense block uses for its unsafe_square
+            // filter, so this adds no per-move work beyond a bit test.
+            // Narrower than the crude #2239 form (penalized ANY threatened
+            // to-square at full escape magnitude, −5.1).
+            if pt != 0 && pt < 5 && (enemy_pawn_attacks & (1u64 << to)) != 0 {
+                score -= match pt {
+                    4 => to_threat_penalty_q,
+                    3 => to_threat_penalty_r,
+                    1 | 2 => to_threat_penalty_minor,
                     _ => 0,
                 };
             }

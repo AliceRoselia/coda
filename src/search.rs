@@ -355,6 +355,23 @@ tunables!(
     // current defaults.
     (ESCAPE_BONUS_Q, 17819, 0, 30000, 1500.0, false),
     (ESCAPE_BONUS_MINOR, 5250, 0, 30000, 1000.0, false),
+    // Move-into-threat penalty (GRADED, lower-value-attacker only). The
+    // symmetric complement of the escape bonus: penalize a NON-PAWN piece
+    // that lands on a square attacked by an enemy PAWN — the unambiguous
+    // "moving into a strictly-lower-value attacker" case (a pawn always
+    // out-values N/B/R/Q, so the recapture is a guaranteed material loss
+    // unless we have a bigger threat back). Graded by OUR piece value: the
+    // bigger the piece we expose, the larger the demotion. Deliberately
+    // narrower & lower-magnitude than the failed crude form (#2239, −5.1),
+    // which penalized ANY threatened to-square (incl. equal/higher-value
+    // attackers = no material loss) at full escape-bonus magnitude and
+    // double-counted with the 4D threat-aware main history's to_threatened
+    // bit. This pawn-attacked subset is a sharper signal not captured by
+    // that binary bit. Defaults modest (below the offense/escape scale) so
+    // the untuned SPRT isn't history-dominated; retune-on-branch if H1.
+    (TO_THREAT_PENALTY_Q, 6000, 0, 30000, 1200.0, false),
+    (TO_THREAT_PENALTY_R, 4000, 0, 30000, 1000.0, false),
+    (TO_THREAT_PENALTY_MINOR, 2000, 0, 30000, 600.0, false),
     // Null-move threat-escape bonus in quiet ordering (was hardcoded 8000).
     (NULL_THREAT_ESCAPE_BONUS, 8321, 0, 30000, 1000.0, false),
     (NMP_KING_ZONE_MAX_10X, 71, 20, 90, 15.0, true),
