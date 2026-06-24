@@ -136,6 +136,10 @@ tunables!(
     // (#2018 +3.5) and was flat at LTC (#2019), with focused SPSA #2020
     // converging back to 81.5/109.0. Keep depth/threat gates unchanged.
     (FUT_BASE, 75, 0, 200, 9.0, true),
+    // No-best-move bonus: when nothing has raised alpha yet at this node, futility
+    // candidates are less likely to rescue it → prune more aggressively.
+    // SF adds +151 when bestMove==NO_MOVE; PlentyChess adds +113. (FUT audit FUT-1)
+    (FUT_NO_BEST_MOVE, 100, 0, 300, 15.0, true),
     (FUT_PER_DEPTH, 99, 40, 250, 10.5, true),
     (FUT_LMR_DEPTH, 14, 6, 24, 2.0, true),
     // HIST_PRUNE_DEPTH_10X / HIST_PRUNE_MULT removed 2026-06-02 — see hist-prune
@@ -4110,7 +4114,9 @@ fn negamax(
             // our_defenses widener: add margin per our-piece-under-attack so
             // tactical positions keep more lines from being pruned on eval.
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
+            // Add no-best-move bonus when nothing has raised alpha yet (SF +151, PlentyChess +113). (FUT audit FUT-1)
+            let no_best_bonus = if best_move == NO_MOVE { tp(&FUT_NO_BEST_MOVE) } else { 0 };
+            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj + no_best_bonus;
             // Don't futility-prune moves with very strong history (Igel pattern)
             // Direct-check carve-out: don't prune moves that give direct check
             // (Reckless #410 +1.62 STC).
