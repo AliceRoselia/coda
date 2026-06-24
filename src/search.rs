@@ -200,7 +200,18 @@ tunables!(
     // Reckless at >=5+ttPv. Coda's 4 fires SE at shallower depth where
     // singular_depth is too low to judge singularity reliably. Bumping
     // 4 → 6 first; ttPv add deferred to a follow-up if H1.
-    (SE_DEPTH_10X, 40, 40, 200, 20.0, true),
+    // ext/triple-system 2026-06-24: raised 4 → 6 (=60) as part of the
+    // triple-extension SYSTEM. At the old floor of 4, singular_depth =
+    // (depth-1)/2 = 1, so the singularity VERIFICATION search ran at depth 1
+    // — too shallow to triple-extend (+2 plies) reliably. Floor 6 gives
+    // singular_depth >= 2, matching SF/Berserk/Plenty/Alexandria. SPSA may
+    // pull it back (min 40); the floor co-tunes with TEXT_MARGIN/SE_PLY_LIMIT.
+    (SE_DEPTH_10X, 60, 40, 200, 20.0, true),
+    // Global ply-based extension limiter (ext/triple-system). 4/6 refs that
+    // triple-extend ALSO cap selective depth at ply < 2-2.5·rootDepth — the
+    // governor that makes aggressive triple safe. ply*10 < SE_PLY_LIMIT_10X *
+    // root_depth; default 25 = 2.5× (Alexandria). Gates the whole SE block.
+    (SE_PLY_LIMIT_10X, 25, 10, 60, 4.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, false),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
@@ -325,6 +336,14 @@ tunables!(
     (DEXT_MARGIN_CORR, 21, 0, 64, 3.0, true),
     (DEXT_MARGIN_BASE, 34, -50, 150, 6.0, true),
     (DEXT_CAP, 14, 4, 32, 2.0, true),
+    // Triple-extension margin (ext/triple-system 2026-06-24). Triple builds on
+    // a double: a quiet TT move whose singular fail margin clears
+    // dext_margin + TEXT_MARGIN (a wider bar than double) extends a third ply.
+    // 6/6 references triple-extend; refs sit ~50-75 wider than double. Gated
+    // by the same DEXT_CAP counter; only fires at depth>=6 (the raised SE
+    // floor) so the singularity verdict has substance. Co-tunes with the
+    // dext margins, DEXT_CAP, SE_DEPTH, SE_PLY_LIMIT in the next SPSA round.
+    (TEXT_MARGIN, 80, 0, 300, 12.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
     // SEE gate on the quiet check bonus (SF movepick.cpp: check bonus only
     // applies when see_ge(m, -75)). Without it Coda orders losing check-sacs
@@ -3964,6 +3983,12 @@ fn negamax(
         if mv == tt_move
             && tt_move != NO_MOVE
             && ply > 0
+            // Global ply-based extension limiter (ext/triple-system): disable
+            // the whole SE block once selective ply runs far past the root
+            // iteration depth. ply*10 < SE_PLY_LIMIT_10X * root_depth (default
+            // 25 → ply < 2.5·root_depth, Alexandria form). The governor that
+            // makes aggressive triple extension safe.
+            && (ply as i32) * 10 < tp(&SE_PLY_LIMIT_10X) * info.root_depth
             && depth >= tp10(&SE_DEPTH_10X)
             // No !in_check gate: zero-engine-consensus carve-out removed
             // (audit T2.12). None of SF/Reckless/Obsidian/Berserk/Stormphrax
@@ -4047,7 +4072,20 @@ fn negamax(
                     if info.double_ext_count[ply_u] < tp(&DEXT_CAP) {
                         let de = (singular_score < singular_beta - dext_margin) as i32;
                         singular_extension += de;
-                        if de > 0 { info.stats.double_ext += 1; }
+                        if de > 0 {
+                            info.stats.double_ext += 1;
+                            // Triple extension (6/6 reference consensus,
+                            // ext/triple-system). Builds on a double: a quiet
+                            // TT move whose fail margin also clears the wider
+                            // TEXT_MARGIN is decisively singular → extend a
+                            // third ply. Quiet-only (Berserk/Obsidian/Plenty
+                            // gate); the raised SE floor (depth>=6) guarantees
+                            // singular_depth>=2 so the verdict has substance.
+                            let te = (is_tt_quiet
+                                && singular_score < singular_beta - dext_margin - tp(&TEXT_MARGIN)) as i32;
+                            singular_extension += te;
+                            if te > 0 { info.stats.double_ext += 1; }
+                        }
                     }
                 } else if tt_score_local >= beta {
                     // TT move fails high and alternatives competitive — strong reduce
