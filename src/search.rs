@@ -5276,6 +5276,75 @@ fn quiescence_with_depth(
         }
     }
 
+    // Quiet checks at the first QS ply (Obsidian/Berserk pattern). The
+    // qs/ttmove-tactical-only SPRT (#2221) regressed -6.6 — evidence that
+    // quiet tactical moves carry value in QS — so generate quiet *checks*
+    // explicitly here. Bounded to qs_depth 0 (Obsidian depth==0 / Berserk
+    // depth>=-1) so the tree stays small; only when not already cut off and
+    // not losing; SEE-gated (reuse QUIET_CHECK_SEE_MARGIN) so we don't sac.
+    if qs_depth == 0 && best_score < beta && best_score > -(MATE_SCORE - 100) {
+        let opp = flip_color(board.side_to_move);
+        let their_king = board.pieces[KING as usize] & board.colors[opp as usize];
+        if their_king != 0 {
+            let tk = their_king.trailing_zeros();
+            let occ = board.occupied();
+            let b_att = crate::attacks::bishop_attacks(tk, occ);
+            let r_att = crate::attacks::rook_attacks(tk, occ);
+            // From which square does each piece type give DIRECT check?
+            let check_from: [u64; 6] = [
+                crate::attacks::pawn_attacks(opp, tk),
+                crate::attacks::knight_attacks(tk),
+                b_att, r_att, b_att | r_att, 0,
+            ];
+            let qc_margin = tp(&QUIET_CHECK_SEE_MARGIN);
+            let quiets = crate::movegen::generate_quiets(board);
+            for qi in 0..quiets.len {
+                let mv = quiets.get(qi);
+                let from = move_from(mv);
+                let to = move_to(mv);
+                let pt = board.piece_type_at(from);
+                // Direct checks only; SEE-gated; legal.
+                if (pt as usize) >= 6 || (check_from[pt as usize] & (1u64 << to)) == 0 { continue; }
+                if !see_ge(board, mv, -qc_margin) { continue; }
+                if !board.is_legal(mv, qs_pinned, qs_checkers) { continue; }
+
+                let qs_dirty = if let Some(net) = info.nnue_net.as_deref() {
+                    build_dirty_piece(mv, board.side_to_move, flip_color(board.side_to_move), pt, NO_PIECE_TYPE, net)
+                } else { DirtyPiece::recompute() };
+                {
+                    let qs_idx = (ply as usize).min(MAX_PLY - 1);
+                    let qs_mp = board.piece_at(from);
+                    if qs_mp != NO_PIECE {
+                        info.moved_piece_stack[qs_idx] = go_piece(qs_mp) as u8;
+                        info.moved_to_stack[qs_idx] = to;
+                    }
+                }
+                if let Some(acc) = &mut info.nnue_acc { acc.push(qs_dirty); }
+                if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
+                if !board.make_move(mv) {
+                    if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                    if info.threat_stack.active { info.threat_stack.pop(); }
+                    continue;
+                }
+                if info.threat_stack.active { info.threat_stack.absorb_deltas(board); }
+                info.tt.prefetch(board.hash);
+                let score = -quiescence_with_depth(board, info, -beta, -alpha, ply + 1, qs_depth + 1);
+                board.unmake_move();
+                if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
+                if info.threat_stack.active { info.threat_stack.pop(); }
+
+                if score > best_score {
+                    best_score = score;
+                    best_move = mv;
+                }
+                if score > alpha {
+                    alpha = score;
+                    if score >= beta { break; }
+                }
+            }
+        }
+    }
+
     // Store in TT (skip if stopped — partial QS results corrupt TT).
     // Never EXACT — see the note at the evasion-path store above (audit T1.5).
     let store_score = score_to_tt(best_score, ply);
