@@ -201,6 +201,15 @@ tunables!(
     // singular_depth is too low to judge singularity reliably. Bumping
     // 4 → 6 first; ttPv add deferred to a follow-up if H1.
     (SE_DEPTH_10X, 40, 40, 200, 20.0, true),
+    // Global ply-based extension limiter (extensions audit 2026-06-24).
+    // 4/6 references gate the ENTIRE singular block off once the selective
+    // ply runs far past the root iteration depth — Berserk/Obsidian/Plenty
+    // at ply < 2·rootDepth, Alexandria at ply·2 < rootDepth·5 (2.5×). Coda
+    // had no such cap on single extensions (only the DEXT_CAP double counter),
+    // so extension chains could keep firing at very high selective depth.
+    // Fixed-point ×10; default 25 = 2.5× (Alexandria's looser value — trims
+    // only the most extreme runaway chains, minimizing lost-tactic downside).
+    (SE_PLY_LIMIT_10X, 25, 10, 60, 4.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, false),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
@@ -3961,6 +3970,11 @@ fn negamax(
         if mv == tt_move
             && tt_move != NO_MOVE
             && ply > 0
+            // Global ply-based extension limiter (4/6 ref consensus, audit
+            // 2026-06-24): disable the whole SE block once selective ply runs
+            // far past the root iteration depth. ply*10 < SE_PLY_LIMIT_10X *
+            // root_depth (default 25 → ply < 2.5·root_depth, Alexandria form).
+            && (ply as i32) * 10 < tp(&SE_PLY_LIMIT_10X) * info.root_depth
             && depth >= tp10(&SE_DEPTH_10X)
             // No !in_check gate: zero-engine-consensus carve-out removed
             // (audit T2.12). None of SF/Reckless/Obsidian/Berserk/Stormphrax
