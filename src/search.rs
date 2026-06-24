@@ -871,6 +871,8 @@ pub struct SearchInfo {
     reductions: [i32; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
     pub excluded_move: [Move; MAX_PLY + 1],
+    /// Next-ply cutoff count: how often child node produced early beta cutoffs. (LMR audit L2)
+    pub cutoff_count: [i32; MAX_PLY + 2],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
     double_ext_count: [i32; MAX_PLY + 1],
     /// Per-ply moved piece (go_piece index 1-12, 0=none). Set before make_move.
@@ -950,6 +952,7 @@ impl SearchInfo {
             static_evals: [0; MAX_PLY + 1],
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
+            cutoff_count: [0; MAX_PLY + 2],
             double_ext_count: [0; MAX_PLY + 1],
             moved_piece_stack: [0; MAX_PLY + 1],
             moved_to_stack: [0; MAX_PLY + 1],
@@ -2896,6 +2899,9 @@ fn negamax(
 ) -> i32 {
     let ply_u = ply as usize;
 
+    // Reset cutoff count two plies ahead (SF/Reckless pattern). (LMR audit L2)
+    if ply_u + 2 < MAX_PLY + 2 { info.cutoff_count[ply_u + 2] = 0; }
+
     // Reset PV length FIRST — before any early return below — so the parent's
     // PV propagation reads `pv_len[ply_u+1] == 0` for nodes that take a
     // short-circuit path (draw, MAX_PLY, mate-dist). Without this, a child
@@ -4265,6 +4271,11 @@ fn negamax(
                     reduction -= 1;
                 }
 
+                // Next-ply cutoff count reduction (SF/Reckless). (LMR audit L2)
+                if ply_u + 1 < MAX_PLY + 2 && info.cutoff_count[ply_u + 1] > 2 {
+                    reduction += 1;
+                }
+
                 // Reduce more when TT move is a capture
                 if tt_move_noisy {
                     reduction += 1;
@@ -4564,6 +4575,7 @@ fn negamax(
 
                 if alpha >= beta {
                     info.stats.beta_cutoffs += 1;
+                    if ply_u > 0 { info.cutoff_count[ply_u] += 1; } // LMR audit L2
                     if move_count == 1 { info.stats.first_move_cutoffs += 1; }
                     info.stats.cutoff_movecount_sum += move_count as u64;
                     info.stats.cutoff_movecount_sq_sum += (move_count as u64) * (move_count as u64);
