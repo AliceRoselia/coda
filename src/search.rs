@@ -4248,8 +4248,9 @@ fn negamax(
                     reduction -= 1;
                 }
 
-                // Reduce more at expected cut nodes (zero window, not first move)
-                if !is_pv && move_count > 1 {
+                // Reduce more at expected cut nodes. Use actual cut_node bool not
+                // !is_pv (which includes all-nodes too). (LMR audit L4/L6 simplified)
+                if cut_node {
                     reduction += 1;
                 }
 
