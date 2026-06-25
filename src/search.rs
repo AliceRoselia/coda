@@ -222,14 +222,14 @@ tunables!(
     // improving positions can use a lower verification beta, while
     // non-improving nodes keep the safer base margin. Default 117-27=90cp
     // when improving, matching the promising low-margin STC signal.
-    (PROBCUT_MARGIN_IMP, 34, 0, 120, 8.0, true),
+    (PROBCUT_MARGIN_IMP, 37, 0, 120, 8.0, true),
     // Root-depth-aware conservative ProbCut:
     // #2021 found PROBCUT_MARGIN=170 / MIN_DEPTH_10X=45 wins at STC,
     // while #2022 rejected it at LTC. Add that conservative offset at
     // shallow root depths, then fade back to current main as root depth grows.
     (PROBCUT_ROOT_THRESH, 17, 8, 28, 1.5, true),
     (PROBCUT_ROOT_FADE, 4, 1, 12, 1.0, true),
-    (PROBCUT_ROOT_MARGIN, 54, 0, 120, 8.0, true),
+    (PROBCUT_ROOT_MARGIN, 56, 0, 120, 8.0, true),
     (HINDSIGHT_THRESH, 175, 50, 400, 17.5, true),
     (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
     (QS_DELTA_MARGIN, 358, 100, 500, 20.0, true),
