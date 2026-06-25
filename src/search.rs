@@ -206,12 +206,12 @@ tunables!(
     // — too shallow to triple-extend (+2 plies) reliably. Floor 6 gives
     // singular_depth >= 2, matching SF/Berserk/Plenty/Alexandria. SPSA may
     // pull it back (min 40); the floor co-tunes with TEXT_MARGIN/SE_PLY_LIMIT.
-    (SE_DEPTH_10X, 60, 40, 200, 20.0, true),
+    (SE_DEPTH_10X, 40, 40, 200, 20.0, true),
     // Global ply-based extension limiter (ext/triple-system). 4/6 refs that
     // triple-extend ALSO cap selective depth at ply < 2-2.5·rootDepth — the
     // governor that makes aggressive triple safe. ply*10 < SE_PLY_LIMIT_10X *
     // root_depth; default 25 = 2.5× (Alexandria). Gates the whole SE block.
-    (SE_PLY_LIMIT_10X, 25, 10, 60, 4.0, true),
+    (SE_PLY_LIMIT_10X, 28, 10, 60, 4.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, false),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
@@ -331,10 +331,10 @@ tunables!(
     // (#787 H0, SPSA #792 no basin) showed signal-not-there for Coda's
     // regime; bundling it into #815 dragged the result negative. Tested
     // alone in this branch.
-    (DEXT_MARGIN_PV, 164, 50, 400, 15.0, true),
-    (DEXT_MARGIN_QUIET, 15, 0, 100, 4.0, true),
-    (DEXT_MARGIN_CORR, 21, 0, 64, 3.0, true),
-    (DEXT_MARGIN_BASE, 34, -50, 150, 6.0, true),
+    (DEXT_MARGIN_PV, 171, 50, 400, 15.0, true),
+    (DEXT_MARGIN_QUIET, 19, 0, 100, 4.0, true),
+    (DEXT_MARGIN_CORR, 20, 0, 64, 3.0, true),
+    (DEXT_MARGIN_BASE, 38, -50, 150, 6.0, true),
     (DEXT_CAP, 14, 4, 32, 2.0, true),
     // Triple-extension margin (ext/triple-system 2026-06-24). Triple builds on
     // a double: a quiet TT move whose singular fail margin clears
@@ -343,7 +343,7 @@ tunables!(
     // by the same DEXT_CAP counter; only fires at depth>=6 (the raised SE
     // floor) so the singularity verdict has substance. Co-tunes with the
     // dext margins, DEXT_CAP, SE_DEPTH, SE_PLY_LIMIT in the next SPSA round.
-    (TEXT_MARGIN, 80, 0, 300, 12.0, true),
+    (TEXT_MARGIN, 78, 0, 300, 12.0, true),
     (QUIET_CHECK_BONUS, 14805, 2000, 30000, 1400.0, false),
     // SEE gate on the quiet check bonus (SF movepick.cpp: check bonus only
     // applies when see_ge(m, -75)). Without it Coda orders losing check-sacs
