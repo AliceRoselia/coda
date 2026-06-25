@@ -93,12 +93,12 @@ tunables!(
     //   NMP_UNDEFENDED_MAX float-converged at 0.6 (int rounds to 1, no
     //     change); two consecutive tunes have drifted this toward feature-
     //     disable. Candidate for ablation SPRT (set to 0).
-    (NMP_BASE_R_10X, 76, 20, 80, 15.0, true),
+    (NMP_BASE_R_10X, 73, 20, 80, 15.0, true),
     // Ceiling lifted from 60 → 200 (audit 2026-05-20): SPSA at 55, 90%
     // from min, only ~9% headroom. Symmetric to a floor pin — gradient
     // clamped at the top. Lifting lets SPSA find the true optimum.
     (NMP_DEPTH_DIV_10X, 66, 10, 200, 15.0, true),
-    (NMP_EVAL_DIV, 122, 50, 400, 17.5, true),
+    (NMP_EVAL_DIV, 125, 50, 400, 17.5, true),
     (NMP_EVAL_MAX_10X, 28, 10, 60, 5.0, true),
     // Lifted 74 → 120 (eff 8 → 12, toward consensus 14-16): at 74 the verify
     // gate sat below the old min-depth gate, so 100% of NMP cutoffs paid a
@@ -135,12 +135,12 @@ tunables!(
     // Futility margin widened after the pruning audit: 80/110 H1'd at STC
     // (#2018 +3.5) and was flat at LTC (#2019), with focused SPSA #2020
     // converging back to 81.5/109.0. Keep depth/threat gates unchanged.
-    (FUT_BASE, 75, 0, 200, 9.0, true),
+    (FUT_BASE, 79, 0, 200, 9.0, true),
     (FUT_PER_DEPTH, 99, 40, 250, 10.5, true),
     (FUT_LMR_DEPTH, 14, 6, 24, 2.0, true),
     // HIST_PRUNE_DEPTH_10X / HIST_PRUNE_MULT removed 2026-06-02 — see hist-prune
     // removal block in main negamax body for rationale (three H0 SPRTs).
-    (SEE_QUIET_MULT, 30, 5, 80, 3.75, true),
+    (SEE_QUIET_MULT, 28, 5, 80, 3.75, true),
     // Low-increment TM multiplier ceiling (2026-06-18). The factor product
     // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
     // clamped for no_inc; at increments that are SMALL RELATIVE TO THE CLOCK
