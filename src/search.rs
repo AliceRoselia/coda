@@ -3727,8 +3727,13 @@ fn negamax(
         && beta.abs() < MATE_SCORE - 100  // skip for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
         && !probcut_tt_noshot  // TT says no chance
-        && king_zone_pressure < tp10(&PROBCUT_KING_ZONE_MAX_10X)  // A3: skip in high-threat positions
-        && !unstable  // Skip ProbCut in eval-unstable positions (eval can't be trusted)
+        // P2 ABLATION (ProbCut/Multicut audit 2026-06-25): remove the two
+        // Coda-unique ProbCut suppression gates — king-zone pressure (threats
+        // signal) and eval-unstable. Both were SPRT-validated when added; this
+        // re-checks they still hold after subsequent search/eval changes. No
+        // reference engine has either gate. If H0, both confirmed load-bearing.
+        // && king_zone_pressure < tp10(&PROBCUT_KING_ZONE_MAX_10X)
+        // && !unstable
         && FEAT_PROBCUT.load(Ordering::Relaxed)
     {
         // SEE threshold: only consider captures that gain enough material
