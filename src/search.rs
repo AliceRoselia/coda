@@ -3604,7 +3604,10 @@ fn negamax(
         && ply >= info.nmp_min_ply  // Ply barrier: verification subtree cannot re-trigger NMP (audit B1)
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
-        && cut_node  // Reckless gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
+        && cut_node  // Reckless gate: only attempt NMP at expected fail-high nodes
+        // Skip NMP when TT has a Lower-bound capture entry: position is tactically sharp.
+        // Reckless skips NMP when TT move is a capture of knight or better. (NMP audit N5)
+        && !(tt_hit && tt_entry.flag == TT_FLAG_LOWER && tt_move_noisy)
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
