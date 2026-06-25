@@ -106,7 +106,7 @@ tunables!(
     // verify=120 alone as neutral/slightly positive, supporting this direction.
     // With min-depth de-gated to 3, depths 3-11 now get the classic unverified
     // cutoff; 12+ verify (zugzwang guard).
-    (NMP_VERIFY_DEPTH_10X, 104, 40, 200, 20.0, true),
+    (NMP_VERIFY_DEPTH_10X, 150, 40, 200, 20.0, true), // raised from 104(=10) toward peers' 140-160(=14-16) (NMP audit N3)
     (RFP_DEPTH, 17, 2, 20, 2.0, true),
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
     (RFP_MARGIN_IMP, 33, 0, 150, 6.0, true),
