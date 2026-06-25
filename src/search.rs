@@ -4012,6 +4012,22 @@ fn negamax(
                     // multicut in mate shapes loses Elo), keep FIRING and fix
                     // only the returned value (audit T1.4).
                     info.stats.multicut += 1;
+                    // Multicut correction-history update (PlentyChess pattern,
+                    // ProbCut/Multicut audit 2026-06-25). The excluded-move
+                    // search reached >= beta, proving the static eval was too
+                    // pessimistic — the same signal the node-end corrhist
+                    // update uses, but available here where we prune before
+                    // reaching it. Gated !in_check (no valid static eval in
+                    // check), singular_score > static_eval, and non-decisive
+                    // (don't feed mate-range errors). Weighted by the reduced
+                    // singular_depth so the bonus stays conservative.
+                    if !in_check && !is_decisive(singular_score) && singular_score > static_eval {
+                        // Conservative weight: cap the depth term (PlentyChess
+                        // clamps this update to a quarter of the normal cap; the
+                        // singular search is only (depth-1)/2 deep, so feeding
+                        // full depth would over-weight a reduced-depth verdict).
+                        update_correction_history(info, board, singular_score, scaled_eval, singular_depth.min(3));
+                    }
                     if is_decisive(singular_score) {
                         return singular_beta;
                     }
