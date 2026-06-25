@@ -3732,7 +3732,16 @@ fn negamax(
         && FEAT_PROBCUT.load(Ordering::Relaxed)
     {
         // SEE threshold: only consider captures that gain enough material
-        let see_threshold = (probcut_beta - static_eval).max(0);
+        // Convert the eval-scale gap to MATERIAL units before the SEE filter.
+        // Coda's NNUE eval runs ~2.15x the material/SEE scale near the search
+        // operating range — SEE_MATERIAL_SCALE, the same bridge QS delta-pruning
+        // uses (see_value * SEE_MATERIAL_SCALE/100 to lift material into eval
+        // units). ProbCut previously fed the raw eval gap to see_ge (material,
+        // pawn=100), making the capture filter ~2.15x too strict; SPSA had
+        // compensated by driving PROBCUT_MARGIN abnormally low. Dividing by the
+        // bridge calibrates the filter correctly AND fixes its scaling vs
+        // static_eval (a single margin cannot). Needs a PROBCUT_MARGIN retune.
+        let see_threshold = ((probcut_beta - static_eval) * 100 / tp(&SEE_MATERIAL_SCALE).max(1)).max(0);
         let pc_depth = depth - 4;
         let pc_tt_move = if tt_move_noisy
             && is_pseudo_legal(board, tt_move)
