@@ -4015,6 +4015,35 @@ fn negamax(
                     // multicut in mate shapes loses Elo), keep FIRING and fix
                     // only the returned value (audit T1.4).
                     info.stats.multicut += 1;
+                    // P3 (SF pattern, ProbCut/Multicut audit 2026-06-25): on a
+                    // multicut the TT move was searched-AROUND and the
+                    // alternatives also cut — it was NOT uniquely best, i.e. the
+                    // TT over-rated it. SF penalizes ttMoveHistory here
+                    // (<< -442 - 108*depth). Coda has no dedicated ttMoveHistory
+                    // table, so apply the standard malus to the TT move's own
+                    // history (main for quiet, capture for noisy).
+                    let mc_piece = board.piece_at(move_from(tt_move));
+                    let mc_is_cap = board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
+                        || move_flags(tt_move) == FLAG_EN_PASSANT;
+                    if mc_piece != NO_PIECE {
+                        if !mc_is_cap {
+                            History::update_history(
+                                info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
+                                -history_malus(depth),
+                            );
+                        } else {
+                            let cpt_pt = board.piece_type_at(move_to(tt_move));
+                            let ct = if move_flags(tt_move) == FLAG_EN_PASSANT {
+                                captured_type(PAWN)
+                            } else if cpt_pt != NO_PIECE_TYPE {
+                                captured_type(cpt_pt)
+                            } else { 0 };
+                            History::update_cont_history(
+                                &mut info.history.capture[go_piece(mc_piece)][move_to(tt_move) as usize][ct],
+                                -capture_history_malus(depth),
+                            );
+                        }
+                    }
                     if is_decisive(singular_score) {
                         return singular_beta;
                     }
