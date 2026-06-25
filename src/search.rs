@@ -4139,6 +4139,11 @@ fn negamax(
             && !is_cap && !is_promo
             && (depth >= 4 || !board.gives_direct_check(mv))
             && best_score > -(MATE_SCORE - 100)
+            // Non-pawn-material guard (SF/Obsidian/PlentyChess consensus): don't
+            // count-prune late quiets in pawn-only/few-piece endgames where king
+            // and pawn quiets are the critical resources. Coda already computes
+            // stm_non_pawn for NMP; the shallow pruners previously lacked it.
+            && stm_non_pawn != 0
             && FEAT_LMP.load(Ordering::Relaxed)
         {
             let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
