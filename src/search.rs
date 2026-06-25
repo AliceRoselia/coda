@@ -206,8 +206,9 @@ tunables!(
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
     // use LMP_BASE=3 with the same `(BASE + d²)/(2 - improving)` formula.
     // Coda's 9 is 3× consensus at d=1: allows 5-10 quiets vs SF's 2-4.
-    // Bisecting 9 → 5 first.
-    (LMP_BASE, 5, 1, 15, 2.0, true),
+    // Bisecting 9 → 5 first; LMP audit 2026-06-25 takes 5 → 3 (full SF/Obsidian
+    // consensus) paired with the `>` → `>=` compare change below.
+    (LMP_BASE, 3, 1, 15, 2.0, true),
     (LMP_DEPTH, 8, 4, 20, 2.0, true),
     // Root-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
     // reduce LESS as the OVERALL search depth grows past LMR_ROOT_THRESH
@@ -4142,7 +4143,8 @@ fn negamax(
             && FEAT_LMP.load(Ordering::Relaxed)
         {
             let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
-            if move_count > lmp_limit {
+            // `>=` (SF/Reckless/Berserk/Obsidian), tightened from Coda's `>`.
+            if move_count >= lmp_limit {
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
                 picker.skip_remaining_quiets();
