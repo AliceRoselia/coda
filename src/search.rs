@@ -209,6 +209,14 @@ tunables!(
     // Bisecting 9 → 5 first.
     (LMP_BASE, 5, 1, 15, 2.0, true),
     (LMP_DEPTH, 8, 4, 20, 2.0, true),
+    // Improving-dependent quadratic slope (Berserk/Alexandria shape). The flat
+    // `/(2-improving)` divisor gives improving a constant 2x budget at every
+    // depth; the two table engines instead give the improving row a steeper d²
+    // coefficient so its budget grows faster with depth. LMP_IMP_MULT is x10:
+    // default 10 reproduces the current improving limit (BASE + d²) exactly, so
+    // the branch is bench-identical at default; SPSA can raise it for a steeper
+    // improving slope. Non-improving keeps (BASE + d²)/2.
+    (LMP_IMP_MULT, 10, 6, 40, 2.0, true),
     // Root-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
     // reduce LESS as the OVERALL search depth grows past LMR_ROOT_THRESH
     // (diminishing returns — at LTC the reduced re-search is cheap vs the
@@ -4141,7 +4149,14 @@ fn negamax(
             && best_score > -(MATE_SCORE - 100)
             && FEAT_LMP.load(Ordering::Relaxed)
         {
-            let lmp_limit = (tp(&LMP_BASE) + depth * depth) / (2 - improving as i32);
+            // Improving-dependent quadratic (Berserk/Alexandria shape):
+            //   improving:     BASE + d² · LMP_IMP_MULT/10   (default 10 ≡ BASE+d²)
+            //   not improving: (BASE + d²) / 2
+            let lmp_limit = if improving {
+                tp(&LMP_BASE) + depth * depth * tp(&LMP_IMP_MULT) / 10
+            } else {
+                (tp(&LMP_BASE) + depth * depth) / 2
+            };
             if move_count > lmp_limit {
                 info.stats.lmp_prunes += 1;
                 skip_quiets = true;
