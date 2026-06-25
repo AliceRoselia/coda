@@ -93,11 +93,11 @@ tunables!(
     //   NMP_UNDEFENDED_MAX float-converged at 0.6 (int rounds to 1, no
     //     change); two consecutive tunes have drifted this toward feature-
     //     disable. Candidate for ablation SPRT (set to 0).
-    (NMP_BASE_R_10X, 76, 20, 80, 15.0, true),
+    (NMP_BASE_R_10X, 50, 20, 80, 5.0, true),  // lowered from 76: with QS floor, base ~5 matches peers (NMP audit N1)
     // Ceiling lifted from 60 → 200 (audit 2026-05-20): SPSA at 55, 90%
     // from min, only ~9% headroom. Symmetric to a floor pin — gradient
     // clamped at the top. Lifting lets SPSA find the true optimum.
-    (NMP_DEPTH_DIV_10X, 66, 10, 200, 15.0, true),
+    (NMP_DEPTH_DIV_10X, 33, 10, 200, 3.75, true), // tightened: depth/3.3 closer to peers depth/3 (NMP audit N1)
     (NMP_EVAL_DIV, 122, 50, 400, 17.5, true),
     (NMP_EVAL_MAX_10X, 28, 10, 60, 5.0, true),
     // Lifted 74 → 120 (eff 8 → 12, toward consensus 14-16): at 74 the verify
@@ -3570,7 +3570,7 @@ fn negamax(
                         let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp10(&NMP_EVAL_MAX_10X));
                         r += eval_r;
                     }
-                    if depth - r < 1 { r = depth - 1; }
+                    if depth - r < 0 { r = depth; }  // allow QS
                     info.rfp_audit_active = true;
                     board.make_null_move();
                     if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::incremental(&[])); }
@@ -3619,9 +3619,11 @@ fn negamax(
             let eval_r = ((static_eval - beta) / tp(&NMP_EVAL_DIV)).min(tp10(&NMP_EVAL_MAX_10X));
             r += eval_r;
         }
-        // Clamp so null-move search is at least depth 1
-        if depth - r < 1 {
-            r = depth - 1;
+        // Allow QS null searches (depth-r can be 0 → QS). Peers (SF, Reckless, Berserk)
+        // all do QS null searches at shallow depth. Coda previously clamped to depth 1,
+        // causing SPSA to raise BASE_R to 8 to always force the clamp. (NMP audit N1)
+        if depth - r < 0 {
+            r = depth;
         }
 
         board.make_null_move();
