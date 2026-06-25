@@ -107,6 +107,9 @@ tunables!(
     // With min-depth de-gated to 3, depths 3-11 now get the classic unverified
     // cutoff; 12+ verify (zugzwang guard).
     (NMP_VERIFY_DEPTH_10X, 104, 40, 200, 20.0, true),
+    // Depth bonus in eval gate: allow NMP when eval slightly below beta at depth.
+    // SF: gate relaxes by 16*depth; Obsidian: +22*depth. (NMP audit N4)
+    (NMP_DEPTH_GATE_K, 16, 0, 50, 3.0, true),
     (RFP_DEPTH, 17, 2, 20, 2.0, true),
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
     (RFP_MARGIN_IMP, 33, 0, 150, 6.0, true),
@@ -3599,7 +3602,7 @@ fn negamax(
         + (undefended_count - (tp10(&NMP_UNDEFENDED_MAX_10X) - 1)).max(0) * 128;
 
     if depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0 && stm_non_pawn != 0
-        && beta - alpha == 1 && static_eval >= beta + nmp_threat_margin
+        && beta - alpha == 1 && static_eval + depth * tp(&NMP_DEPTH_GATE_K) >= beta + nmp_threat_margin  // NMP audit N4
         && !prev_was_null  // Prevent consecutive null moves
         && ply >= info.nmp_min_ply  // Ply barrier: verification subtree cannot re-trigger NMP (audit B1)
         && beta.abs() < MATE_SCORE - 100  // Skip NMP for mate/TB scores
