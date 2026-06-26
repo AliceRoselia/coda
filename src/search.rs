@@ -4169,6 +4169,9 @@ fn negamax(
             // Direct-check carve-out: don't prune moves that give direct check
             // (Reckless #410 +1.62 STC).
             if futility_value <= alpha && main_hist < 12000 && !board.gives_direct_check(mv) {
+                if futility_value > best_score {
+                    best_score = futility_value;
+                }
                 info.stats.futility_prunes += 1;
                 skip_quiets = true;
                 picker.skip_remaining_quiets();
@@ -4188,6 +4191,10 @@ fn negamax(
             && !see_ge(board, mv, 0)
             && !board.gives_direct_check(mv)
         {
+            let bad_noisy_value = static_eval + depth * tp(&BAD_NOISY_MARGIN);
+            if bad_noisy_value > best_score {
+                best_score = bad_noisy_value;
+            }
             continue;
         }
 
