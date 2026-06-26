@@ -3296,14 +3296,18 @@ fn negamax(
                     // P3: downgrade stored mate if 50mr will fire before mate.
                     return downgrade_50mr_mate(tt_score, ply, board.halfmove);
                 }
-            } else if tt_depth >= depth - 1
+            } else if tt_depth >= depth - 2
                 && beta - alpha_orig == 1
                 && tt_score > -(MATE_SCORE - 100) && tt_score < MATE_SCORE - 100
                 && FEAT_TT_NEARMISS.load(Ordering::Relaxed)
                 && halfmove_ok
             {
-                // TT near-miss cutoffs: accept entries 1 ply short with a score margin
-                let margin = 80;
+                // TT near-miss cutoffs (Cinder FHP idea): accept entries up to 2
+                // plies short with a DEPTH-GAP-GRADED score margin — a deeper gap
+                // (less reliable bound) demands a larger margin. gap==1 keeps the
+                // original fixed 80cp behavior exactly; gap==2 is the new accept.
+                let gap = depth - tt_depth; // 1 or 2
+                let margin = 80 + 55 * (gap - 1);
                 if tt_entry.flag == TT_FLAG_LOWER && tt_score - margin >= beta {
                     info.stats.tt_near_miss += 1;
                     return tt_score - margin;
