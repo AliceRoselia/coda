@@ -3631,6 +3631,9 @@ fn negamax(
         info.stats.nmp_attempts += 1;
         // Adaptive reduction: scales with depth and eval margin above beta
         let mut r = tp10(&NMP_BASE_R_10X) + depth / tp10(&NMP_DEPTH_DIV_10X);
+        // Extra full ply of null reduction when improving (Reckless 6f7ccc60):
+        // a rising eval makes the null move even more likely to hold.
+        if improving { r += 1; }
         // Reduce more after captures: opponent just captured, null move more likely to work
         // (Consensus: SF/Obsidian increase R after captures, not decrease)
         if !board.undo_stack.is_empty() && board.undo_stack[board.undo_stack.len() - 1].captured != NO_PIECE_TYPE {
