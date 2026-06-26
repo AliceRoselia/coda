@@ -4811,10 +4811,17 @@ fn negamax(
     // Training on noisy bestmoves pollutes the tables. Matches Stockfish
     // (search.cpp:1495: `!(bestMove && pos.capture(bestMove))`) and Reckless
     // (search.rs:1085: `|| best_move.is_noisy()`).
-    let best_move_noisy = best_move != NO_MOVE && {
+    let best_move_good_noisy = best_move != NO_MOVE && {
         board.piece_type_at(move_to(best_move)) != NO_PIECE_TYPE
             || move_flags(best_move) == FLAG_EN_PASSANT
             || is_promotion(best_move)
+    } && {
+        // Viridithas-style carve-out: skip corrhist training when the best
+        // move is a SEE-good tactical move, because the score delta is then
+        // dominated by the tactic. SEE-bad noisy best moves are allowed to
+        // train correction history; those are exactly the cases where static
+        // eval was probably over-optimistic about the current position.
+        is_promotion(best_move) || see_ge(board, best_move, 0)
     };
     // Correction history update: train on BOTH directions of error.
     // Previously gated on `best_score > alpha_orig` (fail-high only), which
@@ -4828,7 +4835,7 @@ fn negamax(
     let corrhist_upper_ok = best_score <= alpha_orig  // fail-low: upper bound
         && best_score < scaled_eval;                   // eval was over-optimistic
     if !in_check
-        && !best_move_noisy
+        && !best_move_good_noisy
         && info.excluded_move[ply_u] == NO_MOVE
         && (corrhist_lower_ok || corrhist_upper_ok)
         // T2.3: is_decisive (mate OR TB range)
