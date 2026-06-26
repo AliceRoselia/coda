@@ -888,8 +888,8 @@ pub struct SearchInfo {
     pawn_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
     /// Non-pawn correction history: [stm][color][nonpawn_hash % size]
     np_corr: Box<[[[i32; CORR_HIST_SIZE]; 2]; 2]>,
-    /// Continuation correction history: [piece][to_square]
-    cont_corr: Box<[[i32; 64]; 12]>,
+    /// Continuation correction history: [is_check][piece][to_square]
+    cont_corr: Box<[[[i32; 64]; 12]; 2]>,
     pub nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
     pub nnue_acc: Option<crate::nnue::NNUEAccumulator>,
     pub threat_stack: crate::threat_accum::ThreatStack,
@@ -1145,7 +1145,7 @@ impl SearchInfo {
     pub fn clear_correction_history(&mut self) {
         for row in self.pawn_corr.iter_mut() { row.fill(0); }
         for mat in self.np_corr.iter_mut() { for row in mat.iter_mut() { row.fill(0); } }
-        for row in self.cont_corr.iter_mut() { row.fill(0); }
+        for chk in self.cont_corr.iter_mut() { for row in chk.iter_mut() { row.fill(0); } }
     }
 
     pub fn clear_pawn_hist(&mut self) {
@@ -1352,7 +1352,7 @@ pub fn build_dirty_piece(
 /// drifting (large |corr|), reduce extension thresholds so we
 /// extend less on uncertain evals (Reckless pattern).
 #[inline]
-fn correction_value(info: &SearchInfo, board: &Board) -> i32 {
+fn correction_value(info: &SearchInfo, board: &Board, in_check: bool) -> i32 {
     let stm = board.side_to_move as usize;
     let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
     let pawn_corr = info.pawn_corr[stm][pawn_idx] as i64;
@@ -1368,7 +1368,7 @@ fn correction_value(info: &SearchInfo, board: &Board) -> i32 {
             if pt < 6 {
                 let piece = make_piece(flip_color(board.side_to_move), pt);
                 if (piece as usize) < 12 {
-                    info.cont_corr[piece as usize][to as usize] as i64
+                    info.cont_corr[in_check as usize][piece as usize][to as usize] as i64
                 } else { 0 }
             } else { 0 }
         } else { 0 }
@@ -1380,7 +1380,7 @@ fn correction_value(info: &SearchInfo, board: &Board) -> i32 {
 
 /// Apply correction history to raw static eval.
 #[inline]
-fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
+fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32, in_check: bool) -> i32 {
     let stm = board.side_to_move as usize;
 
     // Pawn correction
@@ -1402,7 +1402,7 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
             if pt < 6 {
                 let piece = make_piece(flip_color(board.side_to_move), pt);
                 if (piece as usize) < 12 {
-                    info.cont_corr[piece as usize][to as usize] as i64
+                    info.cont_corr[in_check as usize][piece as usize][to as usize] as i64
                 } else { 0 }
             } else { 0 }
         } else { 0 }
@@ -1427,7 +1427,7 @@ fn update_corr_entry(entry: &mut i32, scaled_err: i32, cap_div_10x: i32) {
 }
 
 /// Update all correction history tables.
-fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, raw_eval: i32, depth: i32) {
+fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score: i32, raw_eval: i32, depth: i32, in_check: bool) {
     // T2.4 consensus shape: feed the FULL error scaled by depth, clamping
     // only the resulting bonus (at the gravity cap, in update_corr_entry).
     // The old ±3cp err pre-clamp (CORR_HIST_ERR_MAX) made corrhist a
@@ -1460,7 +1460,7 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
             if pt < 6 {
                 let piece = make_piece(flip_color(board.side_to_move), pt);
                 if (piece as usize) < 12 {
-                    update_corr_entry(&mut info.cont_corr[piece as usize][to as usize], scaled_err, cap_div);
+                    update_corr_entry(&mut info.cont_corr[in_check as usize][piece as usize][to as usize], scaled_err, cap_div);
                 }
             }
         }
@@ -3385,7 +3385,7 @@ fn negamax(
         }
         scaled_eval = apply_halfmove_scale(raw_eval, board.halfmove);
         // Apply correction history to the halfmove-scaled value
-        static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, scaled_eval) } else { scaled_eval };
+        static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, scaled_eval, in_check) } else { scaled_eval };
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = static_eval;
         }
@@ -4087,7 +4087,7 @@ fn negamax(
                     // BASE term puts us in a sensible starting basin; SPSA
                     // explores the equilibrium where pruning compensates.
                     let is_tt_quiet = !is_cap && !is_promo;
-                    let corr_abs = correction_value(info, board).abs();
+                    let corr_abs = correction_value(info, board, in_check).abs();
                     let dext_margin = tp(&DEXT_MARGIN_PV) * is_pv as i32
                                     - tp(&DEXT_MARGIN_QUIET) * is_tt_quiet as i32
                                     - tp(&DEXT_MARGIN_CORR) * corr_abs / 128
@@ -4841,7 +4841,7 @@ fn negamax(
         // evals), so the err term `best_score - scaled_eval` captures the
         // positional miscalibration we want corrhist to learn — not the
         // halfmove decay, which is already priced into best_score.
-        update_correction_history(info, board, best_score, scaled_eval, depth);
+        update_correction_history(info, board, best_score, scaled_eval, depth, in_check);
     }
 
     // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes.
@@ -5167,7 +5167,7 @@ fn quiescence_with_depth(
     // (raw_stand_pat) — correct-on-read discipline is unchanged.
     let scaled_stand_pat = apply_halfmove_scale(raw_stand_pat, board.halfmove);
     let stand_pat = if FEAT_CORRECTION.load(Ordering::Relaxed) {
-        corrected_eval(info, board, scaled_stand_pat)
+        corrected_eval(info, board, scaled_stand_pat, qs_in_check)
     } else {
         scaled_stand_pat
     };
@@ -5859,11 +5859,11 @@ mod tests {
 
         let raw = 100;
         // Before any update: corrected == raw (all tables zero).
-        assert_eq!(corrected_eval(&info, &board, raw), raw,
+        assert_eq!(corrected_eval(&info, &board, raw, false), raw,
             "zero tables must give corrected == raw");
 
         // === Part 1: direct entry check after one update ===
-        update_correction_history(&mut info, &board, raw + 400, raw, 20);
+        update_correction_history(&mut info, &board, raw + 400, raw, 20, false);
 
         let stm = board.side_to_move as usize;
         let pawn_idx = (board.pawn_hash as usize) & (CORR_HIST_SIZE - 1);
@@ -5886,11 +5886,11 @@ mod tests {
         // is enough to push entries near steady-state given the small
         // err clamp (CORR_HIST_ERR_MAX_10X=10, effective 1).
         for _ in 0..50 {
-            update_correction_history(&mut info, &board, raw + 400, raw, 20);
+            update_correction_history(&mut info, &board, raw + 400, raw, 20, false);
         }
 
         // === Part 2: corrected_eval drift ===
-        let corrected_after = corrected_eval(&info, &board, raw);
+        let corrected_after = corrected_eval(&info, &board, raw, false);
         assert!(
             corrected_after > raw,
             "after sustained positive-err updates, corrected eval must rise: \
@@ -5901,7 +5901,7 @@ mod tests {
         // Reference position: pawn_hash / non_pawn_key / minor / major
         // are entirely different from the test fen, so any match would
         // be a 1/16384 random collision — extremely unlikely.
-        let other_corrected = corrected_eval(&info, &other, raw);
+        let other_corrected = corrected_eval(&info, &other, raw, false);
         let drift = (other_corrected - raw).abs();
         assert!(drift < 100,
             "unrelated position should see near-zero drift, got {} (raw {})",
