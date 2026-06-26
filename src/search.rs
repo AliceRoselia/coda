@@ -299,6 +299,11 @@ tunables!(
     // Was 47 (tp10→5). Now consumed as FIXED-POINT (stored/10) so SPSA's
     // sub-integer precision is preserved. Default 50 → eff 5.0 ≡ old behavior.
     (NFH_DIV_10X, 50, 20, 120, 10.0, false),
+    // Rank-decayed quiet malus (Reckless 5e669a65). Penalty for a failed quiet
+    // is scaled down by its position in the searched-quiets list — late,
+    // never-plausible quiets get progressively smaller penalties (~1/i²).
+    // denom = 1024 + HIST_MALUS_DECAY*i; scale = 1024²/(denom²/1024). i=0 → full.
+    (HIST_MALUS_DECAY, 45, 0, 200, 12.0, true),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
@@ -4667,9 +4672,14 @@ fn negamax(
                             let q = quiets_tried[i];
                             let qf = move_from(q);
                             let qt = move_to(q);
+                            // Reckless 5e669a65: decay the malus by the quiet's
+                            // ordering rank (i) — late, never-plausible quiets get
+                            // progressively smaller penalties (~1/i²). i=0 = full.
+                            let mdenom = 1024 + tp(&HIST_MALUS_DECAY) * i as i32;
+                            let dmalus = malus * (1024 * 1024 / (mdenom * mdenom / 1024).max(1)) / 1024;
                             History::update_history(
                                 info.history.main_entry(qf, qt, enemy_attacks),
-                                -malus,
+                                -dmalus,
                             );
 
                             // Penalize continuation history at plies 1, 2, 4, 6.
@@ -4685,8 +4695,9 @@ fn negamax(
                                             let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                             let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                             if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
-                                                // B1: uniform penalty (see bonus site above).
-                                                let ch_pen = -malus;
+                                                // Rank-decayed penalty (Reckless 5e669a65),
+                                                // same scale as the main-history malus above.
+                                                let ch_pen = -dmalus;
                                                 let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize] as i32;
                                                 let base = cur_cont + q_main_score / 2;
                                                 History::update_cont_history_with_base(
