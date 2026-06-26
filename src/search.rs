@@ -4285,6 +4285,13 @@ fn negamax(
                     reduction += 1;
                 }
 
+                // Reduce late moves more when beta is already a winning score
+                // (Reckless ae986dff): at a mate-proving node the first move is
+                // expected to cut, so later moves are even less likely to matter.
+                if beta >= MATE_SCORE - 100 {
+                    reduction += 1;
+                }
+
                 // Reduce later moves more once this node has already raised
                 // alpha (Viridithas #431). Fixed-point ×10. At cut nodes this is
                 // 0 (they break on the first fail-high before alpha rises), so it
