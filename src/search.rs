@@ -4416,6 +4416,19 @@ fn negamax(
                         reduction -= capt_hist_val / tp(&LMR_HIST_DIV_CAP);
                     }
 
+                    // Mirror the two least-tactical quiet-LMR safety reliefs:
+                    // former-PV nodes and high correction-history complexity.
+                    // Avoid broader threat/king-pressure transfer here; prior
+                    // experiments showed capture LMR is sensitive to coarse
+                    // quiet-LMR modifiers.
+                    if tt_pv {
+                        reduction -= 1;
+                    }
+                    if scaled_eval > -INFINITY {
+                        let complexity = (static_eval - scaled_eval).abs();
+                        reduction -= complexity / tp(&LMR_COMPLEXITY_DIV);
+                    }
+
                     // Reduce less for captures that give check
                     if gives_check {
                         reduction -= 1;
