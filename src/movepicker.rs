@@ -663,6 +663,37 @@ impl MovePicker {
                 };
             }
 
+            // Lower-attacker destination penalty. Reference move pickers avoid
+            // ordering quiet moves highly when the moved piece lands on a square
+            // controlled by a cheaper enemy piece; that is the losing half of
+            // the escape-threat signal above.
+            if piece != NO_PIECE {
+                let enemy_lower = match pt {
+                    QUEEN => board.colors[them as usize]
+                        & (board.pieces[PAWN as usize]
+                            | board.pieces[KNIGHT as usize]
+                            | board.pieces[BISHOP as usize]
+                            | board.pieces[ROOK as usize]),
+                    ROOK => board.colors[them as usize]
+                        & (board.pieces[PAWN as usize]
+                            | board.pieces[KNIGHT as usize]
+                            | board.pieces[BISHOP as usize]),
+                    KNIGHT | BISHOP => board.colors[them as usize] & board.pieces[PAWN as usize],
+                    _ => 0,
+                };
+                if enemy_lower != 0 {
+                    let post_occ = (occ ^ (1u64 << from)) | (1u64 << to);
+                    if board.attackers_to(to as u32, post_occ) & enemy_lower != 0 {
+                        score -= match pt {
+                            QUEEN => escape_bonus_q,
+                            ROOK => escape_bonus_r,
+                            KNIGHT | BISHOP => escape_bonus_minor,
+                            _ => 0,
+                        };
+                    }
+                }
+            }
+
             // Quiet check bonus: moves that give direct check (SF +16384, Viridithas +10000).
             // SEE-gated like SF (movepick.cpp): a check that loses material by more
             // than QUIET_CHECK_SEE_MARGIN is a losing sac — don't order it first.
