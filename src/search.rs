@@ -343,7 +343,7 @@ tunables!(
     // T2.4: CORR_HIST_ERR_MAX (±3cp input pre-clamp) replaced by output
     // scaling: bonus = err*(depth+1).min(W)/CORR_ERR_DIV, clamped at the
     // gravity cap only. Obsidian err*depth/8; SF err*depth*12/128.
-    (CORR_ERR_DIV, 8, 2, 64, 3.0, false),
+    (CORR_ERR_DIV, 6, 2, 64, 3.0, false),
     // ESCAPE_BONUS_Q / _MINOR removed 2026-05-17: ablations #1256/#1255
     // H0 at [-3, 3]. Slightly load-bearing (central -0.6/-1.3 to ablate),
     // hardcoded at current SPSA values in movepicker.rs.
