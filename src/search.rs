@@ -3342,6 +3342,24 @@ fn negamax(
                 }
             }
         }
+
+        // SF 319d61ef: penalize a deep, inexact TT entry whose stored bound was
+        // on the wrong side of the window to produce a cutoff — age its depth
+        // down so it's replaced sooner (anti search-explosion / mate-finding).
+        // Reached only when no TT cutoff was taken above. Only the depth field
+        // changes (move preserved), so this can't inject an illegal move.
+        let pen_tt_score = score_from_tt(tt_entry.score, ply);
+        if tt_hit
+            && !is_pv
+            && info.excluded_move[ply_u] == NO_MOVE
+            && depth > 5
+            && tt_entry.flag != TT_FLAG_EXACT
+            && tt_entry.depth > depth - (if pen_tt_score <= beta { 1 } else { 0 })
+            && ((pen_tt_score >= beta && tt_entry.flag == TT_FLAG_UPPER)
+                || (pen_tt_score < beta && tt_entry.flag == TT_FLAG_LOWER))
+        {
+            info.tt.penalize(board.hash, 1);
+        }
     }
 
     // Leaf node - go to quiescence search

@@ -425,6 +425,44 @@ impl TT {
         TTEntry::miss()
     }
 
+    /// Penalize the entry matching `hash` by decrementing its stored depth
+    /// (SF 319d61ef). Used when a deep, inexact entry repeatedly fails to cut
+    /// off — age it down so it gets replaced sooner. Lock-free read-modify-write
+    /// mirroring `store`'s publish order (data Release, then key Release);
+    /// recomputes the XOR key so torn reads stay detectable. Only the depth
+    /// field changes — the move is preserved, so this cannot inject an illegal
+    /// move. A lost race just drops the penalty (the entry stays valid).
+    pub fn penalize(&self, hash: u64, penalty: i32) {
+        let idx = self.bucket_index(hash);
+        let bucket = &self.buckets[idx];
+        let key_upper = (hash >> 32) as u32;
+
+        for i in 0..BUCKET_SIZE {
+            let stored_key = bucket.keys[i].load(Ordering::Acquire);
+            let data = bucket.data[i].load(Ordering::Acquire);
+            if stored_key ^ (data as u32) != key_upper {
+                continue;
+            }
+            if unpack_flag(data) == TT_FLAG_NONE {
+                continue;
+            }
+            // Re-pack with depth reduced by `penalty`; all other fields preserved.
+            let new_data = pack_data(
+                unpack_move(data),
+                unpack_flag(data),
+                unpack_static_eval(data),
+                unpack_score(data),
+                unpack_depth(data) - penalty,
+                unpack_generation(data),
+                unpack_tt_pv(data),
+            );
+            let new_key = key_upper ^ (new_data as u32);
+            bucket.data[i].store(new_data, Ordering::Release);
+            bucket.keys[i].store(new_key, Ordering::Release);
+            return;
+        }
+    }
+
     /// Current TT generation. Bumped each `new_search`. Used by the search
     /// for cross-gen detection (probe-side TT-pollution diagnostics).
     #[inline]
