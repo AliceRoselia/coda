@@ -729,7 +729,11 @@ impl MovePicker {
                                     }
                                 }
                                 if max_t_val > our_val {
-                                    score += 6687;
+                                    // Victim-value scaling: base + the material we
+                                    // threaten to win, so threatening a queen orders
+                                    // above threatening a rook (gentle, bounded by
+                                    // the value gap ~200-1100cp).
+                                    score += 6687 + (max_t_val - our_val);
                                 }
                             }
                         }
