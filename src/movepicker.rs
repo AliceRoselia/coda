@@ -28,6 +28,13 @@ pub struct History {
     /// Main history: [from_threatened][to_threatened][from][to]
     /// Threat-aware 4D indexing — separate history for moves escaping/entering threats.
     pub main: [[[[i32; 64]; 64]; 2]; 2],
+    /// Factorised baseline for main history: threat-bucket-INDEPENDENT [from][to].
+    /// The 4D table fragments each move's [from][to] signal across 4 threat
+    /// buckets; this shared component (Hobbes pattern, `score = factoriser +
+    /// bucket`) lets the common signal accumulate once and generalise across
+    /// buckets. Only consulted/updated when FEAT_4D_HISTORY is on (with 4D off,
+    /// main[0][0] already IS the unfragmented [from][to] table).
+    pub main_factor: [[i32; 64]; 64],
     /// Capture history: [piece 1-12][to][captured_type 0-6]
     /// piece uses 1-12 indexing (slot 0 unused).
     /// captured_type uses 0-6 scheme (0=empty, 1=pawn, ..., 6=king).
@@ -45,9 +52,30 @@ impl History {
         if crate::search::FEAT_4D_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
             let ft = ((threats >> from) & 1) as usize;
             let tt = ((threats >> to) & 1) as usize;
-            self.main[ft][tt][from as usize][to as usize]
+            // Average (not sum) so total magnitude stays calibrated: in steady
+            // state both tables converge to the same gravity fixed point, so the
+            // factoriser is transparent in well-explored buckets and only shifts
+            // the score in sparse/unvisited threat buckets — the de-fragmentation
+            // effect, without doubling main_score (which feeds pruning thresholds).
+            (self.main[ft][tt][from as usize][to as usize]
+                + self.main_factor[from as usize][to as usize]) / 2
         } else {
             self.main[0][0][from as usize][to as usize]
+        }
+    }
+
+    /// Update main history for a move with gravity. Updates the threat-bucketed
+    /// entry AND (when 4D is on) the shared [from][to] factoriser baseline with
+    /// the same bonus, so the common signal accumulates once across buckets.
+    #[inline(always)]
+    pub fn update_main(&mut self, from: u8, to: u8, threats: Threats, bonus: i32) {
+        if crate::search::FEAT_4D_HISTORY.load(std::sync::atomic::Ordering::Relaxed) {
+            let ft = ((threats >> from) & 1) as usize;
+            let tt = ((threats >> to) & 1) as usize;
+            Self::update_history(&mut self.main[ft][tt][from as usize][to as usize], bonus);
+            Self::update_history(&mut self.main_factor[from as usize][to as usize], bonus);
+        } else {
+            Self::update_history(&mut self.main[0][0][from as usize][to as usize], bonus);
         }
     }
 
@@ -77,6 +105,7 @@ impl History {
 
     pub fn clear(&mut self) {
         self.main = [[[[0; 64]; 64]; 2]; 2];
+        self.main_factor = [[0; 64]; 64];
         self.capture = [[[0i16; 7]; 64]; 13];
         self.cont_hist = [[[[0; 64]; 13]; 64]; 13];
     }
@@ -88,6 +117,7 @@ impl History {
     /// stack alloc.
     pub fn copy_from(&mut self, src: &History) {
         self.main = src.main;
+        self.main_factor = src.main_factor;
         self.capture = src.capture;
         self.cont_hist = src.cont_hist;
     }
@@ -101,6 +131,9 @@ impl History {
                     for v in row.iter_mut() { *v = *v * factor / divisor; }
                 }
             }
+        }
+        for row in self.main_factor.iter_mut() {
+            for v in row.iter_mut() { *v = *v * factor / divisor; }
         }
         for plane in self.capture.iter_mut() {
             for row in plane.iter_mut() {
@@ -1375,10 +1408,16 @@ mod tests {
 
         let saved = FEAT_4D_HISTORY.load(Ordering::Relaxed);
 
-        // 4D on: lookup must see slot [1][1] = 4.
+        // 4D on: lookup must see slot [1][1] = 4, averaged with the shared
+        // factoriser (0 here) → (4 + 0)/2 = 2.
         FEAT_4D_HISTORY.store(true, Ordering::Relaxed);
-        assert_eq!(h.main_score(12, 28, threats), 4,
-            "4D on: expected main[1][1][12][28]=4");
+        assert_eq!(h.main_score(12, 28, threats), 2,
+            "4D on: expected avg(main[1][1]=4, factor=0)");
+        // Factoriser must be included in the averaged score.
+        h.main_factor[12][28] = 6;
+        assert_eq!(h.main_score(12, 28, threats), 5,
+            "4D on: expected avg(main[1][1]=4, factor=6)");
+        h.main_factor[12][28] = 0; // restore
         *h.main_entry(12, 28, threats) = 40;
         assert_eq!(h.main[1][1][12][28], 40, "4D on: main_entry wrote to [1][1]");
         h.main[1][1][12][28] = 4; // restore

@@ -3295,10 +3295,7 @@ fn negamax(
                             || move_flags(tt_move) == FLAG_EN_PASSANT;
                         if !tt_is_cap && tt_piece != NO_PIECE {
                             let bonus = history_bonus(depth);
-                            History::update_history(
-                                info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
-                                bonus,
-                            );
+                            info.history.update_main(move_from(tt_move), move_to(tt_move), enemy_attacks, bonus);
                         } else if tt_is_cap && tt_piece != NO_PIECE {
                             let bonus = capture_history_bonus(depth);
                             let cpt_pt = board.piece_type_at(move_to(tt_move));
@@ -4666,10 +4663,7 @@ fn negamax(
                         let malus = raw_malus + raw_malus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
 
                         // Update main history
-                        History::update_history(
-                            info.history.main_entry(from, to, enemy_attacks),
-                            bonus,
-                        );
+                        info.history.update_main(from, to, enemy_attacks, bonus);
 
                         // Update continuation history at plies 1, 2, 4, 6
                         // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
@@ -4711,10 +4705,7 @@ fn negamax(
                             let q = quiets_tried[i];
                             let qf = move_from(q);
                             let qt = move_to(q);
-                            History::update_history(
-                                info.history.main_entry(qf, qt, enemy_attacks),
-                                -malus,
-                            );
+                            info.history.update_main(qf, qt, enemy_attacks, -malus);
 
                             // Penalize continuation history at plies 1, 2, 4, 6.
                             // T6: base uses qf,qt move's main_score (the move being malused).
