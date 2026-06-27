@@ -582,6 +582,7 @@ pub static FEAT_QS_CAPTURES: AtomicBool = AtomicBool::new(true); // false = QS r
 pub static FEAT_SINGULAR: AtomicBool = AtomicBool::new(true); // singular extensions specifically
 pub static FEAT_CUCKOO: AtomicBool = AtomicBool::new(true);
 pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 4D history indexing
+pub static FEAT_TRIED_COUNT: AtomicBool = AtomicBool::new(true); // T3a: Clover search-effort (tried_count) weighting of history bonus/malus
 // Diagnostic-only (env RFP_AUDIT=1): null-verify every RFP cutoff and count
 // false positives per depth. NOT a play feature — costs NPS; bench/EPD use.
 pub static RFP_AUDIT: AtomicBool = AtomicBool::new(false);
@@ -597,6 +598,7 @@ pub fn disable_all_features() {
     FEAT_TT_STORE.store(false, Ordering::Relaxed); FEAT_QS_CAPTURES.store(false, Ordering::Relaxed);
     FEAT_SINGULAR.store(false, Ordering::Relaxed); FEAT_CUCKOO.store(false, Ordering::Relaxed);
     FEAT_4D_HISTORY.store(false, Ordering::Relaxed);
+    FEAT_TRIED_COUNT.store(false, Ordering::Relaxed);
 }
 
 /// Enable all features (normal play)
@@ -611,6 +613,7 @@ pub fn enable_all_features() {
     FEAT_TT_STORE.store(true, Ordering::Relaxed); FEAT_QS_CAPTURES.store(true, Ordering::Relaxed);
     FEAT_SINGULAR.store(true, Ordering::Relaxed); FEAT_CUCKOO.store(true, Ordering::Relaxed);
     FEAT_4D_HISTORY.store(true, Ordering::Relaxed);
+    FEAT_TRIED_COUNT.store(true, Ordering::Relaxed);
 }
 
 // Correction history constants
@@ -1599,6 +1602,7 @@ fn init_feature_flags() {
             if std::env::var("NO_SINGULAR").is_ok() { FEAT_SINGULAR.store(false, Ordering::Relaxed); }
             if std::env::var("NO_CUCKOO").is_ok() { FEAT_CUCKOO.store(false, Ordering::Relaxed); }
             if std::env::var("NO_4D_HISTORY").is_ok() { FEAT_4D_HISTORY.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_TRIED_COUNT").is_ok() { FEAT_TRIED_COUNT.store(false, Ordering::Relaxed); }
         }
         // Diagnostic audit modes (orthogonal to DISABLE_ALL/NO_XXX).
         if std::env::var("RFP_AUDIT").is_ok() {
@@ -3943,6 +3947,14 @@ fn negamax(
     let mut captures_tried: [(u8, u8, u8); 32] = [(0, 0, 0); 32]; // (piece, to, victim)
     let mut n_captures_tried = 0usize;
 
+    // T3a (Clover search.h:744-789): per-tried-move count of how many times the
+    // move was actually searched (1 = LMR-reduced only; 2-3 = went through the
+    // re-search / full-window PVS chain). History bonus/malus is later weighted
+    // by this so moves that survived a deeper search dominate ordering. Default 1
+    // so a never-incremented slot contributes a plain ×1.
+    let mut quiets_search_count = [1u8; 64];
+    let mut captures_search_count = [1u8; 32];
+
     // Skip-quiets flag: once LMP fires, skip remaining quiets without
     // re-running gates (Reckless pattern). Bisection found this produces
     // +22% bench (vs expected bench-neutral perf-only) — mechanism not
@@ -4278,6 +4290,10 @@ fn negamax(
 
         let score;
 
+        // T3a: count how many times THIS move is actually searched (incremented
+        // before each negamax call below). Used to weight its history update.
+        let mut move_searches: u8 = 0;
+
         // Track quiet moves for history penalty on beta cutoff
         if !is_cap && !is_promo && quiets_count < 64 {
             quiets_tried[quiets_count] = mv;
@@ -4494,6 +4510,7 @@ fn negamax(
 
             // LMR: reduced depth, zero window
             let lmr_depth = new_depth - reduction;
+            move_searches += 1;
             let mut lmr_score = -negamax(board, info, -alpha - 1, -alpha, lmr_depth, ply + 1, true);
 
             // The reduction applies to the reduced search ONLY: zero the slot
@@ -4531,6 +4548,7 @@ fn negamax(
                 // re-search would duplicate the already-completed LMR search. Every
                 // reference engine guards with `if new_depth > lmr_depth`. (audit B2)
                 if new_depth > lmr_depth {
+                    move_searches += 1;
                     lmr_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
                 }
 
@@ -4582,27 +4600,42 @@ fn negamax(
 
             if lmr_score > alpha && lmr_score < beta && !info.stop.load(Ordering::Relaxed) {
                 // PVS failed high: full window re-search
+                move_searches += 1;
                 score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
             } else {
                 score = lmr_score;
             }
         } else if move_count > 1 && FEAT_PVS.load(Ordering::Relaxed) {
             // PVS: zero-window for non-first moves
+            move_searches += 1;
             let mut pvs_score = -negamax(board, info, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
             if pvs_score > alpha && pvs_score < beta && !info.stop.load(Ordering::Relaxed) {
                 num_fail_highs += 1; // Starzix T1 #1: PVS fail-high cascade.
                 // Failed high: full window re-search
+                move_searches += 1;
                 pvs_score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
             }
             score = pvs_score;
         } else {
             // First move: always full window
+            move_searches += 1;
             score = -negamax(board, info, -beta, -alpha, new_depth, ply + 1, false);
         }
 
         board.unmake_move();
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
         if info.threat_stack.active { info.threat_stack.pop(); }
+
+        // T3a: record how many times this move was searched, into the same slot
+        // it was tracked in above (quiet vs capture), for effort-weighted history.
+        if !is_cap && !is_promo {
+            if quiets_count >= 1 && quiets_count <= 64 {
+                quiets_search_count[quiets_count - 1] = move_searches.max(1);
+            }
+        } else if is_cap && n_captures_tried >= 1 && n_captures_tried <= 32
+            && moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
+            captures_search_count[n_captures_tried - 1] = move_searches.max(1);
+        }
 
         // Accumulate nodes for this root move
         if ply == 0 {
@@ -4662,6 +4695,14 @@ fn negamax(
                             let siblings = (quiets_count + n_captures_tried) as i32;
                             bonus += bonus * siblings / tp(&HIST_SIBLING_DIV);
                         }
+                        // T3a (Clover): weight the cutoff move's bonus by how many
+                        // times it was actually searched (1 = LMR-reduced only;
+                        // 2-3 = went through the re-search / full-window chain), so
+                        // deeply-confirmed moves dominate ordering.
+                        let tried_count_on = FEAT_TRIED_COUNT.load(Ordering::Relaxed);
+                        if tried_count_on {
+                            bonus *= (move_searches as i32).max(1);
+                        }
                         // Malus magnitude: separate constants, same scaling chain
                         // (identical to bonus at default tunables → bench-identical).
                         let raw_malus = history_malus(bonus_depth);
@@ -4713,9 +4754,16 @@ fn negamax(
                             let q = quiets_tried[i];
                             let qf = move_from(q);
                             let qt = move_to(q);
+                            // T3a: weight this move's penalty by how many times it
+                            // was searched (stored per-slot above).
+                            let m = if tried_count_on {
+                                malus * (quiets_search_count[i] as i32)
+                            } else {
+                                malus
+                            };
                             History::update_history(
                                 info.history.main_entry(qf, qt, enemy_attacks),
-                                -malus,
+                                -m,
                             );
 
                             // Penalize continuation history at plies 1, 2, 4, 6.
@@ -4732,7 +4780,7 @@ fn negamax(
                                             let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                             if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
                                                 // B1: uniform penalty (see bonus site above).
-                                                let ch_pen = -malus;
+                                                let ch_pen = -m;
                                                 let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize] as i32;
                                                 let base = cur_cont + q_main_score / 2;
                                                 History::update_cont_history_with_base(
@@ -4752,7 +4800,7 @@ fn negamax(
                                 if q_piece != NO_PIECE {
                                     let gp = go_piece(q_piece);
                                     let v = info.pawn_hist[ph_idx][gp][qt as usize] as i32;
-                                    let clamped = (-malus).clamp(-16384, 16384);
+                                    let clamped = (-m).clamp(-16384, 16384);
                                     let new_v = v + clamped - v * clamped.abs() / 16384;
                                     info.pawn_hist[ph_idx][gp][qt as usize] = new_v.clamp(-32000, 32000) as i16;
                                 }
@@ -4769,7 +4817,11 @@ fn negamax(
                         let raw_cap_bonus = capture_history_bonus(cap_bonus_depth);
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         // Fixed-point divisor (stored × 10).
-                        let cap_bonus = raw_cap_bonus + raw_cap_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
+                        let mut cap_bonus = raw_cap_bonus + raw_cap_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
+                        // T3a: weight the cutoff capture's bonus by its search count.
+                        if FEAT_TRIED_COUNT.load(Ordering::Relaxed) {
+                            cap_bonus *= (move_searches as i32).max(1);
+                        }
                         if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
                             let cpt = if flags == FLAG_EN_PASSANT {
                                 captured_type(PAWN)
@@ -4798,11 +4850,18 @@ fn negamax(
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         let cap_malus = raw_cap_malus + raw_cap_malus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
                         let cap_count = if is_cap { n_captures_tried.saturating_sub(1) } else { n_captures_tried };
+                        let cap_tried_count_on = FEAT_TRIED_COUNT.load(Ordering::Relaxed);
                         for i in 0..cap_count {
                             let (cp, ct, cv) = captures_tried[i];
+                            // T3a: weight this capture's penalty by its search count.
+                            let cm = if cap_tried_count_on {
+                                cap_malus * (captures_search_count[i] as i32)
+                            } else {
+                                cap_malus
+                            };
                             History::update_cont_history(
                                 &mut info.history.capture[cp as usize][ct as usize][cv as usize],
-                                -cap_malus,
+                                -cm,
                             );
                         }
                     }
