@@ -4007,6 +4007,7 @@ fn negamax(
         // lower base. Prune if SEE < -margin.
         if is_cap && ply > 0 && !in_check && depth <= tp(&SEE_CAP_DEPTH)
             && mv != tt_move && best_score > -(MATE_SCORE - 100)
+            && beta < MATE_SCORE - 100
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
             let cap_ch = crate::movepicker::capt_hist_score_static(board, &info.history, mv);
@@ -4220,6 +4221,7 @@ fn negamax(
         // that give direct check (Reckless #630 +1.85 STC).
         if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= tp(&BAD_NOISY_DEPTH) && mv != tt_move
             && !is_promo && best_score > -(MATE_SCORE - 100)
+            && beta < MATE_SCORE - 100
             && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
             && !see_ge(board, mv, 0)
             && !board.gives_direct_check(mv)
