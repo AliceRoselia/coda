@@ -498,7 +498,7 @@ tunables!(
 // frozen at their pre-demotion defaults. Bench-neutral; UCI-invisible.
 pub static FH_BLEND_OFFSET: AtomicI32 = AtomicI32::new(1);
 pub static SE_TT_DEPTH_SLACK: AtomicI32 = AtomicI32::new(3);
-pub static MVV_CAP_MULT: AtomicI32 = AtomicI32::new(28);
+pub static MVV_CAP_MULT: AtomicI32 = AtomicI32::new(30);
 // Demote-batch 2 (2026-05-23): 5 more NONCORE_QUIET from cross-tune analysis
 // — all moved <20% under #1419 noise. Same rationale as batch 1.
 pub static SEE_MATERIAL_SCALE: AtomicI32 = AtomicI32::new(215);
