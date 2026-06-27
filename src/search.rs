@@ -267,8 +267,8 @@ tunables!(
     // PROBCUT_TT_DEPTH_SLACK: TT depth must be >= current depth - SLACK for
     // ProbCut-TT-noshot to consider the entry. Old hardcoded 3.
     (PROBCUT_TT_DEPTH_SLACK, 3, 0, 10, 0.5, false),
-    (HIST_BONUS_MULT, 314, 50, 400, 17.5, true),
-    (HIST_BONUS_MAX, 1506, 500, 3000, 125.0, true),
+    (HIST_BONUS_MULT, 309, 50, 400, 17.5, true),
+    (HIST_BONUS_MAX, 1481, 500, 3000, 125.0, true),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
     // history bonus adopts Stockfish/cap-hist offset shape:
     //   old: min(MAX, MULT * d)
@@ -278,7 +278,7 @@ tunables!(
     // wider depth discrimination. cap-history already uses the offset
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 24, 0, 400, 25.0, false),
+    (HIST_BONUS_OFFSET, 19, 0, 400, 25.0, false),
     (CAP_HIST_MULT, 314, 50, 400, 17.5, true),
     (CAP_HIST_MAX, 1897, 500, 3000, 125.0, true),
     // Malus split (2026-06-11 move-ordering audit): 14/16 stronger engines
@@ -288,9 +288,9 @@ tunables!(
     // -bonus, so SPSA never had this axis (#1922 confirmed symmetric is
     // Coda's optimum at STC). Defaults track the live bonus values
     // (tune-#1915 era) so behavior == the tested -bonus parity.
-    (HIST_MALUS_MULT, 307, 50, 900, 40.0, true),
+    (HIST_MALUS_MULT, 313, 50, 900, 40.0, true),
     (HIST_MALUS_OFFSET, 24, 0, 400, 25.0, false),
-    (HIST_MALUS_MAX, 1381, 500, 4000, 175.0, true),
+    (HIST_MALUS_MAX, 1313, 500, 4000, 175.0, true),
     (CAP_HIST_MALUS_MULT, 289, 50, 900, 40.0, true),
     (CAP_HIST_MALUS_BASE, 42, 0, 400, 25.0, false),
     (CAP_HIST_MALUS_MAX, 1730, 500, 4000, 175.0, true),
@@ -300,15 +300,15 @@ tunables!(
     // numFailHighs multiplicative scaling (#1020 / Starzix T1 #1):
     // bonus = raw + raw * min(num_fail_highs, NFH_CAP) / NFH_DIV.
     // 0..NFH_CAP cascades produce 1.0× .. (1 + NFH_CAP/NFH_DIV)× bonus.
-    (NFH_CAP_10X, 31, 10, 60, 10.0, false),
+    (NFH_CAP_10X, 29, 10, 60, 10.0, false),
     // Was 47 (tp10→5). Now consumed as FIXED-POINT (stored/10) so SPSA's
     // sub-integer precision is preserved. Default 50 → eff 5.0 ≡ old behavior.
-    (NFH_DIV_10X, 50, 20, 120, 10.0, false),
+    (NFH_DIV_10X, 47, 20, 120, 10.0, false),
     // Sibling-count history-bonus scaling (SF 645b636d). At non-PV cutoffs,
     // amplify the best move's bonus by (quiets+caps searched)/HIST_SIBLING_DIV:
     // a move that cut off after more competition proved itself more strongly.
     // SF default divisor 256.
-    (HIST_SIBLING_DIV, 256, 64, 1024, 40.0, true),
+    (HIST_SIBLING_DIV, 240, 64, 1024, 40.0, true),
     // Reckless-pattern PV/quiet/correction-aware DEXT margin.
     // Matches SF (search.cpp:1153) and Reckless (search.rs:686-689).
     //
