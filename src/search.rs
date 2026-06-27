@@ -3673,6 +3673,21 @@ fn negamax(
             r = depth - 1;
         }
 
+        // NMP "touching bounds" (Reckless f27c57c6, after Beal): when the TT
+        // proves a LOWER bound below beta at adequate depth, null-search against
+        // that tighter bound instead of beta. A null score that touches the
+        // bound is an adequate estimate of the position -> cut there.
+        let nmp_tt_score = score_from_tt(tt_entry.score, ply);
+        let nmp_bound = if tt_hit
+            && tt_entry.flag == TT_FLAG_LOWER
+            && beta > nmp_tt_score
+            && tt_entry.depth >= depth - 2
+        {
+            nmp_tt_score
+        } else {
+            beta
+        };
+
         board.make_null_move();
         info.tt.prefetch(board.hash);
         let null_key = board.hash; // save hash for threat detection after unmake
@@ -3687,7 +3702,7 @@ fn negamax(
             info.moved_piece_stack[ply_u] = 0;
             info.moved_to_stack[ply_u] = 0;
         }
-        let null_score = -negamax(board, info, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
+        let null_score = -negamax(board, info, -nmp_bound, -nmp_bound + 1, depth - r, ply + 1, !cut_node);
         if let Some(acc) = &mut info.nnue_acc { acc.pop(); }
         if info.threat_stack.active { info.threat_stack.pop(); }
         board.unmake_null_move();
@@ -3696,10 +3711,12 @@ fn negamax(
             return 0;
         }
 
-        if null_score >= beta {
+        // Cut when the null score reaches the (possibly TT-tightened) bound.
+        // `!is_win` guard (Reckless): don't trust a win score from the looser
+        // bound search — fall through to a real search instead.
+        if null_score >= nmp_bound && null_score < MATE_SCORE - 100 {
             // Return null score directly (no dampening — no top engine uses it)
-            // Clamp mate scores to beta to avoid inflated mate distance
-            let nmp_score = if null_score.abs() > MATE_SCORE - 100 { beta } else { null_score };
+            let nmp_score = null_score;
 
             // Verification search at high depths to guard against zugzwang
             if depth >= tp10(&NMP_VERIFY_DEPTH_10X) {
@@ -3711,7 +3728,7 @@ fn negamax(
                 let old_nmp_min_ply = info.nmp_min_ply;
                 info.nmp_min_ply = ply + 3 * (depth - r) / 4;
                 // Verification re-searches current position (no move made), so ply stays same
-                let v_score = negamax(board, info, beta - 1, beta, depth - r, ply, false);
+                let v_score = negamax(board, info, nmp_bound - 1, nmp_bound, depth - r, ply, false);
                 info.nmp_min_ply = old_nmp_min_ply;
                 // Stop-during-verification returns 0 from negamax; with
                 // beta <= 0 (fail-low re-searches / losing branches),
@@ -3722,7 +3739,7 @@ fn negamax(
                 if info.stop.load(Ordering::Relaxed) {
                     return 0;
                 }
-                if v_score >= beta {
+                if v_score >= nmp_bound {
                     info.stats.nmp_cutoffs += 1;
                     return nmp_score;
                 }
