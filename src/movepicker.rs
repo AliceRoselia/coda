@@ -210,6 +210,14 @@ pub struct MovePicker {
     /// `[0..moves.len)` are always initialized before `pick_best` reads
     /// them, and reads never go beyond `moves.len`.
     scores: [std::mem::MaybeUninit<i32>; 256],
+    /// Per-move "creates a material threat" flag — set in
+    /// `generate_and_score_quiets` when the offense+QSEE condition fires (the
+    /// moved piece attacks an enemy worth more than itself). Swapped in
+    /// lockstep with `scores` in `next()`. Search reads it (gated on is_quiet)
+    /// to resist LMR on threat-creating quiets. Only the quiet stage writes
+    /// `true`; other stages leave the prior `false`/stale value, harmless
+    /// because search only consults it for quiet moves.
+    creates_threat: [bool; 256],
     index: usize,
     /// Bad captures saved from the good/bad partition. Same
     /// writes-before-reads invariant: `generate_and_score_captures`
@@ -286,6 +294,7 @@ impl MovePicker {
             index: 0,
             bad_moves: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
+            creates_threat: [false; 256],
             bad_len: 0,
             skip_quiet: false,
             threats,
@@ -325,6 +334,7 @@ impl MovePicker {
             index: 0,
             bad_moves: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
+            creates_threat: [false; 256],
             bad_len: 0,
             skip_quiet: true,
             threats: 0,
@@ -386,6 +396,7 @@ impl MovePicker {
             index: 0,
             bad_moves: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
+            creates_threat: [false; 256],
             bad_len: 0,
             skip_quiet: false,
             // C8 audit LIKELY #19: evasion history READS must use the same
@@ -626,6 +637,9 @@ impl MovePicker {
             let pt = board.piece_type_at(from);
 
             let mut score = history.main_score(from, to, self.threats);
+            // Set when this quiet creates a material threat (offense+QSEE
+            // below). Carried to search to resist LMR on the move.
+            let mut creates_threat_flag = false;
 
             // Continuation history: plies 1,2 at CONT_HIST_MULT weight, plies 4,6 at 1x weight.
             // Matches Obsidian/Alexandria/Berserk pattern (default 3).
@@ -730,6 +744,15 @@ impl MovePicker {
                                 }
                                 if max_t_val > our_val {
                                     score += 6687;
+                                    // LMR carve-out (search-side) fires only on
+                                    // the sharper "threatens a rook or queen"
+                                    // subset — a full-ply un-reduction on every
+                                    // higher-value threat is too aggressive
+                                    // (+15% nodes). Ordering bonus above is
+                                    // unchanged; only the reduction flag tightens.
+                                    if max_t_val >= see_value(3) {
+                                        creates_threat_flag = true;
+                                    }
                                 }
                             }
                         }
@@ -750,6 +773,7 @@ impl MovePicker {
             let idx = self.moves.len;
             self.moves.push(m);
             self.scores[idx].write(score);
+            self.creates_threat[idx] = creates_threat_flag;
         }
         self.index = 0;
     }
@@ -891,11 +915,21 @@ impl MovePicker {
             self.moves.swap(self.index, best_idx);
             // Swapping MaybeUninit slots is safe — no reads of the contents.
             self.scores.swap(self.index, best_idx);
+            self.creates_threat.swap(self.index, best_idx);
         }
 
         let mv = self.moves.get(self.index);
         self.index += 1;
         mv
+    }
+
+    /// Whether the move just returned by `next()` creates a material threat
+    /// (offense+QSEE: attacks an enemy worth more than the mover). Only valid
+    /// immediately after `next()` returned a quiet move; the flag is only set
+    /// for quiet moves, so callers must gate on is_quiet (search does).
+    #[inline]
+    pub fn last_move_creates_threat(&self) -> bool {
+        self.index > 0 && self.creates_threat[self.index - 1]
     }
 
 }

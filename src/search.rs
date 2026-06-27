@@ -386,6 +386,11 @@ tunables!(
     (PROBCUT_KING_ZONE_MAX_10X, 68, 20, 90, 15.0, true),
     // Was 38 (tp10→4). Now FIXED-POINT. Default 40 → eff 4.0 ≡ old behavior.
     (LMR_THREAT_DIV_10X, 19, 10, 50, 15.0, true),
+    // Per-move threat-creation LMR carve-out: reduce a quiet move LESS when it
+    // itself creates a material threat (offense+QSEE in movepicker). ×10
+    // fixed-point; default 10 = 1.0 ply less reduction. The per-move threat
+    // signal previously only reached move ordering, never reductions.
+    (LMR_THREAT_MOVE_10X, 10, 0, 30, 2.0, true),
     // Was 68 (tp10→7). Now FIXED-POINT. Default 70 → eff 7.0 ≡ old behavior.
     (LMR_KING_PRESSURE_DIV_10X, 67, 20, 90, 15.0, true),
     // Reduce later moves more once this node has already raised alpha N times
@@ -3973,6 +3978,10 @@ fn negamax(
         // Check if capture BEFORE making the move
         let is_cap = board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT;
         let is_promo = is_promotion(mv);
+        // Captured immediately after next() (no intervening picker call): does
+        // this quiet move itself create a material threat? Short-circuit keeps
+        // the flag read to quiet moves only (it is only set for quiets).
+        let move_creates_threat = !is_cap && !is_promo && picker.last_move_creates_threat();
 
         if skip_quiets && !is_cap && !is_promo {
             continue;
@@ -4404,6 +4413,15 @@ fn negamax(
                 // Fixed-point divisor: stored × 10. Avoids tp10 swallowing
                 // sub-integer SPSA precision on this multiplicative use.
                 reduction -= threat_count * 10 / LMR_THREAT_DIV_10X.load(Ordering::Relaxed).max(1);
+
+                // Per-move threat-creation carve-out: a quiet move that itself
+                // creates a material threat (offense+QSEE) is tactically
+                // relevant and shouldn't be reduced like an idle quiet — the
+                // threat-signal analogue of the quiet-check / escape carve-outs,
+                // which until now only affected ordering.
+                if move_creates_threat {
+                    reduction -= tp10(&LMR_THREAT_MOVE_10X);
+                }
 
                 // King-pressure LMR modifier: reduce less when enemy has
                 // many attackers on our king zone. Parent-node signal reused
