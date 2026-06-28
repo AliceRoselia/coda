@@ -491,6 +491,15 @@ tunables!(
     // probe rescale a candidate net to prod's scale (e.g. 127 = dual-s200
     // RMS 254 -> baseline 323) to de-confound net-vs-net SPRTs. 100 = off.
     (EVAL_SCALE_PCT, 100, 50, 200, 5.0, false),
+    // Eval-scaling cluster (NON-CORE — re-tune per net; the prior hardcoded
+    // values were SPRT-fixed against April nets, never re-optimized for v8s3).
+    // Defaults reproduce the prior hardcoded behavior exactly (bench-identical):
+    //   HALFMOVE_SCALE_DENOM=100 -> score*(100-hm)/100 (rule50 decay rate);
+    //   MATERIAL_SCALE_BASE=22400 -> score*(22400+mat)/32/1024;
+    //   PAWN_MAT_SCALE=0 -> no pawn term in the material scalar (non-pawn-only).
+    (HALFMOVE_SCALE_DENOM, 100, 80, 280, 12.0, false),
+    (MATERIAL_SCALE_BASE, 22400, 10000, 40000, 1500.0, false),
+    (PAWN_MAT_SCALE, 0, 0, 200, 10.0, false),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
@@ -1214,7 +1223,11 @@ impl SearchInfo {
             let bishops = popcount(board.pieces[BISHOP as usize]) as i32 * 422;
             let rooks = popcount(board.pieces[ROOK as usize]) as i32 * 642;
             let queens = popcount(board.pieces[QUEEN as usize]) as i32 * 1015;
-            knights + bishops + rooks + queens
+            // PAWN_MAT_SCALE default 0 = non-pawn-only (prior behavior). SPSA
+            // may reintroduce a pawn term (SF uses 534, Alexandria 100) — let
+            // the v8s3 tune decide whether pawn endgames should be less damped.
+            let pawns = popcount(board.pieces[PAWN as usize]) as i32 * tp(&PAWN_MAT_SCALE);
+            knights + bishops + rooks + queens + pawns
         };
         // `eval()` now returns the halfmove-INDEPENDENT score (material
         // scaling only). 50-move scaling is applied at every consumption
@@ -1229,7 +1242,7 @@ impl SearchInfo {
         // correction — hence SPRT #610 showed −8 Elo at 1000 games before
         // we caught this. The fix is structural: keep TT storage
         // halfmove-independent, apply scale freshly on read.
-        score * (22400 + material) / 32 / 1024
+        score * (tp(&MATERIAL_SCALE_BASE) + material) / 32 / 1024
     }
 
     #[inline]
@@ -1260,8 +1273,12 @@ fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
     if score <= -INFINITY + 1 || score.abs() >= MATE_SCORE - 100 {
         return score;
     }
-    let hm = (halfmove as i32).min(100);
-    score * (100 - hm) / 100
+    // HALFMOVE_SCALE_DENOM default 100 = prior behavior (eval hits 0 at the
+    // 100-ply cliff). SPSA may soften it (the field uses 199-293) — clamp hm to
+    // the denom so the factor stays in [0,1] for any denom value.
+    let denom = tp(&HALFMOVE_SCALE_DENOM);
+    let hm = (halfmove as i32).min(denom);
+    score * (denom - hm) / denom
 }
 
 /// Build a DirtyPiece for lazy NNUE accumulator update.
