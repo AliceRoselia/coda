@@ -184,7 +184,7 @@ tunables!(
     // bind), while capping 600+1 at 40s (was 276s) and 60+0.1 at 13s.
     (TM_INC_HARD_MULT, 30, 0, 120, 4.0, false),
     (TM_INC_HARD_FLOOR_MS, 10000, 0, 60000, 1000.0, false),
-    (LMR_HIST_DIV, 11550, 2000, 100000, 4900.0, true),
+    (LMR_HIST_DIV, 12982, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
     // continuous `hist_score / LMR_HIST_DIV`. Obsidian uses continuous
@@ -193,7 +193,7 @@ tunables!(
     // of quiet — single-source capt_hist needs smaller divisor for
     // equivalent reduction magnitude). Coda's quiet div is 7736; same
     // ratio gives ~4500. Defaulting 5000 as a starting point.
-    (LMR_HIST_DIV_CAP, 1754, 1000, 20000, 1500.0, true),
+    (LMR_HIST_DIV_CAP, 1894, 1000, 20000, 1500.0, true),
     (LMR_C_QUIET, 138, 40, 300, 13.0, true),
     (LMR_C_CAP, 162, 80, 350, 12.5, true),
     // 2026-05-09 cross-engine port (Tier 5.1): SF gates SE at >=6+ttPv,
@@ -267,8 +267,8 @@ tunables!(
     // PROBCUT_TT_DEPTH_SLACK: TT depth must be >= current depth - SLACK for
     // ProbCut-TT-noshot to consider the entry. Old hardcoded 3.
     (PROBCUT_TT_DEPTH_SLACK, 3, 0, 10, 0.5, false),
-    (HIST_BONUS_MULT, 314, 50, 400, 17.5, true),
-    (HIST_BONUS_MAX, 1506, 500, 3000, 125.0, true),
+    (HIST_BONUS_MULT, 315, 50, 400, 17.5, true),
+    (HIST_BONUS_MAX, 1592, 500, 3000, 125.0, true),
     // Shape experiment 1 (Titan's shape_experiments_proposal_2026-04-19):
     // history bonus adopts Stockfish/cap-hist offset shape:
     //   old: min(MAX, MULT * d)
@@ -278,9 +278,9 @@ tunables!(
     // wider depth discrimination. cap-history already uses the offset
     // shape (CAP_HIST_MULT * d - CAP_HIST_BASE) — main history is the
     // only inconsistent one. Starting offset 72 mirrors SF.
-    (HIST_BONUS_OFFSET, 24, 0, 400, 25.0, false),
-    (CAP_HIST_MULT, 314, 50, 400, 17.5, true),
-    (CAP_HIST_MAX, 1897, 500, 3000, 125.0, true),
+    (HIST_BONUS_OFFSET, 16, 0, 400, 25.0, false),
+    (CAP_HIST_MULT, 321, 50, 400, 17.5, true),
+    (CAP_HIST_MAX, 1856, 500, 3000, 125.0, true),
     // Malus split (2026-06-11 move-ordering audit): 14/16 stronger engines
     // use SEPARATE malus constants (SF malus slope ~7x its bonus slope;
     // Obsidian goes the other way at 0.74x — the optimum is engine-specific
@@ -288,12 +288,12 @@ tunables!(
     // -bonus, so SPSA never had this axis (#1922 confirmed symmetric is
     // Coda's optimum at STC). Defaults track the live bonus values
     // (tune-#1915 era) so behavior == the tested -bonus parity.
-    (HIST_MALUS_MULT, 307, 50, 900, 40.0, true),
-    (HIST_MALUS_OFFSET, 24, 0, 400, 25.0, false),
-    (HIST_MALUS_MAX, 1381, 500, 4000, 175.0, true),
-    (CAP_HIST_MALUS_MULT, 289, 50, 900, 40.0, true),
+    (HIST_MALUS_MULT, 298, 50, 900, 40.0, true),
+    (HIST_MALUS_OFFSET, 23, 0, 400, 25.0, false),
+    (HIST_MALUS_MAX, 1350, 500, 4000, 175.0, true),
+    (CAP_HIST_MALUS_MULT, 299, 50, 900, 40.0, true),
     (CAP_HIST_MALUS_BASE, 42, 0, 400, 25.0, false),
-    (CAP_HIST_MALUS_MAX, 1730, 500, 4000, 175.0, true),
+    (CAP_HIST_MALUS_MAX, 1758, 500, 4000, 175.0, true),
     // BONUS_BOOST_AT removed 2026-05-17: ablation #1277 at [0, 3] H0
     // (+0.3 ±1.0, CI [-0.7, +1.3] at 136K games). Depth-boost trigger
     // confirmed neutral; both call sites updated to drop the +1 clause.
