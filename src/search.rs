@@ -585,6 +585,10 @@ pub static FEAT_4D_HISTORY: AtomicBool = AtomicBool::new(true); // threat-aware 
 // Diagnostic-only (env RFP_AUDIT=1): null-verify every RFP cutoff and count
 // false positives per depth. NOT a play feature — costs NPS; bench/EPD use.
 pub static RFP_AUDIT: AtomicBool = AtomicBool::new(false);
+// Diagnostic-only (env TT_CUTOFF_AUDIT=1): count why full-depth TT entries
+// do or do not cut, and how often 1-ply-shallow near-miss entries are close.
+// Behavior-preserving; intended for bench/local RR instrumentation.
+pub static TT_CUTOFF_AUDIT: AtomicBool = AtomicBool::new(false);
 
 /// Disable all features (pure negamax + eval)
 pub fn disable_all_features() {
@@ -711,6 +715,27 @@ pub struct PruneStats {
     // Behavior-preserving: the RFP cutoff is returned regardless.
     pub rfp_audit_attempts: [u64; 24],
     pub rfp_audit_fp: [u64; 24],
+    // TT cutoff audit (diagnostic, env TT_CUTOFF_AUDIT=1). Rejection reasons
+    // are non-exclusive: one TT entry can be blocked by multiple guards.
+    pub tt_audit_full_depth: u64,
+    pub tt_audit_full_depth_direct_cut: u64,
+    pub tt_audit_full_depth_pv_miss: u64,
+    pub tt_audit_full_depth_node_miss: u64,
+    pub tt_audit_full_depth_bound_miss: u64,
+    pub tt_audit_full_depth_halfmove_miss: u64,
+    pub tt_audit_window_narrow: u64,
+    pub tt_audit_window_collapse: u64,
+    pub tt_audit_window_collapse_no_move: u64,
+    pub tt_audit_window_collapse_halfmove_miss: u64,
+    pub tt_audit_nearmiss_eligible: u64,
+    pub tt_audit_nearmiss_lower: u64,
+    pub tt_audit_nearmiss_upper: u64,
+    pub tt_audit_nearmiss_margin_miss: u64,
+    pub tt_audit_nearmiss_bound_miss: u64,
+    pub tt_audit_nearmiss_cut: u64,
+    pub tt_audit_node_miss_by_depth: [u64; 24],
+    pub tt_audit_nearmiss_eligible_by_depth: [u64; 24],
+    pub tt_audit_nearmiss_cut_by_depth: [u64; 24],
 }
 
 /// Forced-move detection state (Viridithas pattern, set by `detect_forced_move`).
@@ -1604,6 +1629,10 @@ fn init_feature_flags() {
         if std::env::var("RFP_AUDIT").is_ok() {
             RFP_AUDIT.store(true, Ordering::Relaxed);
             eprintln!("RFP_AUDIT enabled: null-verifying every RFP cutoff (diagnostic, slow)");
+        }
+        if std::env::var("TT_CUTOFF_AUDIT").is_ok() {
+            TT_CUTOFF_AUDIT.store(true, Ordering::Relaxed);
+            eprintln!("TT_CUTOFF_AUDIT enabled: counting TT cutoff rejection reasons");
         }
     });
 }
@@ -3179,6 +3208,7 @@ fn negamax(
             // near-miss + QS) on halfmove < 90. Window-narrowing is still applied —
             // it only biases the search, while returning stale tt_score is unsafe.
             let halfmove_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
+            let tt_cutoff_audit = TT_CUTOFF_AUDIT.load(Ordering::Relaxed);
             if tt_depth >= depth && FEAT_TT_CUTOFF.load(Ordering::Relaxed) {
                 // Unified TT cutoff with node-type guard (Alexandria pattern):
                 // At non-PV nodes, accept TT cutoff when:
@@ -3198,6 +3228,33 @@ fn negamax(
                 // narrowing happens at line 2776+ after this check).
                 // 2026-05-31 audit finding B.
                 let tt_cut_is_pv = beta - alpha > 1;
+                if tt_cutoff_audit {
+                    info.stats.tt_audit_full_depth += 1;
+                    if !tt_cut_is_pv && cut_node == score_above_beta && bound_matches
+                        && halfmove_ok
+                    {
+                        info.stats.tt_audit_full_depth_direct_cut += 1;
+                    } else {
+                        if tt_cut_is_pv && bound_matches && halfmove_ok {
+                            info.stats.tt_audit_full_depth_pv_miss += 1;
+                        }
+                        if !tt_cut_is_pv && bound_matches && halfmove_ok
+                            && cut_node != score_above_beta
+                        {
+                            info.stats.tt_audit_full_depth_node_miss += 1;
+                            info.stats.tt_audit_node_miss_by_depth
+                                [depth.clamp(0, 23) as usize] += 1;
+                        }
+                        if !tt_cut_is_pv && !bound_matches && halfmove_ok {
+                            info.stats.tt_audit_full_depth_bound_miss += 1;
+                        }
+                        if !tt_cut_is_pv && cut_node == score_above_beta && bound_matches
+                            && !halfmove_ok
+                        {
+                            info.stats.tt_audit_full_depth_halfmove_miss += 1;
+                        }
+                    }
+                }
                 if !tt_cut_is_pv && cut_node == score_above_beta && bound_matches
                     && halfmove_ok
                 {
@@ -3258,6 +3315,8 @@ fn negamax(
                 }
 
                 // Fall through: use TT bounds to narrow alpha/beta window at non-PV nodes
+                let old_alpha = alpha;
+                let old_beta = beta;
                 match tt_entry.flag {
                     TT_FLAG_LOWER => {
                         if beta - alpha_orig == 1 && tt_score > alpha {
@@ -3271,7 +3330,22 @@ fn negamax(
                     }
                     _ => {}
                 }
+                if tt_cutoff_audit && (alpha != old_alpha || beta != old_beta) {
+                    info.stats.tt_audit_window_narrow += 1;
+                }
 
+                if alpha >= beta {
+                    if tt_cutoff_audit {
+                        if halfmove_ok {
+                            info.stats.tt_audit_window_collapse += 1;
+                            if tt_move == NO_MOVE {
+                                info.stats.tt_audit_window_collapse_no_move += 1;
+                            }
+                        } else {
+                            info.stats.tt_audit_window_collapse_halfmove_miss += 1;
+                        }
+                    }
+                }
                 if alpha >= beta && halfmove_ok {
                     if tt_move != NO_MOVE {
                         info.stats.tt_cutoffs += 1;
@@ -3337,13 +3411,38 @@ fn negamax(
             {
                 // TT near-miss cutoffs: accept entries 1 ply short with a score margin
                 let margin = 80;
+                if tt_cutoff_audit {
+                    info.stats.tt_audit_nearmiss_eligible += 1;
+                    info.stats.tt_audit_nearmiss_eligible_by_depth
+                        [depth.clamp(0, 23) as usize] += 1;
+                    match tt_entry.flag {
+                        TT_FLAG_LOWER => info.stats.tt_audit_nearmiss_lower += 1,
+                        TT_FLAG_UPPER => info.stats.tt_audit_nearmiss_upper += 1,
+                        _ => info.stats.tt_audit_nearmiss_bound_miss += 1,
+                    }
+                }
                 if tt_entry.flag == TT_FLAG_LOWER && tt_score - margin >= beta {
                     info.stats.tt_near_miss += 1;
+                    if tt_cutoff_audit {
+                        info.stats.tt_audit_nearmiss_cut += 1;
+                        info.stats.tt_audit_nearmiss_cut_by_depth
+                            [depth.clamp(0, 23) as usize] += 1;
+                    }
                     return tt_score - margin;
                 }
                 if tt_entry.flag == TT_FLAG_UPPER && tt_score + margin <= alpha {
                     info.stats.tt_near_miss += 1;
+                    if tt_cutoff_audit {
+                        info.stats.tt_audit_nearmiss_cut += 1;
+                        info.stats.tt_audit_nearmiss_cut_by_depth
+                            [depth.clamp(0, 23) as usize] += 1;
+                    }
                     return tt_score + margin;
+                }
+                if tt_cutoff_audit
+                    && (tt_entry.flag == TT_FLAG_LOWER || tt_entry.flag == TT_FLAG_UPPER)
+                {
+                    info.stats.tt_audit_nearmiss_margin_miss += 1;
                 }
             }
         }
@@ -5617,7 +5716,26 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         for d in 0..24 {
             total_stats.rfp_audit_attempts[d] += info.stats.rfp_audit_attempts[d];
             total_stats.rfp_audit_fp[d] += info.stats.rfp_audit_fp[d];
+            total_stats.tt_audit_node_miss_by_depth[d] += info.stats.tt_audit_node_miss_by_depth[d];
+            total_stats.tt_audit_nearmiss_eligible_by_depth[d] += info.stats.tt_audit_nearmiss_eligible_by_depth[d];
+            total_stats.tt_audit_nearmiss_cut_by_depth[d] += info.stats.tt_audit_nearmiss_cut_by_depth[d];
         }
+        total_stats.tt_audit_full_depth += info.stats.tt_audit_full_depth;
+        total_stats.tt_audit_full_depth_direct_cut += info.stats.tt_audit_full_depth_direct_cut;
+        total_stats.tt_audit_full_depth_pv_miss += info.stats.tt_audit_full_depth_pv_miss;
+        total_stats.tt_audit_full_depth_node_miss += info.stats.tt_audit_full_depth_node_miss;
+        total_stats.tt_audit_full_depth_bound_miss += info.stats.tt_audit_full_depth_bound_miss;
+        total_stats.tt_audit_full_depth_halfmove_miss += info.stats.tt_audit_full_depth_halfmove_miss;
+        total_stats.tt_audit_window_narrow += info.stats.tt_audit_window_narrow;
+        total_stats.tt_audit_window_collapse += info.stats.tt_audit_window_collapse;
+        total_stats.tt_audit_window_collapse_no_move += info.stats.tt_audit_window_collapse_no_move;
+        total_stats.tt_audit_window_collapse_halfmove_miss += info.stats.tt_audit_window_collapse_halfmove_miss;
+        total_stats.tt_audit_nearmiss_eligible += info.stats.tt_audit_nearmiss_eligible;
+        total_stats.tt_audit_nearmiss_lower += info.stats.tt_audit_nearmiss_lower;
+        total_stats.tt_audit_nearmiss_upper += info.stats.tt_audit_nearmiss_upper;
+        total_stats.tt_audit_nearmiss_margin_miss += info.stats.tt_audit_nearmiss_margin_miss;
+        total_stats.tt_audit_nearmiss_bound_miss += info.stats.tt_audit_nearmiss_bound_miss;
+        total_stats.tt_audit_nearmiss_cut += info.stats.tt_audit_nearmiss_cut;
 
         // Accumulate EBF data across all positions
         let max_d = info.completed_depth as usize;
@@ -5713,6 +5831,74 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         }
         eprintln!("TOTAL | {:>8} | {:>8} | {:>6.2}%", audit_total, fp_total,
             fp_total as f64 * 100.0 / audit_total as f64);
+    }
+
+    // TT cutoff audit table (only when TT_CUTOFF_AUDIT=1 produced data).
+    if s.tt_audit_full_depth > 0 || s.tt_audit_nearmiss_eligible > 0 {
+        let pct = |n: u64, d: u64| -> f64 {
+            if d > 0 { n as f64 * 100.0 / d as f64 } else { 0.0 }
+        };
+        eprintln!("--- TT Cutoff Audit (rejection reasons non-exclusive) ---");
+        if s.tt_audit_full_depth > 0 {
+            eprintln!("full-depth entries: {:>8}", s.tt_audit_full_depth);
+            eprintln!("  direct cuts:      {:>8} ({:>5.1}%)",
+                s.tt_audit_full_depth_direct_cut,
+                pct(s.tt_audit_full_depth_direct_cut, s.tt_audit_full_depth));
+            eprintln!("  blocked by PV:    {:>8} ({:>5.1}%)",
+                s.tt_audit_full_depth_pv_miss,
+                pct(s.tt_audit_full_depth_pv_miss, s.tt_audit_full_depth));
+            eprintln!("  node mismatch:    {:>8} ({:>5.1}%)",
+                s.tt_audit_full_depth_node_miss,
+                pct(s.tt_audit_full_depth_node_miss, s.tt_audit_full_depth));
+            eprintln!("  bound mismatch:   {:>8} ({:>5.1}%)",
+                s.tt_audit_full_depth_bound_miss,
+                pct(s.tt_audit_full_depth_bound_miss, s.tt_audit_full_depth));
+            eprintln!("  50mr blocked:     {:>8} ({:>5.1}%)",
+                s.tt_audit_full_depth_halfmove_miss,
+                pct(s.tt_audit_full_depth_halfmove_miss, s.tt_audit_full_depth));
+        }
+        if s.tt_audit_window_narrow > 0 || s.tt_audit_window_collapse > 0 {
+            eprintln!("window narrowing:  {:>8}", s.tt_audit_window_narrow);
+            eprintln!("  collapses:       {:>8} ({:>5.1}% of narrows)",
+                s.tt_audit_window_collapse,
+                pct(s.tt_audit_window_collapse, s.tt_audit_window_narrow));
+            eprintln!("  no-move collapse:{:>8} ({:>5.1}% of collapses)",
+                s.tt_audit_window_collapse_no_move,
+                pct(s.tt_audit_window_collapse_no_move, s.tt_audit_window_collapse));
+            eprintln!("  50mr collapse blocked: {:>8}", s.tt_audit_window_collapse_halfmove_miss);
+        }
+        if s.tt_audit_full_depth_node_miss > 0 {
+            eprintln!("node-mismatch misses by remaining depth:");
+            eprintln!("depth | misses");
+            for d in 0..24 {
+                let n = s.tt_audit_node_miss_by_depth[d];
+                if n > 0 {
+                    eprintln!("{:>5} | {:>8}", d, n);
+                }
+            }
+        }
+        if s.tt_audit_nearmiss_eligible > 0 {
+            eprintln!("near-miss eligible:{:>8}", s.tt_audit_nearmiss_eligible);
+            eprintln!("  cuts:            {:>8} ({:>5.1}%)",
+                s.tt_audit_nearmiss_cut,
+                pct(s.tt_audit_nearmiss_cut, s.tt_audit_nearmiss_eligible));
+            eprintln!("  lower / upper:   {:>8} / {:<8}",
+                s.tt_audit_nearmiss_lower, s.tt_audit_nearmiss_upper);
+            eprintln!("  margin miss:     {:>8} ({:>5.1}%)",
+                s.tt_audit_nearmiss_margin_miss,
+                pct(s.tt_audit_nearmiss_margin_miss, s.tt_audit_nearmiss_eligible));
+            eprintln!("  bound miss:      {:>8} ({:>5.1}%)",
+                s.tt_audit_nearmiss_bound_miss,
+                pct(s.tt_audit_nearmiss_bound_miss, s.tt_audit_nearmiss_eligible));
+            eprintln!("near-miss by remaining depth:");
+            eprintln!("depth | eligible | cuts | cut rate");
+            for d in 0..24 {
+                let e = s.tt_audit_nearmiss_eligible_by_depth[d];
+                if e == 0 { continue; }
+                let c = s.tt_audit_nearmiss_cut_by_depth[d];
+                eprintln!("{:>5} | {:>8} | {:>4} | {:>6.2}%", d, e, c, pct(c, e));
+            }
+        }
     }
 
     // Eval-path decomposition — supports the "evals/node" investigation
