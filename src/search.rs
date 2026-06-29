@@ -3198,7 +3198,8 @@ fn negamax(
                 // narrowing happens at line 2776+ after this check).
                 // 2026-05-31 audit finding B.
                 let tt_cut_is_pv = beta - alpha > 1;
-                if !tt_cut_is_pv && cut_node == score_above_beta && bound_matches
+                let tt_node_guard_ok = cut_node == score_above_beta || depth > 5;
+                if !tt_cut_is_pv && tt_node_guard_ok && bound_matches
                     && halfmove_ok
                 {
                     info.stats.tt_cutoffs += 1;
