@@ -497,9 +497,9 @@ tunables!(
     //   HALFMOVE_SCALE_DENOM=100 -> score*(100-hm)/100 (rule50 decay rate);
     //   MATERIAL_SCALE_BASE=22400 -> score*(22400+mat)/32/1024;
     //   PAWN_MAT_SCALE=0 -> no pawn term in the material scalar (non-pawn-only).
-    (HALFMOVE_SCALE_DENOM, 100, 80, 280, 12.0, false),
-    (MATERIAL_SCALE_BASE, 22400, 10000, 40000, 1500.0, false),
-    (PAWN_MAT_SCALE, 0, 0, 200, 10.0, false),
+    (HALFMOVE_SCALE_DENOM, 108, 80, 280, 12.0, false),
+    (MATERIAL_SCALE_BASE, 22283, 10000, 40000, 1500.0, false),
+    (PAWN_MAT_SCALE, 104, 0, 200, 10.0, false),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
