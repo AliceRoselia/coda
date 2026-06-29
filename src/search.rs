@@ -1605,6 +1605,10 @@ fn init_feature_flags() {
             RFP_AUDIT.store(true, Ordering::Relaxed);
             eprintln!("RFP_AUDIT enabled: null-verifying every RFP cutoff (diagnostic, slow)");
         }
+        if std::env::var("TT_AUDIT").is_ok() {
+            crate::tt::set_tt_audit_enabled(true);
+            eprintln!("TT_AUDIT enabled: counting TT store/replacement outcomes (diagnostic)");
+        }
     });
 }
 
@@ -5552,8 +5556,17 @@ pub fn bench_silent(depth: i32, nnue_path: Option<&str>) -> u64 {
 
 fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     let positions = BENCH_POSITIONS;
+    init_feature_flags();
 
-    let mut info = SearchInfo::new(16);
+    let bench_hash_mb = std::env::var("BENCH_HASH_MB")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(16);
+    if crate::tt::tt_audit_enabled() {
+        crate::tt::reset_tt_audit();
+    }
+
+    let mut info = SearchInfo::new(bench_hash_mb);
     info.silent = !print_stats;
     if let Some(path) = nnue_path {
         if let Err(e) = info.load_nnue(path) {
@@ -5698,6 +5711,60 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     eprintln!("First-move cut: {:>5.1}%", if s.beta_cutoffs > 0 { s.first_move_cutoffs as f64 / s.beta_cutoffs as f64 * 100.0 } else { 0.0 });
 
     eprintln!("Total nodes:    {:>8}", total_nodes);
+
+    let tt_audit = crate::tt::tt_audit_snapshot();
+    if tt_audit.store_calls > 0 {
+        let pct = |part: u64, total: u64| -> f64 {
+            if total > 0 { part as f64 * 100.0 / total as f64 } else { 0.0 }
+        };
+        let repl = tt_audit.outcome_replace;
+        eprintln!("--- TT Store/Replacement Audit (BENCH_HASH_MB={}) ---", bench_hash_mb);
+        eprintln!("stores:         {:>10}  exact={} ({:.1}%) lower={} ({:.1}%) upper={} ({:.1}%)",
+            tt_audit.store_calls,
+            tt_audit.store_exact, pct(tt_audit.store_exact, tt_audit.store_calls),
+            tt_audit.store_lower, pct(tt_audit.store_lower, tt_audit.store_calls),
+            tt_audit.store_upper, pct(tt_audit.store_upper, tt_audit.store_calls));
+        eprintln!("store depth:    static(-2)={} ({:.1}%) qs(-1)={} ({:.1}%) main>=0={} ({:.1}%)",
+            tt_audit.store_static_seed, pct(tt_audit.store_static_seed, tt_audit.store_calls),
+            tt_audit.store_qsearch, pct(tt_audit.store_qsearch, tt_audit.store_calls),
+            tt_audit.store_main, pct(tt_audit.store_main, tt_audit.store_calls));
+        eprintln!("store moves:    has-move={} ({:.1}%) no-move={} ({:.1}%)",
+            tt_audit.store_has_move, pct(tt_audit.store_has_move, tt_audit.store_calls),
+            tt_audit.store_no_move, pct(tt_audit.store_no_move, tt_audit.store_calls));
+        eprintln!("outcomes:       empty={} ({:.1}%) key-update={} ({:.1}%) key-skip={} ({:.1}%) replace={} ({:.1}%)",
+            tt_audit.outcome_empty, pct(tt_audit.outcome_empty, tt_audit.store_calls),
+            tt_audit.outcome_key_update, pct(tt_audit.outcome_key_update, tt_audit.store_calls),
+            tt_audit.outcome_key_skip, pct(tt_audit.outcome_key_skip, tt_audit.store_calls),
+            tt_audit.outcome_replace, pct(tt_audit.outcome_replace, tt_audit.store_calls));
+        eprintln!("same-key:       matches={}  preserved-move-on-no-move-update={}",
+            tt_audit.outcome_key_match, tt_audit.key_preserved_move);
+        if repl > 0 {
+            eprintln!("victim flags:   exact={} ({:.1}%) lower={} ({:.1}%) upper={} ({:.1}%)",
+                tt_audit.replace_victim_exact, pct(tt_audit.replace_victim_exact, repl),
+                tt_audit.replace_victim_lower, pct(tt_audit.replace_victim_lower, repl),
+                tt_audit.replace_victim_upper, pct(tt_audit.replace_victim_upper, repl));
+            eprintln!("victim depth:   static(-2)={} ({:.1}%) qs(-1)={} ({:.1}%) search>=0={} ({:.1}%)",
+                tt_audit.replace_victim_static_seed, pct(tt_audit.replace_victim_static_seed, repl),
+                tt_audit.replace_victim_qsearch, pct(tt_audit.replace_victim_qsearch, repl),
+                tt_audit.replace_victim_search, pct(tt_audit.replace_victim_search, repl));
+            eprintln!("victim moves:   has-move={} ({:.1}%) no-move={} ({:.1}%) current-gen={} ({:.1}%) stale-gen={} ({:.1}%)",
+                tt_audit.replace_victim_has_move, pct(tt_audit.replace_victim_has_move, repl),
+                tt_audit.replace_victim_no_move, pct(tt_audit.replace_victim_no_move, repl),
+                tt_audit.replace_victim_current_gen, pct(tt_audit.replace_victim_current_gen, repl),
+                tt_audit.replace_victim_stale_gen, pct(tt_audit.replace_victim_stale_gen, repl));
+            eprintln!("depth damage:   victim>new={} ({:.1}%) victim>=new+4={} ({:.1}%)",
+                tt_audit.replace_victim_deeper_than_new, pct(tt_audit.replace_victim_deeper_than_new, repl),
+                tt_audit.replace_victim_depth_ge_new_plus4, pct(tt_audit.replace_victim_depth_ge_new_plus4, repl));
+            eprintln!("pressure:       static->search={} ({:.1}% repl) static->move={} qs->search={} ({:.1}% repl) qs->move={}",
+                tt_audit.static_seed_replaced_search, pct(tt_audit.static_seed_replaced_search, repl),
+                tt_audit.static_seed_replaced_move,
+                tt_audit.qsearch_replaced_search, pct(tt_audit.qsearch_replaced_search, repl),
+                tt_audit.qsearch_replaced_move);
+            eprintln!("search writes:  replaced-exact={} ({:.1}% repl) replaced-deeper={} ({:.1}% repl)",
+                tt_audit.search_replaced_exact, pct(tt_audit.search_replaced_exact, repl),
+                tt_audit.search_replaced_deeper, pct(tt_audit.search_replaced_deeper, repl));
+        }
+    }
 
     // RFP false-positive audit table (only when RFP_AUDIT=1 produced data).
     let audit_total: u64 = s.rfp_audit_attempts.iter().sum();

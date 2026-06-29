@@ -3,7 +3,7 @@
 //! Parallel arrays, 32-bit XOR key verification, power-of-2 indexing.
 
 use crate::types::*;
-use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 pub const TT_FLAG_NONE: u8 = 0;
 pub const TT_FLAG_EXACT: u8 = 1; // PV-node (exact score)
@@ -69,6 +69,294 @@ fn unpack_depth(data: u64) -> i32 {
 #[inline(always)]
 fn unpack_generation(data: u64) -> u8 {
     (data >> 56) as u8
+}
+
+/// Diagnostic-only TT replacement audit. Disabled by default; enable with
+/// `TT_AUDIT=1` for bench runs. This uses global atomics because TT writes
+/// happen below SearchInfo and may also come from helper threads.
+static TT_AUDIT: AtomicBool = AtomicBool::new(false);
+
+#[derive(Default, Clone, Copy)]
+pub struct TTAuditSnapshot {
+    pub store_calls: u64,
+    pub store_exact: u64,
+    pub store_lower: u64,
+    pub store_upper: u64,
+    pub store_has_move: u64,
+    pub store_no_move: u64,
+    pub store_static_seed: u64,
+    pub store_qsearch: u64,
+    pub store_main: u64,
+    pub outcome_empty: u64,
+    pub outcome_key_match: u64,
+    pub outcome_key_update: u64,
+    pub outcome_key_skip: u64,
+    pub outcome_replace: u64,
+    pub key_preserved_move: u64,
+    pub replace_victim_exact: u64,
+    pub replace_victim_lower: u64,
+    pub replace_victim_upper: u64,
+    pub replace_victim_has_move: u64,
+    pub replace_victim_no_move: u64,
+    pub replace_victim_current_gen: u64,
+    pub replace_victim_stale_gen: u64,
+    pub replace_victim_search: u64,
+    pub replace_victim_qsearch: u64,
+    pub replace_victim_static_seed: u64,
+    pub replace_victim_deeper_than_new: u64,
+    pub replace_victim_depth_ge_new_plus4: u64,
+    pub static_seed_replaced_search: u64,
+    pub static_seed_replaced_move: u64,
+    pub qsearch_replaced_search: u64,
+    pub qsearch_replaced_move: u64,
+    pub search_replaced_exact: u64,
+    pub search_replaced_deeper: u64,
+}
+
+struct TTAuditCounters {
+    store_calls: AtomicU64,
+    store_exact: AtomicU64,
+    store_lower: AtomicU64,
+    store_upper: AtomicU64,
+    store_has_move: AtomicU64,
+    store_no_move: AtomicU64,
+    store_static_seed: AtomicU64,
+    store_qsearch: AtomicU64,
+    store_main: AtomicU64,
+    outcome_empty: AtomicU64,
+    outcome_key_match: AtomicU64,
+    outcome_key_update: AtomicU64,
+    outcome_key_skip: AtomicU64,
+    outcome_replace: AtomicU64,
+    key_preserved_move: AtomicU64,
+    replace_victim_exact: AtomicU64,
+    replace_victim_lower: AtomicU64,
+    replace_victim_upper: AtomicU64,
+    replace_victim_has_move: AtomicU64,
+    replace_victim_no_move: AtomicU64,
+    replace_victim_current_gen: AtomicU64,
+    replace_victim_stale_gen: AtomicU64,
+    replace_victim_search: AtomicU64,
+    replace_victim_qsearch: AtomicU64,
+    replace_victim_static_seed: AtomicU64,
+    replace_victim_deeper_than_new: AtomicU64,
+    replace_victim_depth_ge_new_plus4: AtomicU64,
+    static_seed_replaced_search: AtomicU64,
+    static_seed_replaced_move: AtomicU64,
+    qsearch_replaced_search: AtomicU64,
+    qsearch_replaced_move: AtomicU64,
+    search_replaced_exact: AtomicU64,
+    search_replaced_deeper: AtomicU64,
+}
+
+impl TTAuditCounters {
+    const fn new() -> Self {
+        Self {
+            store_calls: AtomicU64::new(0),
+            store_exact: AtomicU64::new(0),
+            store_lower: AtomicU64::new(0),
+            store_upper: AtomicU64::new(0),
+            store_has_move: AtomicU64::new(0),
+            store_no_move: AtomicU64::new(0),
+            store_static_seed: AtomicU64::new(0),
+            store_qsearch: AtomicU64::new(0),
+            store_main: AtomicU64::new(0),
+            outcome_empty: AtomicU64::new(0),
+            outcome_key_match: AtomicU64::new(0),
+            outcome_key_update: AtomicU64::new(0),
+            outcome_key_skip: AtomicU64::new(0),
+            outcome_replace: AtomicU64::new(0),
+            key_preserved_move: AtomicU64::new(0),
+            replace_victim_exact: AtomicU64::new(0),
+            replace_victim_lower: AtomicU64::new(0),
+            replace_victim_upper: AtomicU64::new(0),
+            replace_victim_has_move: AtomicU64::new(0),
+            replace_victim_no_move: AtomicU64::new(0),
+            replace_victim_current_gen: AtomicU64::new(0),
+            replace_victim_stale_gen: AtomicU64::new(0),
+            replace_victim_search: AtomicU64::new(0),
+            replace_victim_qsearch: AtomicU64::new(0),
+            replace_victim_static_seed: AtomicU64::new(0),
+            replace_victim_deeper_than_new: AtomicU64::new(0),
+            replace_victim_depth_ge_new_plus4: AtomicU64::new(0),
+            static_seed_replaced_search: AtomicU64::new(0),
+            static_seed_replaced_move: AtomicU64::new(0),
+            qsearch_replaced_search: AtomicU64::new(0),
+            qsearch_replaced_move: AtomicU64::new(0),
+            search_replaced_exact: AtomicU64::new(0),
+            search_replaced_deeper: AtomicU64::new(0),
+        }
+    }
+
+    fn reset(&self) {
+        macro_rules! zero {
+            ($($field:ident),+ $(,)?) => {
+                $(self.$field.store(0, Ordering::Relaxed);)+
+            };
+        }
+        zero!(
+            store_calls, store_exact, store_lower, store_upper,
+            store_has_move, store_no_move, store_static_seed, store_qsearch,
+            store_main, outcome_empty, outcome_key_match, outcome_key_update,
+            outcome_key_skip, outcome_replace, key_preserved_move,
+            replace_victim_exact, replace_victim_lower, replace_victim_upper,
+            replace_victim_has_move, replace_victim_no_move,
+            replace_victim_current_gen, replace_victim_stale_gen,
+            replace_victim_search, replace_victim_qsearch,
+            replace_victim_static_seed, replace_victim_deeper_than_new,
+            replace_victim_depth_ge_new_plus4, static_seed_replaced_search,
+            static_seed_replaced_move, qsearch_replaced_search,
+            qsearch_replaced_move, search_replaced_exact,
+            search_replaced_deeper,
+        );
+    }
+
+    fn snapshot(&self) -> TTAuditSnapshot {
+        macro_rules! load {
+            ($field:ident) => {
+                self.$field.load(Ordering::Relaxed)
+            };
+        }
+        TTAuditSnapshot {
+            store_calls: load!(store_calls),
+            store_exact: load!(store_exact),
+            store_lower: load!(store_lower),
+            store_upper: load!(store_upper),
+            store_has_move: load!(store_has_move),
+            store_no_move: load!(store_no_move),
+            store_static_seed: load!(store_static_seed),
+            store_qsearch: load!(store_qsearch),
+            store_main: load!(store_main),
+            outcome_empty: load!(outcome_empty),
+            outcome_key_match: load!(outcome_key_match),
+            outcome_key_update: load!(outcome_key_update),
+            outcome_key_skip: load!(outcome_key_skip),
+            outcome_replace: load!(outcome_replace),
+            key_preserved_move: load!(key_preserved_move),
+            replace_victim_exact: load!(replace_victim_exact),
+            replace_victim_lower: load!(replace_victim_lower),
+            replace_victim_upper: load!(replace_victim_upper),
+            replace_victim_has_move: load!(replace_victim_has_move),
+            replace_victim_no_move: load!(replace_victim_no_move),
+            replace_victim_current_gen: load!(replace_victim_current_gen),
+            replace_victim_stale_gen: load!(replace_victim_stale_gen),
+            replace_victim_search: load!(replace_victim_search),
+            replace_victim_qsearch: load!(replace_victim_qsearch),
+            replace_victim_static_seed: load!(replace_victim_static_seed),
+            replace_victim_deeper_than_new: load!(replace_victim_deeper_than_new),
+            replace_victim_depth_ge_new_plus4: load!(replace_victim_depth_ge_new_plus4),
+            static_seed_replaced_search: load!(static_seed_replaced_search),
+            static_seed_replaced_move: load!(static_seed_replaced_move),
+            qsearch_replaced_search: load!(qsearch_replaced_search),
+            qsearch_replaced_move: load!(qsearch_replaced_move),
+            search_replaced_exact: load!(search_replaced_exact),
+            search_replaced_deeper: load!(search_replaced_deeper),
+        }
+    }
+}
+
+static TT_AUDIT_COUNTERS: TTAuditCounters = TTAuditCounters::new();
+
+pub fn set_tt_audit_enabled(enabled: bool) {
+    TT_AUDIT.store(enabled, Ordering::Relaxed);
+}
+
+pub fn tt_audit_enabled() -> bool {
+    TT_AUDIT.load(Ordering::Relaxed)
+}
+
+pub fn reset_tt_audit() {
+    TT_AUDIT_COUNTERS.reset();
+}
+
+pub fn tt_audit_snapshot() -> TTAuditSnapshot {
+    TT_AUDIT_COUNTERS.snapshot()
+}
+
+#[inline(always)]
+fn audit_inc(counter: &AtomicU64) {
+    counter.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline(always)]
+fn audit_store_call(depth: i32, flag: u8, best_move: Move) {
+    audit_inc(&TT_AUDIT_COUNTERS.store_calls);
+    match flag {
+        TT_FLAG_EXACT => audit_inc(&TT_AUDIT_COUNTERS.store_exact),
+        TT_FLAG_LOWER => audit_inc(&TT_AUDIT_COUNTERS.store_lower),
+        TT_FLAG_UPPER => audit_inc(&TT_AUDIT_COUNTERS.store_upper),
+        _ => {}
+    }
+    if best_move == NO_MOVE {
+        audit_inc(&TT_AUDIT_COUNTERS.store_no_move);
+    } else {
+        audit_inc(&TT_AUDIT_COUNTERS.store_has_move);
+    }
+    if depth <= -2 {
+        audit_inc(&TT_AUDIT_COUNTERS.store_static_seed);
+    } else if depth == -1 {
+        audit_inc(&TT_AUDIT_COUNTERS.store_qsearch);
+    } else {
+        audit_inc(&TT_AUDIT_COUNTERS.store_main);
+    }
+}
+
+#[inline(always)]
+fn audit_replacement(new_depth: i32, victim_data: u64, gen: u8) {
+    audit_inc(&TT_AUDIT_COUNTERS.outcome_replace);
+
+    let victim_flag = unpack_flag(victim_data);
+    let victim_depth = unpack_depth(victim_data);
+    let victim_move = unpack_move(victim_data);
+    let victim_gen = unpack_generation(victim_data);
+
+    match victim_flag {
+        TT_FLAG_EXACT => audit_inc(&TT_AUDIT_COUNTERS.replace_victim_exact),
+        TT_FLAG_LOWER => audit_inc(&TT_AUDIT_COUNTERS.replace_victim_lower),
+        TT_FLAG_UPPER => audit_inc(&TT_AUDIT_COUNTERS.replace_victim_upper),
+        _ => {}
+    }
+    if victim_move == NO_MOVE {
+        audit_inc(&TT_AUDIT_COUNTERS.replace_victim_no_move);
+    } else {
+        audit_inc(&TT_AUDIT_COUNTERS.replace_victim_has_move);
+    }
+    if victim_gen == gen {
+        audit_inc(&TT_AUDIT_COUNTERS.replace_victim_current_gen);
+    } else {
+        audit_inc(&TT_AUDIT_COUNTERS.replace_victim_stale_gen);
+    }
+    if victim_depth <= -2 {
+        audit_inc(&TT_AUDIT_COUNTERS.replace_victim_static_seed);
+    } else if victim_depth == -1 {
+        audit_inc(&TT_AUDIT_COUNTERS.replace_victim_qsearch);
+    } else {
+        audit_inc(&TT_AUDIT_COUNTERS.replace_victim_search);
+    }
+    if victim_depth > new_depth {
+        audit_inc(&TT_AUDIT_COUNTERS.replace_victim_deeper_than_new);
+    }
+    if victim_depth >= new_depth + 4 {
+        audit_inc(&TT_AUDIT_COUNTERS.replace_victim_depth_ge_new_plus4);
+    }
+    if new_depth <= -2 && victim_depth >= 0 {
+        audit_inc(&TT_AUDIT_COUNTERS.static_seed_replaced_search);
+        if victim_move != NO_MOVE {
+            audit_inc(&TT_AUDIT_COUNTERS.static_seed_replaced_move);
+        }
+    }
+    if new_depth == -1 && victim_depth >= 0 {
+        audit_inc(&TT_AUDIT_COUNTERS.qsearch_replaced_search);
+        if victim_move != NO_MOVE {
+            audit_inc(&TT_AUDIT_COUNTERS.qsearch_replaced_move);
+        }
+    }
+    if new_depth >= 0 && victim_flag == TT_FLAG_EXACT {
+        audit_inc(&TT_AUDIT_COUNTERS.search_replaced_exact);
+    }
+    if new_depth >= 0 && victim_depth > new_depth {
+        audit_inc(&TT_AUDIT_COUNTERS.search_replaced_deeper);
+    }
 }
 
 /// A bucket of 5 slots using parallel arrays.
@@ -439,6 +727,10 @@ impl TT {
         let bucket = &self.buckets[idx];
         let gen = self.generation.load(Ordering::Relaxed);
         let key_upper = (hash >> 32) as u32;
+        let audit = TT_AUDIT.load(Ordering::Relaxed);
+        if audit {
+            audit_store_call(depth, flag, best_move);
+        }
 
         let new_data = pack_data(best_move, flag, static_eval, score, depth, gen, is_pv);
         let new_key = key_upper ^ (new_data as u32);
@@ -446,6 +738,7 @@ impl TT {
         // Scan all 5 slots: key match, empty, or worst-scoring
         let mut replace_idx = 0;
         let mut replace_score = i32::MAX;
+        let mut replace_data = 0u64;
 
         for i in 0..BUCKET_SIZE {
             // Probe-equivalent loads: key first (Acquire) so we see the
@@ -463,6 +756,9 @@ impl TT {
             // probe seeing the new key on another core is guaranteed to see
             // the matching new data.
             if slot_flag == TT_FLAG_NONE {
+                if audit {
+                    audit_inc(&TT_AUDIT_COUNTERS.outcome_empty);
+                }
                 bucket.data[i].store(new_data, Ordering::Release);
                 bucket.keys[i].store(new_key, Ordering::Release);
                 return;
@@ -474,8 +770,17 @@ impl TT {
             // prior iteration — all 5 reference engines implement this).
             // (audit T2 + T3)
             if recovered_upper == key_upper {
+                if audit {
+                    audit_inc(&TT_AUDIT_COUNTERS.outcome_key_match);
+                }
                 let flag_is_exact = flag == TT_FLAG_EXACT;
                 if depth > slot_depth - 3 || gen != slot_gen || flag_is_exact {
+                    if audit {
+                        audit_inc(&TT_AUDIT_COUNTERS.outcome_key_update);
+                        if best_move == NO_MOVE && unpack_move(slot_data) != NO_MOVE {
+                            audit_inc(&TT_AUDIT_COUNTERS.key_preserved_move);
+                        }
+                    }
                     // Preserve the existing best move when we have none (T2)
                     let effective_move = if best_move == NO_MOVE {
                         unpack_move(slot_data)
@@ -486,6 +791,8 @@ impl TT {
                     let stored_key = key_upper ^ (stored_data as u32);
                     bucket.data[i].store(stored_data, Ordering::Release);
                     bucket.keys[i].store(stored_key, Ordering::Release);
+                } else if audit {
+                    audit_inc(&TT_AUDIT_COUNTERS.outcome_key_skip);
                 }
                 return;
             }
@@ -499,10 +806,14 @@ impl TT {
             if slot_score < replace_score {
                 replace_score = slot_score;
                 replace_idx = i;
+                replace_data = slot_data;
             }
         }
 
         // No key match and no empty slot: replace worst-scoring slot
+        if audit {
+            audit_replacement(depth, replace_data, gen);
+        }
         bucket.data[replace_idx].store(new_data, Ordering::Release);
         bucket.keys[replace_idx].store(new_key, Ordering::Release);
     }
