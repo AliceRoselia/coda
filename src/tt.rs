@@ -442,9 +442,10 @@ impl TT {
 
         let new_data = pack_data(best_move, flag, static_eval, score, depth, gen, is_pv);
         let new_key = key_upper ^ (new_data as u32);
+        let is_qsearch_store = depth == -1;
 
         // Scan all 5 slots: key match, empty, or worst-scoring
-        let mut replace_idx = 0;
+        let mut replace_idx = None;
         let mut replace_score = i32::MAX;
 
         for i in 0..BUCKET_SIZE {
@@ -494,15 +495,21 @@ impl TT {
             // GENERATION_DELTA=8). Stale entries depreciate twice as fast as
             // the previous `*4`, freeing slots for fresh shallow entries
             // when TT pressure is high.
+            if is_qsearch_store && slot_depth >= 0 {
+                continue;
+            }
             let age = gen.wrapping_sub(slot_gen) as i32;
             let slot_score = slot_depth - age * 8;
             if slot_score < replace_score {
                 replace_score = slot_score;
-                replace_idx = i;
+                replace_idx = Some(i);
             }
         }
 
         // No key match and no empty slot: replace worst-scoring slot
+        let Some(replace_idx) = replace_idx else {
+            return;
+        };
         bucket.data[replace_idx].store(new_data, Ordering::Release);
         bucket.keys[replace_idx].store(new_key, Ordering::Release);
     }
