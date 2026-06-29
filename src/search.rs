@@ -3330,6 +3330,7 @@ fn negamax(
                     return downgrade_50mr_mate(tt_score, ply, board.halfmove);
                 }
             } else if tt_depth >= depth - 1
+                && depth > 0
                 && beta - alpha_orig == 1
                 && tt_score > -(MATE_SCORE - 100) && tt_score < MATE_SCORE - 100
                 && FEAT_TT_NEARMISS.load(Ordering::Relaxed)
