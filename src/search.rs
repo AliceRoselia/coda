@@ -3336,7 +3336,7 @@ fn negamax(
                 && halfmove_ok
             {
                 // TT near-miss cutoffs: accept entries 1 ply short with a score margin
-                let margin = 80;
+                let margin = 80 + 8 * (depth - 8).max(0);
                 if tt_entry.flag == TT_FLAG_LOWER && tt_score - margin >= beta {
                     info.stats.tt_near_miss += 1;
                     return tt_score - margin;
