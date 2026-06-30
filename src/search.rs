@@ -416,7 +416,7 @@ tunables!(
     // the value to the floor across tunes. Widened to allow 0× (full disable)
     // so SPSA can find the genuine optimum. CLAUDE.md previously claimed
     // "3× in move ordering" — stale; corrected to "1× current SPSA basin".
-    (CONT_HIST_MULT_10X, 17, 0, 80, 15.0, true),
+    (CONT_HIST_MULT_10X, 20, 0, 80, 15.0, true),
     // Pawn-history weight in quiet move ordering. Was hardcoded at 1×;
     // making tunable lets SPSA find the right pawn-structure weighting
     // relative to main/cont/etc. Default 10 = eff 1× (bench-neutral).

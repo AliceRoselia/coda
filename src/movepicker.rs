@@ -589,9 +589,15 @@ impl MovePicker {
         // tunable loads and board-derived bitboards. Pure loads with no
         // side effects — the per-move scoring arithmetic is unchanged.
         use std::sync::atomic::Ordering;
-        let cm = crate::search::tp10(&crate::search::CONT_HIST_MULT_10X);
-        let cont_weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
-        let pw = crate::search::tp10(&crate::search::PAWN_HIST_MULT_10X);
+        // Fixed-point `_10X` weights: real weight = raw/10, applied per-term as
+        // (raw * hist) / 10. This replaces tp10() (which collapsed the weight to
+        // an integer and made sub-integer SPSA exploration invisible — see
+        // feedback_tunable_precision_fixed_point). Defaults are chosen so the
+        // quotient is bit-identical to the old tp10 values: CONT default 20 →
+        // (20*h)/10 = 2*h (old tp10(17)=2); the 1x plies use raw 10 → (10*h)/10 = h.
+        let cm = crate::search::CONT_HIST_MULT_10X.load(Ordering::Relaxed);
+        let cont_weights = [cm, cm, 10i32, 10]; // ply-1, ply-2, ply-4, ply-6 (10 = 1.0x)
+        let pw = crate::search::PAWN_HIST_MULT_10X.load(Ordering::Relaxed);
         let null_threat_escape_bonus = crate::search::NULL_THREAT_ESCAPE_BONUS.load(Ordering::Relaxed);
         let escape_bonus_q = crate::search::ESCAPE_BONUS_Q.load(Ordering::Relaxed);
         let escape_bonus_r = crate::search::ESCAPE_BONUS_R.load(Ordering::Relaxed);
@@ -634,7 +640,7 @@ impl MovePicker {
                 for (i, &w) in cont_weights.iter().enumerate() {
                     if let Some(sub_ptr) = self.cont_hist_subs[i] {
                         let sub = unsafe { &*sub_ptr };
-                        score += w * sub[gp][to as usize] as i32;
+                        score += w * sub[gp][to as usize] as i32 / 10;
                     }
                 }
             }
@@ -643,7 +649,7 @@ impl MovePicker {
             if let Some(ph_ptr) = self.pawn_hist_ptr {
                 if piece != NO_PIECE {
                     let ph = unsafe { &*ph_ptr };
-                    score += pw * ph[go_piece(piece)][to as usize] as i32;
+                    score += pw * ph[go_piece(piece)][to as usize] as i32 / 10;
                 }
             }
 
@@ -766,9 +772,12 @@ impl MovePicker {
 
         // Per-node tunable loads hoisted out of the scoring loop (pure
         // atomic loads — quiet-branch arithmetic unchanged).
-        let cm = crate::search::tp10(&crate::search::CONT_HIST_MULT_10X);
-        let cont_weights = [cm, cm, 1i32, 1]; // ply-1, ply-2, ply-4, ply-6
-        let pw = crate::search::tp10(&crate::search::PAWN_HIST_MULT_10X);
+        use std::sync::atomic::Ordering;
+        // Fixed-point `_10X` weights — see generate_and_score_quiets for the
+        // rationale and bit-identical-at-default argument.
+        let cm = crate::search::CONT_HIST_MULT_10X.load(Ordering::Relaxed);
+        let cont_weights = [cm, cm, 10i32, 10]; // ply-1, ply-2, ply-4, ply-6 (10 = 1.0x)
+        let pw = crate::search::PAWN_HIST_MULT_10X.load(Ordering::Relaxed);
 
         for i in 0..all.len {
             let m = all.get(i);
@@ -807,7 +816,7 @@ impl MovePicker {
                     for (i, &w) in cont_weights.iter().enumerate() {
                         if let Some(sub_ptr) = self.cont_hist_subs[i] {
                             let sub = unsafe { &*sub_ptr };
-                            s += w * sub[gp][to as usize] as i32;
+                            s += w * sub[gp][to as usize] as i32 / 10;
                         }
                     }
                 }
@@ -815,7 +824,7 @@ impl MovePicker {
                 if let Some(ph_ptr) = self.pawn_hist_ptr {
                     if piece != NO_PIECE {
                         let ph = unsafe { &*ph_ptr };
-                        s += pw * ph[go_piece(piece)][to as usize] as i32;
+                        s += pw * ph[go_piece(piece)][to as usize] as i32 / 10;
                     }
                 }
 
