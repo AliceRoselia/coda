@@ -4083,7 +4083,12 @@ fn negamax(
                 let singular_depth = (depth - 1) / 2;
 
                 info.excluded_move[ply_u] = tt_move;
-                let singular_score = negamax(board, info, singular_beta - 1, singular_beta, singular_depth, ply, false);
+                // Pass THIS node's cut_node into the verification search (SF
+                // search.cpp:1157 passes `cutNode`). The singular search is a
+                // re-search of the current node (same ply, TT move excluded),
+                // so its node type is this node's — hardcoding `false` told the
+                // child it was a PV/all-node, mis-shaping its LMR/pruning.
+                let singular_score = negamax(board, info, singular_beta - 1, singular_beta, singular_depth, ply, cut_node);
                 info.excluded_move[ply_u] = NO_MOVE;
 
                 if info.stop.load(Ordering::Relaxed) {
