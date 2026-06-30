@@ -2964,7 +2964,14 @@ fn negamax(
     if ply > 0 {
         let draw_score: i32 = 0;
         if board.halfmove >= 100 {
-            return draw_score;
+            // Checkmate takes precedence over the 50-move draw (FIDE 5.2a /
+            // 9.3): if the move that pushed the clock to 100 delivered mate,
+            // it is mate, not a draw. Only pay for the legal-move scan when
+            // actually in check (doubly rare: clock maxed AND in check); when
+            // checkmated, fall through so the move loop returns the mate.
+            if !board.in_check() || generate_legal_moves(board).len > 0 {
+                return draw_score;
+            }
         }
         if board.is_insufficient_material() {
             return draw_score;
@@ -4973,7 +4980,12 @@ fn quiescence_with_depth(
     // Draw detection: repetition and 50-move rule. Contempt removed (#508).
     let draw_score = 0;
     if board.halfmove >= 100 {
-        return draw_score;
+        // Checkmate precedence (see negamax): a mate that lands on the 100th
+        // halfmove is mate, not a 50-move draw. QS detects it via the
+        // move_count==0 evasion path below.
+        if !board.in_check() || generate_legal_moves(board).len > 0 {
+            return draw_score;
+        }
     }
     // FIDE Art 5.2: insufficient material to mate (any side). Mirrors
     // negamax's guard (added for Lichess game I4qJhfQw drawn KB-vs-K
