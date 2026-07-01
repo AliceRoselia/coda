@@ -720,6 +720,23 @@ mod incremental_tests {
     }
 
     #[test]
+    fn en_passant_double_vacate_on_slider_ray() {
+        // Hardest EP telescoping case (Agent 5 audit, 2026-07-01): exf6 EP vacates
+        // BOTH e5 and f5 on rank 5, where white Ra5 x-rays east. Before: a5->e5
+        // direct + a5->f5 x-ray (through e5). After: both pawns gone, Ra5 sees the
+        // knight -> a5->h5 direct, x-ray cleared. The incremental delta path must
+        // net this double-vacate x-ray discovery against full recompute. This is
+        // the deterministic version of the scenario fuzz_random_games only reaches
+        // probabilistically (the curated en_passant_capture test has no slider on
+        // the EP rank).
+        run_scenario(
+            "ep_double_vacate_slider_ray",
+            "4k3/8/8/R3Pp1n/8/8/8/4K3 w - f6 0 1",
+            &["e5f6"],
+        );
+    }
+
+    #[test]
     fn castling_kingside() {
         // Castle moves both king and rook — tests back-to-back deltas
         // plus per-perspective king-file-mirror change.
