@@ -825,6 +825,22 @@ pub struct SearchInfo {
     /// Our remaining clock (ms, post-overhead) for the current search — feeds
     /// the inc-relative-to-budget ceiling discriminator.
     tm_time_left: u64,
+    /// No-inc banking governor: EMA of (actual move spend / that move's
+    /// pre-multiplier planned baseline `soft_limit`) across moves. >1.0 means
+    /// we've been running over plan recently. Persists ACROSS MOVES within a
+    /// game (NOT reset by the per-move TM reset block in `search()` —
+    /// intentional, this is the whole point) and is only reset to 1.0 (neutral)
+    /// on `ucinewgame`. No-inc sudden death has no increment to refill an
+    /// overspend, so cumulative per-move overshoot (e.g. from the stability
+    /// multiplier firing repeatedly right after leaving book) is otherwise
+    /// unrecoverable for the rest of the game — this damps the dynamic
+    /// multiplier when running hot to pay the overspend back instead of
+    /// letting it accumulate for 100+ more moves. See docs for the 2026-07-01
+    /// local-RR diagnosis (0/320 forfeits for 4 peer engines vs 7/320 for
+    /// Coda, all forfeits preceded by 70-88% of the clock burned by move ~60
+    /// in games running 130-220+ plies). `pub` so uci.rs can reset it on
+    /// `ucinewgame` (the bias must not carry over between games).
+    pub tm_bank_ema: f64,
     /// Per-root-move node counts for node-based time management.
     /// Indexed by from_sq * 64 + to_sq. Reset each search.
     root_move_nodes: Box<[u64; 4096]>,
@@ -958,6 +974,7 @@ impl SearchInfo {
             tm_max_time: 0,
             tm_our_inc: 0,
             tm_time_left: 0,
+            tm_bank_ema: 1.0,
             root_move_nodes: alloc_zeroed_box(),
             ponderhit_time: std::sync::Arc::new(AtomicU64::new(0)),
             ponderhit_soft: std::sync::Arc::new(AtomicU64::new(0)),
@@ -2792,6 +2809,21 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // letting the soft check actually fire and giving per-move
             // variability instead of uniform hard-cap saturation.
             if info.tm_no_inc {
+                // Banking governor (2026-07-01): no-inc sudden death has no
+                // increment to refill an overspend, so if we've been running
+                // hot relative to plan recently (tm_bank_ema > 1.0 — an EMA
+                // of actual-spend/soft_limit across moves, updated at the end
+                // of search()), damp this move's multiplier proportionally.
+                // Pays the overspend back over the next few moves instead of
+                // letting it accumulate unrecoverably for the rest of the
+                // game. No damping when at-or-under plan (governor clamped to
+                // <= 1.0, never boosts). Floor of 0.35 keeps a minimum
+                // response to genuinely critical positions even after a long
+                // hot streak.
+                if info.tm_bank_ema > 1.0 {
+                    let governor = (1.0 / info.tm_bank_ema).clamp(0.35, 1.0);
+                    multiplier *= governor;
+                }
                 multiplier = multiplier.min(2.5);
             } else {
                 // Low-increment ceiling (2026-06-18). When the increment is
@@ -2892,6 +2924,20 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         }
     }
 
+    // Banking governor EMA update (2026-07-01, no-inc sudden death only —
+    // see tm_bank_ema's doc comment). Compares this move's actual spend
+    // against its pre-multiplier planned baseline (soft_limit, set once by
+    // compute_tm_budgets and never touched again on this path — see the
+    // grep-verified assignment-site audit in the fix commit). Gated on
+    // soft_limit > 0 so non-TM searches (go depth/nodes) and the forced-
+    // single-legal-move fast path's tiny synthetic budget don't pollute it.
+    if info.tm_no_inc && info.soft_limit > 0 {
+        let elapsed_this_move = info.start_time.elapsed().as_millis() as u64;
+        let ratio = (elapsed_this_move as f64 / info.soft_limit as f64).clamp(0.1, 4.0);
+        const BANK_EMA_ALPHA: f64 = 0.2;
+        info.tm_bank_ema = info.tm_bank_ema * (1.0 - BANK_EMA_ALPHA) + ratio * BANK_EMA_ALPHA;
+    }
+
     // TM diagnostic: one-line per-move summary of the TM signals that
     // fired during this search. Gated by UCI option TMDebug — default
     // off. Format is parseable: key=value space-separated, prefixed by
@@ -2912,7 +2958,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 f,
                 "tm-debug depth={} bestmove={} score={} \
                  elapsed={} elapsed_since_ph={} soft={} hard={} floor={} \
-                 tm_baseline={} stab={} bmc={} asp_fl={} asp_fh={} forced={:?}",
+                 tm_baseline={} stab={} bmc={} asp_fl={} asp_fh={} forced={:?} \
+                 no_inc={} bank_ema={:.3}",
                 info.completed_depth,
                 move_to_uci(best_move),
                 info.last_score,
@@ -2927,6 +2974,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 info.tm_asp_fail_low,
                 info.tm_asp_fail_high,
                 info.tm_forced_state,
+                info.tm_no_inc,
+                info.tm_bank_ema,
             );
         }
     }

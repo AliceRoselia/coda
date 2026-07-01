@@ -305,6 +305,7 @@ pub fn uci_loop_with_nnue(nnue_path: Option<&str>, book_path: Option<&str>, clas
                 info.history.clear();
                 info.clear_correction_history();
                 info.clear_pawn_hist(); // was missing — stale data leaked between games
+                info.tm_bank_ema = 1.0; // banking governor: don't carry overspend bias into a new game
                 if let Some(acc) = &mut info.nnue_acc { acc.reset(); }
                 // Clear Syzygy probe cache on new game (prevents stale entries
                 // from a prior game leaking into the new one's search).
