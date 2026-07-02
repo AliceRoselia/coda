@@ -2981,9 +2981,16 @@ fn negamax(
     }
 
     // Guard against stack overflow — only reached for non-drawn positions
-    // at ply >= MAX_PLY.
+    // at ply >= MAX_PLY. In check the static eval is undefined (static_evals
+    // are treated as -INFINITY in check everywhere else), so return a draw
+    // score rather than a meaningless eval — matches SF/Obsidian/Berserk/
+    // PlentyChess at their ply caps.
     if ply_u >= MAX_PLY {
-        return apply_halfmove_scale(info.eval(board), board.halfmove);
+        return if board.checkers() != 0 {
+            0
+        } else {
+            apply_halfmove_scale(info.eval(board), board.halfmove)
+        };
     }
 
     // C8 audit LIKELY #3: reset reductions slot at node entry so NMP and
@@ -5015,9 +5022,18 @@ fn quiescence_with_depth(
         return draw_score;
     }
 
-    // Limit quiescence depth to prevent stack overflow
-    if qs_depth >= 32 {
-        return apply_halfmove_scale(info.eval(board), board.halfmove);
+    // Limit quiescence depth AND absolute ply. The ply cap is a real gap:
+    // QS can be entered at ply up to MAX_PLY (ProbCut passes ply+1) and recurse
+    // up to 32 more, so the in-check evasion checkmate return (-MATE_SCORE + ply)
+    // could emit |score| inside the TB-score band the is_decisive guards rely on.
+    // In check the static eval is undefined, so return a draw score (mirrors the
+    // negamax cap + SF/Reckless).
+    if qs_depth >= 32 || ply as usize >= MAX_PLY {
+        return if board.checkers() != 0 {
+            draw_score
+        } else {
+            apply_halfmove_scale(info.eval(board), board.halfmove)
+        };
     }
 
     // Prefetch TT bucket early
