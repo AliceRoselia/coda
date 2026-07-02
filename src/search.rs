@@ -233,6 +233,10 @@ tunables!(
     (HINDSIGHT_THRESH, 193, 50, 400, 17.5, true),
     (UNSTABLE_THRESH, 310, 50, 500, 22.5, false),
     (QS_DELTA_MARGIN, 368, 100, 500, 20.0, true),
+    // QS gap-aware futility margin (P1.2). Prune equal/losing trades when
+    // stand_pat + margin <= alpha — the SEE-based complement to the victim-value
+    // delta prune (SF ~306, Berserk ~63). Start conservative, SPSA-tune.
+    (QS_FP_MARGIN, 130, 40, 400, 18.0, true),
     // 24 -> 5 with the T2.10 counting fix: the old counter charged
     // delta/SEE-pruned moves against the budget, so SPSA detuned the cap
     // to near-off. Counting searched-only, consensus is 3 (Obsidian/
@@ -5428,6 +5432,20 @@ fn quiescence_with_depth(
                 && stand_pat + see_value(cap_pt) * tp(&SEE_MATERIAL_SCALE) / 100 + tp(&QS_DELTA_MARGIN) <= alpha {
                     continue;
                 }
+        }
+
+        // Gap-aware futility (P1.2): when stand-pat is hopelessly below alpha,
+        // prune captures that don't WIN material (SEE < 1) — the delta prune
+        // above uses the optimistic victim value, so equal trades (QxQ) clear it
+        // even when they can't rescue the eval. 6/6 top engines have this (SF
+        // see_ge(alpha - futilityBase); Berserk futility<=alpha && !seeGe(mv,1)).
+        // Fail-soft: raise best_score to the futility value. Not while losing.
+        if !is_promotion(mv) && !is_loss(best_score) {
+            let fut = stand_pat + tp(&QS_FP_MARGIN);
+            if fut <= alpha && !see_ge(board, mv, 1) {
+                best_score = best_score.max(fut);
+                continue;
+            }
         }
 
         // Skip bad captures (SEE below threshold)
