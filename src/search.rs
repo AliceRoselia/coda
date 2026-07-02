@@ -3638,6 +3638,29 @@ fn negamax(
     // but it removes the mechanism that killed shallow NMP in #1904 (NMP-first
     // intercepted free RFP cutoffs), enabling the min-depth de-gate below.
     if !in_check {
+        // P3.1: TT-refined pruning eval. Tighten a SEPARATE eval with the TT
+        // score when the bound direction agrees (LOWER/EXACT raises, UPPER/EXACT
+        // lowers), and use it for razor + RFP ONLY — static_eval stays pure for
+        // improving/corrhist/TT-store/NMP (6/6 references keep them separate).
+        // Guards are load-bearing: refine only on a TT hit with a NON-DECISIVE
+        // score away from the 50mr cliff. The eval-seed TT stubs store
+        // score=-INFINITY,flag=UPPER (|tt_s| ~30000 > MATE_IN_MAX_PLY), which the
+        // decisive guard excludes — without it every razor/RFP node would refine
+        // toward -INF (the failure mode behind the -77 March attempt).
+        let mut pruning_eval = static_eval;
+        if tt_hit && static_eval > -INFINITY {
+            let tt_s = score_from_tt(tt_entry.score, ply);
+            let hm_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
+            if hm_ok && tt_s.abs() < MATE_IN_MAX_PLY {
+                let lower = tt_entry.flag == TT_FLAG_LOWER || tt_entry.flag == TT_FLAG_EXACT;
+                let upper = tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT;
+                if lower && tt_s > pruning_eval {
+                    pruning_eval = tt_s;
+                } else if upper && tt_s < pruning_eval {
+                    pruning_eval = tt_s;
+                }
+            }
+        }
         // Razoring (re-added 2026-06-11, audit T2.6; removed d996d6f on
         // pre-v9-eval evidence). 10/10 stronger engines have the
         // qsearch-verified non-PV form: when static eval is hopelessly below
@@ -3648,7 +3671,7 @@ fn negamax(
             && depth <= tp(&RAZOR_DEPTH)
             && alpha.abs() < 2000
             && info.excluded_move[ply_u] == NO_MOVE
-            && static_eval + tp(&RAZOR_MULT) * depth <= alpha
+            && pruning_eval + tp(&RAZOR_MULT) * depth <= alpha
         {
             let v = quiescence(board, info, alpha, alpha + 1, ply);
             if v <= alpha {
@@ -3685,7 +3708,7 @@ fn negamax(
             // > UNSTABLE_THRESH). Static eval can't be trusted for RFP when
             // eval is volatile. Mirrors unstable × ProbCut skip (#542 +6.7).
             if unstable { margin += margin / 3; }
-            if static_eval - margin >= beta {
+            if pruning_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 // RFP_AUDIT (diagnostic): null-verify this static cutoff with
                 // the SAME R formula real NMP uses (sans post-capture +1), and
@@ -3726,7 +3749,7 @@ fn negamax(
                         info.stats.rfp_audit_fp[d_idx] += 1;
                     }
                 }
-                return static_eval - margin;
+                return pruning_eval - margin;
             }
         }
     }
