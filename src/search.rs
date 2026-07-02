@@ -4102,7 +4102,7 @@ fn negamax(
         // material. SF-shaped margin: base depth*MULT plus a capture-history
         // relaxation so historically-good captures (cutoff producers) survive a
         // lower base. Prune if SEE < -margin.
-        if is_cap && ply > 0 && !in_check && depth <= tp(&SEE_CAP_DEPTH)
+        if is_cap && ply > 0 && depth <= tp(&SEE_CAP_DEPTH)
             && mv != tt_move && !is_loss(best_score)
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
@@ -4125,7 +4125,11 @@ fn negamax(
 
         // SEE quiet pruning: prune quiet moves landing on attacked squares.
         // Use lmrDepth² scaling (matching Stockfish/Berserk/Obsidian).
-        if ply > 0 && !in_check
+        // No !in_check gate (P1.6): all 6 top engines run SEE pruning at
+        // in-check nodes — SEE is eval-independent, so the check-gate rationale
+        // (used on LMP/futility/BNFP, which lean on static eval) doesn't apply.
+        // is_loss(best_score) already blocks pruning before an evasion scores.
+        if ply > 0
             && !is_cap && !is_promo
             && mv != tt_move
             && !is_loss(best_score)
