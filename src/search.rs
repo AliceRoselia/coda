@@ -184,6 +184,15 @@ tunables!(
     // bind), while capping 600+1 at 40s (was 276s) and 60+0.1 at 13s.
     (TM_INC_HARD_MULT, 30, 0, 120, 4.0, false),
     (TM_INC_HARD_FLOOR_MS, 10000, 0, 60000, 1000.0, false),
+    // No-inc adaptive mtg divisor (2026-07-02, see compute_tm_budgets for the
+    // full derivation). Base assumed moves-to-go before the divisor starts
+    // growing, and the growth rate (percent of divisor growth per move past
+    // base) once the game outlives that assumption. Exposed as tunables
+    // rather than fixed constants after OB #2438 (fixed base=40/growth=100%)
+    // trended toward a real Elo cost at 30+0 despite eliminating forfeits in
+    // local RR — SPSA should find the tradeoff point rather than a guess.
+    (NO_INC_MTG_BASE, 40, 20, 80, 4.0, false),
+    (NO_INC_MTG_GROWTH_PCT, 100, 0, 200, 10.0, false),
     (LMR_HIST_DIV, 13381, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
@@ -1802,8 +1811,27 @@ pub fn compute_tm_budgets(
     // multiplier (up to ~6.5×) to consistently blow past hard_time,
     // making hard the binding constraint every move (uniform-spend
     // pattern, lichess MJ442247 / 3+0).
-    const NO_INC_MOVES_TO_GO: u64 = 40;
-    let mtg_divisor = if no_inc_sd { NO_INC_MOVES_TO_GO } else { DEFAULT_MOVES_TO_GO };
+    //
+    // Adaptive tightening (2026-07-02): a FIXED base assumption never
+    // tightens as a game outlives it (move 80 still assumes "40 moves
+    // left"). Diagnosed from real coda_bot Lichess losses (all "outoftime"
+    // zero-inc bullet forfeits) and confirmed via local RR (Coda vs
+    // Reckless/Obsidian/Berserk/Alexandria, 30+0, no adjudication): 0/320
+    // forfeits for the 4 peer engines vs 7/320 for Coda, all preceded by
+    // 70-88% of the clock burned by move ~60 in games running 130-220+
+    // plies. Once fullmove exceeds NO_INC_MTG_BASE, grow the divisor by
+    // NO_INC_MTG_GROWTH_PCT% of the overrun: effective_mtg = base +
+    // growth_pct/100 * max(0, fullmove - base). growth_pct=100 (default)
+    // reproduces the original 1:1 tightening; 0 reproduces the pre-fix flat
+    // assumption. Exposed as tunables (not fixed constants) because the
+    // first fixed-value attempt (base=40, growth=100%) eliminated forfeits
+    // in local RR but trended toward a real Elo cost in OB SPRT #2438 at
+    // 30+0 — the right base/growth tradeoff needs SPSA, not a guess.
+    let no_inc_mtg_base = tp(&NO_INC_MTG_BASE).max(1) as u64;
+    let no_inc_growth_pct = tp(&NO_INC_MTG_GROWTH_PCT).max(0) as u64;
+    let no_inc_effective_mtg = no_inc_mtg_base
+        + (fullmove as u64).saturating_sub(no_inc_mtg_base) * no_inc_growth_pct / 100;
+    let mtg_divisor = if no_inc_sd { no_inc_effective_mtg.max(1) } else { DEFAULT_MOVES_TO_GO };
 
     let opt_time_base = if movestogo > 0 {
         // Movestogo: divisor is clamped to [2, default_mtg]. TM audit
