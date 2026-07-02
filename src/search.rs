@@ -5305,7 +5305,7 @@ fn quiescence_with_depth(
             TT_FLAG_UPPER
         };
         if FEAT_TT_STORE.load(Ordering::Relaxed) && !info.stop.load(Ordering::Relaxed) {
-            info.tt.store(board.hash, -1, store_score, flag, best_move, -INFINITY, false);
+            info.tt.store(board.hash, -1, store_score, flag, best_move, -INFINITY, tt_hit && tt_entry.tt_pv);
         }
         return best_score;
     }
@@ -5516,7 +5516,7 @@ fn quiescence_with_depth(
         // Store the halfmove-INDEPENDENT value so later probes at a
         // different halfmove get a correct scale — see the doc comment
         // in `SearchInfo::eval`.
-        info.tt.store(board.hash, -1, store_score, flag, best_move, raw_stand_pat, false);
+        info.tt.store(board.hash, -1, store_score, flag, best_move, raw_stand_pat, tt_hit && tt_entry.tt_pv);
     }
 
     // QS beta blending: dampen capture fail-high at non-PV nodes
