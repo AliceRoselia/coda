@@ -3651,7 +3651,7 @@ fn negamax(
         if tt_hit && static_eval > -INFINITY {
             let tt_s = score_from_tt(tt_entry.score, ply);
             let hm_ok = (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX);
-            if hm_ok && tt_s.abs() < MATE_IN_MAX_PLY {
+            if hm_ok && !is_decisive(tt_s) {
                 let lower = tt_entry.flag == TT_FLAG_LOWER || tt_entry.flag == TT_FLAG_EXACT;
                 let upper = tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT;
                 if lower && tt_s > pruning_eval {
@@ -3749,7 +3749,11 @@ fn negamax(
                         info.stats.rfp_audit_fp[d_idx] += 1;
                     }
                 }
-                return pruning_eval - margin;
+                // Return the ORIGINAL static_eval-based bound (floored at beta),
+                // not the refined value — the refinement decides WHETHER to cut,
+                // but returning a raised pruning_eval - margin would inflate the
+                // fail-high score propagated to the parent.
+                return (static_eval - margin).max(beta);
             }
         }
     }
