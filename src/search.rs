@@ -5031,9 +5031,9 @@ fn negamax(
     // eval predicted higher than any move achieved — train correction downward.
     // (audit S1)
     let corrhist_lower_ok = best_score > alpha_orig   // fail-high: lower bound
-        && !(best_score >= beta && best_score <= scaled_eval); // direction-consistent
+        && !(best_score >= beta && best_score <= static_eval); // direction-consistent
     let corrhist_upper_ok = best_score <= alpha_orig  // fail-low: upper bound
-        && best_score < scaled_eval;                   // eval was over-optimistic
+        && best_score < static_eval;                   // eval was over-optimistic
     if !in_check
         && !best_move_noisy
         && info.excluded_move[ply_u] == NO_MOVE
@@ -5043,12 +5043,15 @@ fn negamax(
         && scaled_eval > -(MATE_IN_MAX_PLY)
         && !info.stop.load(Ordering::Relaxed)
     {
-        // Train corrhist on the halfmove-scaled pre-correction value.
-        // `best_score` is in scaled-space (propagated up from scaled leaf
-        // evals), so the err term `best_score - scaled_eval` captures the
-        // positional miscalibration we want corrhist to learn — not the
-        // halfmove decay, which is already priced into best_score.
-        update_correction_history(info, board, best_score, scaled_eval, depth);
+        // Train corrhist on the CORRECTED-eval residual (best_score -
+        // static_eval), not the pre-correction error (P1.3). static_eval is
+        // scaled_eval + the applied correction (same scaled-cp space as
+        // best_score), so this closes the loop — the update accounts for how
+        // much correction already fired, a negative-feedback integrator that
+        // self-normalizes across the correlated sources. 5/6 references train
+        // on bestValue - correctedStaticEval. Direction not guaranteed; the
+        // CORR_* basin will shift, so retune-on-branch if the raw SPRT is flat.
+        update_correction_history(info, board, best_score, static_eval, depth);
     }
 
     // Fail-high score blending: dampen inflated cutoff scores at non-PV nodes.
