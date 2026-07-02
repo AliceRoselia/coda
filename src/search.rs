@@ -3749,11 +3749,7 @@ fn negamax(
                         info.stats.rfp_audit_fp[d_idx] += 1;
                     }
                 }
-                // Return the ORIGINAL static_eval-based bound (floored at beta),
-                // not the refined value — the refinement decides WHETHER to cut,
-                // but returning a raised pruning_eval - margin would inflate the
-                // fail-high score propagated to the parent.
-                return (static_eval - margin).max(beta);
+                return pruning_eval - margin;
             }
         }
     }
