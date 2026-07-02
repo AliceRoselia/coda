@@ -5224,6 +5224,16 @@ fn quiescence_with_depth(
             if !ev_is_cap && !is_promotion(mv) && !is_loss(best_score) {
                 continue;
             }
+            // Capture evasions: SEE-prune losing ones once no longer mated (P1.5).
+            // Coda searched every capture evasion unconditionally; 5/6 top engines
+            // gate their whole QS prune block on !is_loss(bestValue), not !inCheck,
+            // so losing captures of the checker get pruned too. Same is_loss guard
+            // as the quiet-skip → at least one evasion is always searched, so
+            // checkmate detection is unaffected. Berserk threshold 0. Precedent
+            // #1946 (+3.1, same audit seam).
+            if ev_is_cap && !is_promotion(mv) && !is_loss(best_score) && !see_ge(board, mv, 0) {
+                continue;
+            }
 
             let qs_moved_pt = board.piece_type_at(move_from(mv));
             let qs_captured_pt = if move_flags(mv) == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(move_to(mv)) };
