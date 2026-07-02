@@ -1802,8 +1802,35 @@ pub fn compute_tm_budgets(
     // multiplier (up to ~6.5×) to consistently blow past hard_time,
     // making hard the binding constraint every move (uniform-spend
     // pattern, lichess MJ442247 / 3+0).
+    //
+    // Adaptive tightening (2026-07-02): NO_INC_MOVES_TO_GO was a FIXED
+    // constant applied at every move regardless of fullmove -- at move 1 it
+    // assumes "40 moves left" (reasonable), but at move 80, in a game that's
+    // clearly still going, it STILL assumes "40 moves left" forever, never
+    // tightening. Diagnosed from real coda_bot Lichess losses (all
+    // "outoftime" zero-inc bullet forfeits) and confirmed via a local RR
+    // (Coda vs Reckless/Obsidian/berserk/Alexandria, 30+0, no adjudication):
+    // 0/320 forfeits for the 4 peer engines vs 7/320 for Coda, with all 7
+    // Coda forfeits preceded by 70-88% of the clock burned by move ~60 in
+    // games that ran 130-220+ plies -- the model never adapted to the game
+    // outliving its own 40-move assumption.
+    //
+    // Once fullmove exceeds the base assumption, grow the divisor 1:1 with
+    // the overrun: effective_mtg = 40 + max(0, fullmove - 40). At fullmove
+    // 40 this is unchanged (mtg=40); at fullmove 60 it's 60 (33% smaller
+    // per-move share than the flat-40 baseline); at fullmove 100 it's 100
+    // (60% smaller). Self-similar: a game already running longer than
+    // planned is assumed to need at least as much runway again, not judged
+    // "almost over." Simpler and more robust than an EMA-based overspend
+    // detector (tried and reverted -- OB SPRT #2427/#2428, both H0 at ~-20
+    // Elo at 8+0/20+0: iterative deepening's inherent per-iteration
+    // overshoot meant actual/planned ratio never settled near a stable
+    // "neutral" baseline the governor could calibrate against). This has no
+    // such baseline to get wrong -- it's a direct function of an objective
+    // fact (moves actually played), monotonic, and self-correcting.
     const NO_INC_MOVES_TO_GO: u64 = 40;
-    let mtg_divisor = if no_inc_sd { NO_INC_MOVES_TO_GO } else { DEFAULT_MOVES_TO_GO };
+    let no_inc_effective_mtg = NO_INC_MOVES_TO_GO + (fullmove as u64).saturating_sub(NO_INC_MOVES_TO_GO);
+    let mtg_divisor = if no_inc_sd { no_inc_effective_mtg } else { DEFAULT_MOVES_TO_GO };
 
     let opt_time_base = if movestogo > 0 {
         // Movestogo: divisor is clamped to [2, default_mtg]. TM audit
