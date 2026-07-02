@@ -5091,8 +5091,14 @@ fn quiescence_with_depth(
         return draw_score;
     }
 
-    // Limit quiescence depth to prevent stack overflow
-    if qs_depth >= 32 {
+    // Limit quiescence depth AND absolute ply to prevent stack overflow. The
+    // ply cap is a real gap: QS can be entered at ply up to MAX_PLY (ProbCut
+    // passes ply+1) and recurse 32 more, so the in-check evasion checkmate
+    // return (-MATE_SCORE + ply) could emit |score| inside the TB-score band
+    // the is_decisive/is_loss guards now rely on. Return eval (as the depth cap
+    // already does) — the salvaged, non-harmful half of the rejected #9 bundle
+    // (whose "return draw in check at caps" part measured -1.4, H0/#2441).
+    if qs_depth >= 32 || ply as usize >= MAX_PLY {
         return apply_halfmove_scale(info.eval(board), board.halfmove);
     }
 
