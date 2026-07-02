@@ -3377,13 +3377,17 @@ fn negamax(
                         let tt_piece = board.piece_at(move_from(tt_move));
                         let tt_is_cap = board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
                             || move_flags(tt_move) == FLAG_EN_PASSANT;
-                        if !tt_is_cap && tt_piece != NO_PIECE {
+                        // Route a promo tt_move through the noisy (caphist) branch
+                        // too — that's where the picker scores it; ct below falls
+                        // out as 0 for the empty destination (P1.9).
+                        let tt_is_noisy = tt_is_cap || is_promotion(tt_move);
+                        if !tt_is_noisy && tt_piece != NO_PIECE {
                             let bonus = history_bonus(depth);
                             History::update_history(
                                 info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
                                 bonus,
                             );
-                        } else if tt_is_cap && tt_piece != NO_PIECE {
+                        } else if tt_is_noisy && tt_piece != NO_PIECE {
                             let bonus = capture_history_bonus(depth);
                             let cpt_pt = board.piece_type_at(move_to(tt_move));
                             let ct = if move_flags(tt_move) == FLAG_EN_PASSANT {
@@ -4074,6 +4078,12 @@ fn negamax(
         // Check if capture BEFORE making the move
         let is_cap = board.piece_type_at(to) != NO_PIECE_TYPE || flags == FLAG_EN_PASSANT;
         let is_promo = is_promotion(mv);
+        // Noisy = capture OR promotion. Non-capture promotions are scored by the
+        // picker in the NOISY stream (capt_hist_score_static reads
+        // capture[piece][to][0] for an empty destination), so their history
+        // updates must go to that same caphist bin — not the quiet tables the
+        // picker never reads for them (P1.9).
+        let is_noisy = is_cap || is_promo;
 
         if skip_quiets && !is_cap && !is_promo {
             continue;
@@ -4383,11 +4393,18 @@ fn negamax(
             quiets_count += 1;
         }
 
-        // Track captures for capture history penalty on beta cutoff
-        // Store piece/to/captured for history updates after search
-        if is_cap && n_captures_tried < 32
-            && moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
-                let ct = if flags == FLAG_EN_PASSANT { captured_type(PAWN) } else { captured_type(captured_pt) };
+        // Track noisy moves (captures + non-capture promotions) for caphist
+        // penalty on beta cutoff. Non-cap promos use victim bin 0 (the empty bin
+        // the picker reads; captured_type maps real victims to 1..6, so 0 never
+        // collides). (P1.9)
+        if is_noisy && n_captures_tried < 32 && moved_piece != NO_PIECE {
+                let ct = if !is_cap {
+                    0 // non-capture promotion
+                } else if flags == FLAG_EN_PASSANT {
+                    captured_type(PAWN)
+                } else {
+                    captured_type(captured_pt)
+                };
                 captures_tried[n_captures_tried] = (go_piece(moved_piece) as u8, to, ct as u8);
                 n_captures_tried += 1;
             }
@@ -4757,8 +4774,10 @@ fn negamax(
                     info.stats.cutoff_movecount_sum += move_count as u64;
                     info.stats.cutoff_movecount_sq_sum += (move_count as u64) * (move_count as u64);
 
-                    // Beta cutoff - update history for quiet moves.
-                    if !is_cap {
+                    // Beta cutoff - update history. Non-capture promotions go
+                    // through the noisy (else) branch so their bonus lands in the
+                    // caphist bin the picker reads, not the quiet tables (P1.9).
+                    if !is_noisy {
                         // Depth-boost on big fail-high. BONUS_BOOST_AT trigger
                         // removed 2026-05-17 (ablation #1277 H0). Two remaining
                         // triggers (Stormphrax: cutoff beat static eval;
@@ -4888,8 +4907,12 @@ fn negamax(
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         // Fixed-point divisor (stored × 10).
                         let cap_bonus = raw_cap_bonus + raw_cap_bonus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
-                        if moved_piece != NO_PIECE && captured_pt != NO_PIECE_TYPE {
-                            let cpt = if flags == FLAG_EN_PASSANT {
+                        if moved_piece != NO_PIECE {
+                            // cpt=0 for a non-capture promotion (the picker's bin);
+                            // real victims map to 1..6 (P1.9).
+                            let cpt = if !is_cap {
+                                0
+                            } else if flags == FLAG_EN_PASSANT {
                                 captured_type(PAWN)
                             } else {
                                 captured_type(captured_pt)
@@ -4915,7 +4938,9 @@ fn negamax(
                         let raw_cap_malus = capture_history_malus(depth);
                         let scale_factor = num_fail_highs.min(tp10(&NFH_CAP_10X));
                         let cap_malus = raw_cap_malus + raw_cap_malus * scale_factor * 10 / NFH_DIV_10X.load(Ordering::Relaxed).max(1);
-                        let cap_count = if is_cap { n_captures_tried.saturating_sub(1) } else { n_captures_tried };
+                        // Exclude the cutoff move when it's noisy (cap OR promo —
+                        // both are now the last entry in captures_tried) (P1.9).
+                        let cap_count = if is_noisy { n_captures_tried.saturating_sub(1) } else { n_captures_tried };
                         for i in 0..cap_count {
                             let (cp, ct, cv) = captures_tried[i];
                             History::update_cont_history(
