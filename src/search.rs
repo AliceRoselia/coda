@@ -4511,6 +4511,17 @@ fn negamax(
                     reduction -= 1;
                 }
 
+                // Reduce less when the TT holds a search at least as deep as this
+                // node (Obsidian :1079 / Berserk :729 unconditional form). A deep
+                // TT entry means the position is well-understood, so over-reducing
+                // risks skipping the move that entry already knows matters. Prior
+                // #876 H0'd this bundled with an independently-negative tt_score
+                // term and the reduce-MORE-when-shallow complement; this is the
+                // clean one-line reduce-less isolation. (P3.2)
+                if tt_hit && tt_entry.depth >= depth {
+                    reduction -= 1;
+                }
+
                 // Continuous history adjustment: good history reduces less, bad more
                 // Uses main history + ply-1 + ply-2 continuation history (consensus).
                 // Ply-2 weighted at half to avoid over-scaling the total.
