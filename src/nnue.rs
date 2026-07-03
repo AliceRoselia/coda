@@ -961,13 +961,23 @@ unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
             a = _mm256_adds_epi16(a, ta);
             b = _mm256_adds_epi16(b, tb);
         }
-        // Clamp [0, QA]
+        // Consensus mulhi form (SF/Reckless/Obsidian/Alexandria/PlentyChess,
+        // avx2_gap_audit_2026-07-03 item B1). Bit-exact vs the old
+        // clamp-both + mullo + srli:
+        //   - `a` gets the full [0, QA] clamp; it is then shifted left by
+        //     16-FT_SHIFT (QA=255 << 7 = 32640, fits i16 — no sign-bit
+        //     issue at our quantization, so no SF-style x2 weight prescale
+        //     is needed).
+        //   - `b` gets ONLY the upper clamp: if b < 0 the signed mulhi
+        //     product is negative and packus saturates it to 0 — exactly
+        //     the value the elided max would have produced. Saves one
+        //     vpmaxsw per vector.
+        //   - mulhi of (ca << 7, cb) = (ca*cb) >> 9 = the old
+        //     mullo + srli(FT_SHIFT) in one multiply, dropping the shift
+        //     off the critical path.
         let ca = _mm256_min_epi16(_mm256_max_epi16(a, zero), qa);
-        let cb = _mm256_min_epi16(_mm256_max_epi16(b, zero), qa);
-        // Multiply: a*b (low 16 bits, max 65025 fits u16)
-        let prod = _mm256_mullo_epi16(ca, cb);
-        // >> FT_SHIFT to get [0, 127] (safe for VPMADDUBSW in L1)
-        let d = _mm256_srli_epi16(prod, FT_SHIFT);
+        let cb = _mm256_min_epi16(b, qa);
+        let d = _mm256_mulhi_epi16(_mm256_slli_epi16(ca, 16 - FT_SHIFT), cb);
         // Pack i16 → u8: need to combine with next 16 for full 32 output
         if i + 32 <= pw {
             let mut a2 = _mm256_loadu_si256(acc.as_ptr().add(i + 16) as *const __m256i);
@@ -977,9 +987,8 @@ unsafe fn simd_pairwise_pack_impl<const HAS_THREAT: bool>(
                 b2 = _mm256_adds_epi16(b2, _mm256_loadu_si256(threat.add(pw + i + 16) as *const __m256i));
             }
             let ca2 = _mm256_min_epi16(_mm256_max_epi16(a2, zero), qa);
-            let cb2 = _mm256_min_epi16(_mm256_max_epi16(b2, zero), qa);
-            let prod2 = _mm256_mullo_epi16(ca2, cb2);
-            let d2 = _mm256_srli_epi16(prod2, FT_SHIFT);
+            let cb2 = _mm256_min_epi16(b2, qa);
+            let d2 = _mm256_mulhi_epi16(_mm256_slli_epi16(ca2, 16 - FT_SHIFT), cb2);
             let packed = _mm256_packus_epi16(d, d2);
             let fixed = _mm256_permute4x64_epi64(packed, 0xD8);
             _mm256_storeu_si256(out.add(i) as *mut __m256i, fixed);
@@ -6371,6 +6380,45 @@ mod tests {
                 unsafe { simd512_pairwise_pack_plain(&boundary_acc, avx512_out.as_mut_ptr(), pw); }
                 assert_eq!(scalar_out, avx512_out,
                     "simd512_pairwise_pack at clamp boundaries diverged at pw={}", pw);
+            }
+
+            // i16-rail stress: the mulhi form elides the LOWER clamp on the
+            // second operand (negative products rely on packus saturation to
+            // hit the scalar's clamp-to-0 result) and left-shifts the first
+            // operand by 16-FT_SHIFT — both must hold all the way to the
+            // saturating-add rails, not just around the [0, QA] boundary.
+            let mut rail_acc = vec![0i16; pw * 2];
+            let mut rail_threat = vec![0i16; pw * 2];
+            for i in 0..pw {
+                let (a, ta) = match i % 5 {
+                    0 => (i16::MAX, i16::MAX),  // saturates high
+                    1 => (i16::MIN, i16::MIN),  // saturates low
+                    2 => (i16::MAX, i16::MIN),  // cancels
+                    3 => (200, -32000),         // deep negative
+                    _ => (QA as i16, 1),        // just over the clamp
+                };
+                let (b, tb) = match i % 4 {
+                    0 => (i16::MIN, -1),        // deep negative (elided max path)
+                    1 => (i16::MAX, 100),       // saturates high
+                    2 => (-1, 0),               // barely negative
+                    _ => (QA as i16 / 2, -300), // moderate negative
+                };
+                rail_acc[i] = a;
+                rail_acc[pw + i] = b;
+                rail_threat[i] = ta;
+                rail_threat[pw + i] = tb;
+            }
+            let mut scalar_out = vec![0u8; pw];
+            pairwise_pack_scalar_ref(&rail_acc, Some(&rail_threat), &mut scalar_out, pw);
+            let mut avx2_out = vec![0u8; pw];
+            unsafe { simd_pairwise_pack_threat(&rail_acc, rail_threat.as_ptr(), avx2_out.as_mut_ptr(), pw); }
+            assert_eq!(scalar_out, avx2_out,
+                "simd_pairwise_pack at i16 rails diverged at pw={}", pw);
+            if has512 {
+                let mut avx512_out = vec![0u8; pw];
+                unsafe { simd512_pairwise_pack_threat(&rail_acc, rail_threat.as_ptr(), avx512_out.as_mut_ptr(), pw); }
+                assert_eq!(scalar_out, avx512_out,
+                    "simd512_pairwise_pack at i16 rails diverged at pw={}", pw);
             }
         }
     }
