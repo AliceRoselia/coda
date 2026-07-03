@@ -1692,6 +1692,48 @@ unsafe fn apply_threat_deltas_avx2(
     }
 }
 
+/// Remove net-zero add/sub pairs in place: any feature index present in
+/// both lists contributes +row then -row to the same accumulator — two
+/// full weight-row streams (2 KiB of effectively random reads) for a
+/// guaranteed no-op. The profile-threats instrumentation measured these
+/// at ~3.8% of all streamed rows (SF cancels the analogous pairs).
+///
+/// Bit-exact: i16 accumulation is wrapping and commutative, so dropping a
+/// matched +w/-w pair of the SAME row cannot change the result, saturation
+/// or no. O(n_subs × n_adds) scalar scan — the lists average ~10 entries
+/// (cap 128), so the scan costs nanoseconds against the 2 KiB×2 of row
+/// streaming it saves per hit. Duplicate indices are handled naturally:
+/// each sub cancels at most one matching add.
+#[inline]
+unsafe fn cancel_add_sub_pairs(
+    adds_ptr: *mut usize,
+    n_adds: &mut usize,
+    subs_ptr: *mut usize,
+    n_subs: &mut usize,
+) {
+    let mut si = 0;
+    while si < *n_subs {
+        let s = unsafe { subs_ptr.add(si).read() };
+        let mut matched = false;
+        let mut ai = 0;
+        while ai < *n_adds {
+            if unsafe { adds_ptr.add(ai).read() } == s {
+                // swap-remove from both lists
+                *n_adds -= 1;
+                unsafe { adds_ptr.add(ai).write(adds_ptr.add(*n_adds).read()); }
+                *n_subs -= 1;
+                unsafe { subs_ptr.add(si).write(subs_ptr.add(*n_subs).read()); }
+                matched = true;
+                break;
+            }
+            ai += 1;
+        }
+        if !matched {
+            si += 1;
+        }
+    }
+}
+
 /// Shared body for [`apply_threat_deltas`] — no `target_feature`, so its
 /// (and `apply_threat_indices`') scalar fallbacks compile to scalar code.
 #[inline(always)]
@@ -1738,6 +1780,7 @@ unsafe fn apply_threat_deltas_body(
             n_subs += 1;
         }
     }
+    unsafe { cancel_add_sub_pairs(adds_ptr, &mut n_adds, subs_ptr, &mut n_subs); }
     let adds = scratch_slice!(adds_ptr, n_adds);
     let subs = scratch_slice!(subs_ptr, n_subs);
 
@@ -1893,6 +1936,10 @@ unsafe fn apply_threat_deltas_dual_body(
         }
     }
 
+    unsafe {
+        cancel_add_sub_pairs(adds_w_ptr, &mut n_adds_w, subs_w_ptr, &mut n_subs_w);
+        cancel_add_sub_pairs(adds_b_ptr, &mut n_adds_b, subs_b_ptr, &mut n_subs_b);
+    }
     let adds_w = scratch_slice!(adds_w_ptr, n_adds_w);
     let subs_w = scratch_slice!(subs_w_ptr, n_subs_w);
     let adds_b = scratch_slice!(adds_b_ptr, n_adds_b);
@@ -2479,6 +2526,55 @@ unsafe fn add_weight_rows_neon(
 
 #[cfg(test)]
 mod tests {
+    use super::cancel_add_sub_pairs;
+
+    /// cancel_add_sub_pairs must preserve the multiset difference
+    /// adds - subs (as signed counts per index), including duplicates,
+    /// and never leave a cancellable pair behind.
+    #[test]
+    fn test_cancel_add_sub_pairs_preserves_multiset_difference() {
+        use std::collections::HashMap;
+        let cases: Vec<(Vec<usize>, Vec<usize>)> = vec![
+            (vec![], vec![]),
+            (vec![1, 2, 3], vec![]),
+            (vec![], vec![1, 2, 3]),
+            (vec![1, 2, 3], vec![2, 4]),            // one pair cancels
+            (vec![5, 5, 7], vec![5, 7, 9]),         // duplicate add: one 5 survives
+            (vec![10, 11], vec![11, 10]),            // full cancellation
+            (vec![1, 1, 1], vec![1, 1]),             // multiset: one 1 survives
+            (vec![3, 1, 4, 1, 5], vec![9, 2, 6, 5, 3]),
+        ];
+        for (adds0, subs0) in cases {
+            let mut adds = adds0.clone();
+            let mut subs = subs0.clone();
+            adds.resize(adds.len().max(1), 0); // ensure valid ptr even when empty
+            subs.resize(subs.len().max(1), 0);
+            let mut n_adds = adds0.len();
+            let mut n_subs = subs0.len();
+            unsafe {
+                cancel_add_sub_pairs(adds.as_mut_ptr(), &mut n_adds, subs.as_mut_ptr(), &mut n_subs);
+            }
+            let count = |v: &[usize]| {
+                let mut m = HashMap::new();
+                for &x in v { *m.entry(x).or_insert(0i64) += 1; }
+                m
+            };
+            // Signed difference adds-subs must be unchanged.
+            let mut before = count(&adds0);
+            for (k, v) in count(&subs0) { *before.entry(k).or_insert(0) -= v; }
+            let mut after = count(&adds[..n_adds]);
+            for (k, v) in count(&subs[..n_subs]) { *after.entry(k).or_insert(0) -= v; }
+            before.retain(|_, v| *v != 0);
+            after.retain(|_, v| *v != 0);
+            assert_eq!(before, after, "difference changed for {:?} / {:?}", adds0, subs0);
+            // No cancellable pair may remain.
+            for i in 0..n_adds {
+                assert!(!subs[..n_subs].contains(&adds[i]),
+                    "residual cancellable pair {} for {:?} / {:?}", adds[i], adds0, subs0);
+            }
+        }
+    }
+
     use super::*;
 
     /// Scalar reference for apply_deltas_{avx2,neon} — mirrors the
