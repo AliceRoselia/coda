@@ -3638,6 +3638,25 @@ fn negamax(
     // but it removes the mechanism that killed shallow NMP in #1904 (NMP-first
     // intercepted free RFP cutoffs), enabling the min-depth de-gate below.
     if !in_check {
+        // P3.1 (razor-only variant): TT-refine a SEPARATE eval and use it for
+        // RAZORING ONLY. The full razor+RFP form regressed hard (-9.5) because
+        // Coda's RFP is deep (depth<=18) and undampened (returns eval-margin),
+        // so refining it over-fires + inflates — unlike SF's shallow+dampened
+        // RFP. Razoring just drops to qsearch (which verifies), so refining it
+        // can't over-prune or inflate. static_eval stays pure everywhere else.
+        let mut pruning_eval = static_eval;
+        if tt_hit && static_eval > -INFINITY {
+            let tt_s = score_from_tt(tt_entry.score, ply);
+            if (board.halfmove as i32) < tp(&TT_CUTOFF_HALFMOVE_MAX) && !is_decisive(tt_s) {
+                let lower = tt_entry.flag == TT_FLAG_LOWER || tt_entry.flag == TT_FLAG_EXACT;
+                let upper = tt_entry.flag == TT_FLAG_UPPER || tt_entry.flag == TT_FLAG_EXACT;
+                if lower && tt_s > pruning_eval {
+                    pruning_eval = tt_s;
+                } else if upper && tt_s < pruning_eval {
+                    pruning_eval = tt_s;
+                }
+            }
+        }
         // Razoring (re-added 2026-06-11, audit T2.6; removed d996d6f on
         // pre-v9-eval evidence). 10/10 stronger engines have the
         // qsearch-verified non-PV form: when static eval is hopelessly below
@@ -3648,7 +3667,7 @@ fn negamax(
             && depth <= tp(&RAZOR_DEPTH)
             && alpha.abs() < 2000
             && info.excluded_move[ply_u] == NO_MOVE
-            && static_eval + tp(&RAZOR_MULT) * depth <= alpha
+            && pruning_eval + tp(&RAZOR_MULT) * depth <= alpha
         {
             let v = quiescence(board, info, alpha, alpha + 1, ply);
             if v <= alpha {
