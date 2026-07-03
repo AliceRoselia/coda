@@ -5416,6 +5416,15 @@ fn quiescence_with_depth(
             continue;
         }
 
+        // P1.12b: in QS, search only queen push-promotions — SF/Reckless/Plenty
+        // generate queen-only in noisy movegen. Skip knight/bishop/rook push-
+        // underpromotions (empty destination); keep capture-underpromotions
+        // (tactically relevant, occupied destination).
+        if is_promotion(mv) && move_flags(mv) != FLAG_PROMOTE_Q
+            && board.piece_type_at(move_to(mv)) == NO_PIECE_TYPE {
+            continue;
+        }
+
         // Move-count budget (audit T2.10): count only SEARCHED moves — the
         // old form incremented before delta/SEE pruning, so pruned moves
         // consumed budget and SPSA pushed the cap to near-off (24; comment
