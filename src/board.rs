@@ -139,6 +139,19 @@ impl Board {
         self.colors[0] | self.colors[1]
     }
 
+    /// Count of non-king pieces on the board (both colors): pawns, knights,
+    /// bishops, rooks, queens. Used by TM's no-inc low-material signal.
+    #[inline(always)]
+    pub fn nonking_piece_count(&self) -> u32 {
+        crate::bitboard::popcount(
+            self.pieces[crate::types::PAWN as usize]
+                | self.pieces[crate::types::KNIGHT as usize]
+                | self.pieces[crate::types::BISHOP as usize]
+                | self.pieces[crate::types::ROOK as usize]
+                | self.pieces[crate::types::QUEEN as usize],
+        )
+    }
+
     /// Empty squares.
     #[inline(always)]
     pub fn empty(&self) -> Bitboard {

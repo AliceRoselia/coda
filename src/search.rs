@@ -190,6 +190,16 @@ tunables!(
     // #2444 (1000 iters, 30+0 zero-inc): base 40->34.4, growth 100->94.3.
     (NO_INC_MTG_BASE, 34, 20, 80, 4.0, false),
     (NO_INC_MTG_GROWTH_PCT, 94, 0, 200, 10.0, false),
+    // Material-aware supplement (2026-07-03): post-merge analysis of all 7
+    // baseline forfeit games showed every one was a deep, heavily-simplified
+    // endgame (fullmove 163-223, 1-6 non-king pieces) reached WELL before the
+    // eventual forfeit (non-king count dropped <= NO_INC_LOW_MAT_THRESH by
+    // fullmove 51-146 in 6/7 games) -- fullmove alone can't distinguish "long
+    // game, still complex" from "long game, down to a grind". Add a flat mtg
+    // bonus once non-king material drops at/below the threshold, on top of
+    // the existing fullmove-based growth -- see compute_tm_budgets.
+    (NO_INC_LOW_MAT_THRESH, 6, 2, 16, 1.5, false),
+    (NO_INC_LOW_MAT_MTG_BONUS, 20, 0, 60, 4.0, false),
     (LMR_HIST_DIV, 13381, 2000, 100000, 4900.0, true),
     // 2026-05-18 audit (outlier #2 deep-dive): capture-LMR was using a
     // step function (±1 at |capt_hist|>2000), while quiet-LMR uses
@@ -1715,13 +1725,17 @@ fn create_helper_info(main: &SearchInfo) -> SearchInfo {
 ///
 /// Inputs: `our_time` and `our_inc` are wtime/winc or btime/binc in
 /// ms. `movestogo` is 0 for sudden death. `overhead` is the
-/// MoveOverhead UCI option (default 100ms).
+/// MoveOverhead UCI option (default 100ms). `nonking_pieces` is the
+/// count of non-king pieces on the board (pawns+knights+bishops+
+/// rooks+queens, both colors) — feeds the no-inc low-material mtg
+/// bonus (see the no-inc block below).
 pub fn compute_tm_budgets(
     our_time: u64,
     our_inc: u64,
     movestogo: u32,
     overhead: u64,
     fullmove: u16,
+    nonking_pieces: u32,
 ) -> (u64, u64, u64, u64) {
     // Phase 13 (2026-05-26): Viridithas-shape TM windows.
     //
@@ -1846,10 +1860,34 @@ pub fn compute_tm_budgets(
     // base 40->34.4, growth_pct 100->94.3 (both significant movement,
     // held steady across the whole tune). Applied here as new defaults;
     // re-verify forfeit-count + non-regression SPRT before merge.
+    //
+    // Material-aware supplement (2026-07-03): reconstructing the final
+    // position of all 7 baseline-forfeit games showed every one was a deep,
+    // heavily-simplified endgame (fullmove 163-223, 1-6 non-king pieces),
+    // reached WELL before the eventual forfeit (non-king count dropped to
+    // <= NO_INC_LOW_MAT_THRESH by fullmove 51-146 in 6/7 games). Fullmove
+    // alone can't distinguish "long game, still complex" (e.g. a
+    // locked-pawn-structure grind with material still on) from "long game,
+    // down to a bare-bones endgame that could run another 100 plies no
+    // matter what move we're on" — only the latter is the actual forfeit
+    // risk. Add a flat mtg bonus once non-king material is at/below the
+    // threshold, independent of and additive to the fullmove-based growth
+    // above — this targets tightening at the specific endgame-grind pattern
+    // instead of blanket-tightening every long game (the likely source of
+    // the fixed/tuned attempts' residual Elo cost in games that were never
+    // going to forfeit).
     let no_inc_mtg_base = tp(&NO_INC_MTG_BASE).max(1) as u64;
     let no_inc_growth_pct = tp(&NO_INC_MTG_GROWTH_PCT).max(0) as u64;
+    let no_inc_low_mat_thresh = tp(&NO_INC_LOW_MAT_THRESH).max(0) as u32;
+    let no_inc_low_mat_bonus = tp(&NO_INC_LOW_MAT_MTG_BONUS).max(0) as u64;
+    let material_bonus = if no_inc_sd && nonking_pieces <= no_inc_low_mat_thresh {
+        no_inc_low_mat_bonus
+    } else {
+        0
+    };
     let no_inc_effective_mtg = no_inc_mtg_base
-        + (fullmove as u64).saturating_sub(no_inc_mtg_base) * no_inc_growth_pct / 100;
+        + (fullmove as u64).saturating_sub(no_inc_mtg_base) * no_inc_growth_pct / 100
+        + material_bonus;
     let mtg_divisor = if no_inc_sd { no_inc_effective_mtg.max(1) } else { DEFAULT_MOVES_TO_GO };
 
     let opt_time_base = if movestogo > 0 {
@@ -2301,8 +2339,14 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             info.abs_deadline = limits.abs_clock.saturating_sub(reserve).max(1);
         }
     } else if our_time > 0 {
-        let (soft, hard, max_time, soft_floor) =
-            compute_tm_budgets(our_time, our_inc, limits.movestogo, info.move_overhead, board.fullmove);
+        let (soft, hard, max_time, soft_floor) = compute_tm_budgets(
+            our_time,
+            our_inc,
+            limits.movestogo,
+            info.move_overhead,
+            board.fullmove,
+            board.nonking_piece_count(),
+        );
         info.soft_limit = soft;
         info.hard_limit = hard;
         info.tm_max_time = max_time;
@@ -5910,6 +5954,43 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No-inc material-aware mtg bonus (2026-07-03): a deeply simplified
+    /// endgame (nonking_pieces <= NO_INC_LOW_MAT_THRESH default 6) must
+    /// budget LESS per move than an equal-clock, equal-fullmove position
+    /// with full material — isolates the formula from search-dynamic noise
+    /// (stability/fail-low factors), which a live-engine A/B can't do since
+    /// two different positions always have different search shapes.
+    #[test]
+    fn test_no_inc_material_bonus_tightens_vs_full_material() {
+        let our_time = 30_000;
+        let our_inc = 0;
+        let movestogo = 0;
+        let overhead = 100;
+        let fullmove = 100; // past NO_INC_MTG_BASE (34) either way
+        let (opt_low_mat, _, _, _) =
+            compute_tm_budgets(our_time, our_inc, movestogo, overhead, fullmove, 2);
+        let (opt_full_mat, _, _, _) =
+            compute_tm_budgets(our_time, our_inc, movestogo, overhead, fullmove, 30);
+        assert!(
+            opt_low_mat < opt_full_mat,
+            "low-material opt ({opt_low_mat}) should be tighter than full-material opt ({opt_full_mat})"
+        );
+        // Below the fullmove-growth horizon, material alone should still be
+        // able to trigger tightening (early forced simplification into a
+        // long grind, e.g. a queen trade at move 20 heading into a long
+        // rook ending) -- the material term must not be gated behind the
+        // fullmove-growth term ever kicking in.
+        let (opt_low_mat_early, _, _, _) =
+            compute_tm_budgets(our_time, our_inc, movestogo, overhead, 20, 2);
+        let (opt_full_mat_early, _, _, _) =
+            compute_tm_budgets(our_time, our_inc, movestogo, overhead, 20, 30);
+        assert!(
+            opt_low_mat_early < opt_full_mat_early,
+            "low-material opt ({opt_low_mat_early}) should be tighter than full-material opt \
+             ({opt_full_mat_early}) even before the fullmove-growth horizon"
+        );
+    }
 
     /// 50-move eval scaling helper. Locks in both the formula (linear decay
     /// via `(200 - hm)/200`, so the eval is HALVED — not zeroed — at the
