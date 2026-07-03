@@ -2350,6 +2350,13 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
     let mut best_move = NO_MOVE;
     let mut prev_score = 0i32;
+    // Running average of completed-iteration scores, used to center the
+    // aspiration window (SF/Reckless/Berserk/Alexandria pattern). Blending
+    // (avg+value)/2 dampens single-iteration oscillation, so the window sits
+    // on a stabler estimate than the raw last score. `avg_valid` distinguishes
+    // "no iteration completed yet" from a genuine 0 score. (P3.3)
+    let mut avg_score = 0i32;
+    let mut avg_valid = false;
 
     // Stable PV snapshot. Updated only at the end of a *completed* iteration.
     // On a mid-iteration interrupt (should_stop fires inside negamax) we
@@ -2449,10 +2456,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         if depth >= 4 && prev_score > -MATE_IN_MAX_PLY && prev_score < MATE_IN_MAX_PLY {
             // Eval-dependent aspiration delta: wider for extreme scores (Reckless pattern)
             // Calm positions (avg~0): delta=13, winning (avg~500): delta=24, crushing (avg~1000): delta=55
-            let avg = prev_score;
+            // Center on the running average (P3.3), falling back to the last score
+            // before any iteration has blended in.
+            let avg = if avg_valid { avg_score } else { prev_score };
             let mut delta = tp(&ASP_DELTA) + (avg as i64 * avg as i64 / tp(&ASP_SCORE_DIV) as i64) as i32;
-            let mut alpha = (prev_score - delta).max(-INFINITY);
-            let mut beta = (prev_score + delta).min(INFINITY);
+            let mut alpha = (avg - delta).max(-INFINITY);
+            let mut beta = (avg + delta).min(INFINITY);
             let mut asp_depth = depth;
             #[allow(unused_assignments)]
             let mut asp_result = prev_score;
@@ -2543,6 +2552,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         }
 
         prev_score = score;
+        // Blend the completed iteration into the running average (P3.3).
+        avg_score = if avg_valid { (avg_score + score) / 2 } else { score };
+        avg_valid = true;
         info.last_score = score;
         info.ponder_depth.store(depth as u64, std::sync::atomic::Ordering::Relaxed);
 
