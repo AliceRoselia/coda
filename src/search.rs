@@ -896,6 +896,8 @@ pub struct SearchInfo {
     moved_piece_stack: [u8; MAX_PLY + 1],
     /// Per-ply move destination square. Used alongside moved_piece_stack.
     moved_to_stack: [u8; MAX_PLY + 1],
+    /// Per-ply move_count at which the move leading to ply+1 was made (P1.12c).
+    move_count_stack: [i32; MAX_PLY + 1],
     /// Pawn history: [pawn_hash & (PAWN_HIST_SIZE - 1)][piece 1-12][to_square] (slot 0 unused)
     pawn_hist: Box<[[[i16; 64]; 13]; PAWN_HIST_SIZE]>,
     /// Pawn correction history: [stm][pawn_hash % size]
@@ -982,6 +984,7 @@ impl SearchInfo {
             double_ext_count: [0; MAX_PLY + 1],
             moved_piece_stack: [0; MAX_PLY + 1],
             moved_to_stack: [0; MAX_PLY + 1],
+            move_count_stack: [0; MAX_PLY + 1],
             pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
             pv_len: [0; MAX_PLY + 1],
             pawn_hist: alloc_zeroed_box(),
@@ -3305,8 +3308,13 @@ fn negamax(
                     // promotions). Write-side (beta-cutoff bonuses) uses
                     // moved_piece_stack; the old asymmetry meant malus on promotion
                     // moves landed in the queen/rook bin where reads never look.
+                    // P1.12c: gate on the opponent's move being an early one at
+                    // the parent (moveCount < 4) — SF/Obsidian/Alexandria only
+                    // malus the "main" refutation candidates, not a late/random
+                    // quiet the cutoff happened to follow.
                     let stack_len = board.undo_stack.len();
-                    if score_above_beta && stack_len >= 2 && ply_u >= 2 {
+                    if score_above_beta && stack_len >= 2 && ply_u >= 2
+                        && info.move_count_stack[ply_u - 1] < 4 {
                         let opp_undo = &board.undo_stack[stack_len - 1];
                         let our_undo = &board.undo_stack[stack_len - 2];
                         if opp_undo.mv != NO_MOVE && opp_undo.captured == NO_PIECE_TYPE
@@ -4261,6 +4269,9 @@ fn negamax(
         if moved_piece != NO_PIECE && ply_u <= MAX_PLY {
             info.moved_piece_stack[ply_u] = go_piece(moved_piece) as u8;
             info.moved_to_stack[ply_u] = to;
+        }
+        if ply_u <= MAX_PLY {
+            info.move_count_stack[ply_u] = move_count; // P1.12c
         }
         let captured_pt = if is_cap {
             if flags == FLAG_EN_PASSANT { PAWN } else { board.piece_type_at(to) }
