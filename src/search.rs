@@ -4734,9 +4734,15 @@ fn negamax(
 
         if score > best_score {
             best_score = score;
-            best_move = mv;
 
+            // P1.10: record best_move only on an alpha raise (all 6 references).
+            // On a fail-low node no move raises alpha, so best_move stays NO_MOVE
+            // and the UPPER store preserves the deeper iteration's proven move
+            // (activates the #2121 preserve-on-NO_MOVE path; also stops planting
+            // a "least-bad" tt_move that suppresses IIR). Uncertain direction —
+            // #1931/#1945/#1660 H0'd the family; testing at [-1.5,1.5].
             if score > alpha {
+                best_move = mv;
                 alpha = score;
                 alpha_raise_count += 1;
 
