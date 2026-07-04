@@ -111,6 +111,11 @@ tunables!(
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
     (RFP_MARGIN_IMP, 27, 0, 150, 6.0, true),
     (RFP_MARGIN_NOIMP, 32, 0, 200, 7.5, true),
+    // E3 (Uralochka-shape): when TT holds a LOWER-bound (fail-high
+    // direction confirms), tighten RFP margin — the tree already
+    // agrees on the direction. Percentage-of-margin tightening.
+    // Default 25 → tighten by 25% of the computed margin.
+    (RFP_MARGIN_TT_LOWER_TIGHTEN, 25, 0, 100, 5.0, true),
     // Root-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
     // demand MORE static-eval confidence to RFP-cut as the OVERALL search
     // depth grows past RFP_ROOT_THRESH (diminishing-returns of depth — the
@@ -3752,6 +3757,15 @@ fn negamax(
             // > UNSTABLE_THRESH). Static eval can't be trusted for RFP when
             // eval is volatile. Mirrors unstable × ProbCut skip (#542 +6.7).
             if unstable { margin += margin / 3; }
+            // E3 (Uralochka-shape): TT LOWER-bound tighten. If TT has a
+            // LOWER bound (fail-high direction) at reasonable depth, the
+            // search tree already thinks this node fails high — trust
+            // the static prune with a tighter margin. Multiplicative
+            // reduction to keep same shape as improving/imp modifiers.
+            if tt_hit && tt_entry.flag == TT_FLAG_LOWER
+                && tt_entry.depth >= depth.saturating_sub(3) {
+                margin -= margin * tp(&RFP_MARGIN_TT_LOWER_TIGHTEN) / 100;
+            }
             if static_eval - margin >= beta {
                 info.stats.rfp_cutoffs += 1;
                 // RFP_AUDIT (diagnostic): null-verify this static cutoff with
