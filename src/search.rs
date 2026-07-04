@@ -3834,6 +3834,11 @@ fn negamax(
         && beta.abs() < MATE_IN_MAX_PLY  // Skip NMP for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // Skip NMP during SE verification
         && cut_node  // Reckless gate: only attempt NMP at expected fail-high nodes (closes 30%->57% NMP cutoff-rate gap)
+        // E1 (Uralochka): if TT already says UPPER < beta, a null-move search
+        // trying to prove eval >= beta is contradicting the stored evidence.
+        // Skip NMP. Also seen in SF/Ethereal.
+        && !(tt_hit && tt_entry.flag == TT_FLAG_UPPER
+             && score_from_tt(tt_entry.score, ply) < beta)
         && FEAT_NMP.load(Ordering::Relaxed)
     {
         info.stats.nmp_attempts += 1;
