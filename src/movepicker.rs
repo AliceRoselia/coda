@@ -869,6 +869,17 @@ impl MovePicker {
         }
     }
 
+    /// True when the move most recently returned by `next()` came from the
+    /// BadCaptures stage — i.e. the picker's generation-time SEE split judged
+    /// it a losing capture (SEE < -capt_hist/18). Lets the search reuse that
+    /// verdict instead of re-running `see_ge` (P2.3, Reckless's BNFP stage
+    /// gate). Valid only immediately after a `next()` that returned a capture;
+    /// the stage is stable across `pick_best()` calls within a stage.
+    #[inline]
+    pub fn last_was_bad_capture(&self) -> bool {
+        self.stage == Stage::BadCaptures
+    }
+
     /// Selection sort: find best from current index, swap to front, return it.
     /// Selection sort: find best scored move and swap to front.
     fn pick_best(&mut self) -> Move {

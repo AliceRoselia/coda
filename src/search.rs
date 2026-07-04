@@ -4407,7 +4407,12 @@ fn negamax(
         if FEAT_BAD_NOISY.load(Ordering::Relaxed) && is_cap && !in_check && ply > 0 && depth <= tp(&BAD_NOISY_DEPTH) && mv != tt_move
             && !is_promo && !is_loss(best_score)
             && static_eval > -INFINITY && static_eval + depth * tp(&BAD_NOISY_MARGIN) <= alpha
-            && !see_ge(board, mv, 0)
+            // P2.3: reuse the picker's generation-time SEE verdict (move came
+            // from the BadCaptures stage) instead of re-running see_ge(mv, 0).
+            // Reckless's BNFP stage gate. NOT identical to see_ge(mv, 0): the
+            // picker's split threshold is dynamic (-capt_hist/18), so this is a
+            // behavior change (tested [0,3]), not a pure NPS dedup.
+            && picker.last_was_bad_capture()
             && !board.gives_direct_check(mv)
         {
             continue;
