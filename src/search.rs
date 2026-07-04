@@ -267,6 +267,12 @@ tunables!(
     // (from+to+captured+side), richer than cont_corr's [piece][to]. Captures
     // "this structural CHANGE tends to be mis-evaluated."
     (CORR_W_TRANS, 74, 0, 400, 18.5, true),
+    // E4 (Tcheran): Threat-bitboard correction weight. Key on
+    // hash(enemy_attacks). Captures eval bias correlated with attacker
+    // structure — orthogonal to piece-square / pawn / non-pawn axes.
+    // Default 60 midpoint between cont(89) and trans(74). Retune-on-branch
+    // if SPRT lands H1-adjacent.
+    (CORR_W_THREAT_BB, 60, 0, 400, 15.0, true),
     (FH_BLEND_DEPTH_10X, 33, 0, 80, 15.0, false),
     // Re-expose 4 hardcoded search constants (audit 2026-05-21).
     // All bench-neutral at current defaults.
@@ -916,6 +922,10 @@ pub struct SearchInfo {
     cont_corr: Box<[[i32; 64]; 12]>,
     /// Transition correction history: [stm][(hash(ply-1) ^ hash(ply)) % size]
     trans_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
+    /// E4 (Tcheran): Threat-bitboard correction history:
+    /// [stm][hash(enemy_attacks) % size]. Signals attacker-structure-
+    /// specific eval bias not captured by pawn/np/cont/trans axes.
+    threat_bb_corr: Box<[[i32; CORR_HIST_SIZE]; 2]>,
     pub nnue_net: Option<std::sync::Arc<crate::nnue::NNUENet>>,
     pub nnue_acc: Option<crate::nnue::NNUEAccumulator>,
     pub threat_stack: crate::threat_accum::ThreatStack,
@@ -999,6 +1009,7 @@ impl SearchInfo {
             np_corr: alloc_zeroed_box(),
             cont_corr: alloc_zeroed_box(),
             trans_corr: alloc_zeroed_box(),
+            threat_bb_corr: alloc_zeroed_box(),
             nnue_net: None,
             nnue_acc: None,
             threat_stack: crate::threat_accum::ThreatStack::new(768), // max v9 accum size
@@ -1181,6 +1192,7 @@ impl SearchInfo {
         for mat in self.np_corr.iter_mut() { for row in mat.iter_mut() { row.fill(0); } }
         for row in self.cont_corr.iter_mut() { row.fill(0); }
         for row in self.trans_corr.iter_mut() { row.fill(0); }
+        for row in self.threat_bb_corr.iter_mut() { row.fill(0); }
     }
 
     pub fn clear_pawn_hist(&mut self) {
@@ -1418,9 +1430,23 @@ fn correction_value(info: &SearchInfo, board: &Board) -> i32 {
             info.trans_corr[stm][trans_idx] as i64
         } else { 0 }
     } else { 0 };
+    // E4: threat-bitboard corrhist — hash enemy_attacks with a splitmix
+    // step for good distribution across 16K slots.
+    let threat_bb = board.attacks_by_color(flip_color(board.side_to_move));
+    let tbb_idx = (splitmix64(threat_bb) as usize) & (CORR_HIST_SIZE - 1);
+    let threat_bb_corr = info.threat_bb_corr[stm][tbb_idx] as i64;
     let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
-        + cont_corr * tp(&CORR_W_CONT) as i64 + trans_corr * tp(&CORR_W_TRANS) as i64) / tp(&CORR_HIST_DIV) as i64;
+        + cont_corr * tp(&CORR_W_CONT) as i64 + trans_corr * tp(&CORR_W_TRANS) as i64
+        + threat_bb_corr * tp(&CORR_W_THREAT_BB) as i64) / tp(&CORR_HIST_DIV) as i64;
     (total_corr as i32) / tp(&CORR_HIST_GRAIN_T)
+}
+
+/// Splitmix64 finalizer for hashing bitboards to corrhist indices.
+#[inline(always)]
+fn splitmix64(mut x: u64) -> u64 {
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+    x ^ (x >> 31)
 }
 
 /// Apply correction history to raw static eval.
@@ -1462,9 +1488,15 @@ fn corrected_eval(info: &SearchInfo, board: &Board, raw_eval: i32) -> i32 {
         } else { 0 }
     } else { 0 };
 
-    // Weighted blend: pawn, whiteNP, blackNP, cont, transition (minor/major dropped 2026-05-19)
+    // E4: threat-bitboard corrhist read (same key as correction_value).
+    let threat_bb = board.attacks_by_color(flip_color(board.side_to_move));
+    let tbb_idx = (splitmix64(threat_bb) as usize) & (CORR_HIST_SIZE - 1);
+    let threat_bb_corr = info.threat_bb_corr[stm][tbb_idx] as i64;
+
+    // Weighted blend: pawn, whiteNP, blackNP, cont, transition, threat_bb (minor/major dropped 2026-05-19)
     let total_corr = (pawn_corr * tp(&CORR_W_PAWN) as i64 + white_np_corr * tp(&CORR_W_NP) as i64 + black_np_corr * tp(&CORR_W_NP) as i64
-        + cont_corr * tp(&CORR_W_CONT) as i64 + trans_corr * tp(&CORR_W_TRANS) as i64) / tp(&CORR_HIST_DIV) as i64;
+        + cont_corr * tp(&CORR_W_CONT) as i64 + trans_corr * tp(&CORR_W_TRANS) as i64
+        + threat_bb_corr * tp(&CORR_W_THREAT_BB) as i64) / tp(&CORR_HIST_DIV) as i64;
     let adjusted = raw_eval + (total_corr as i32) / tp(&CORR_HIST_GRAIN_T);
     // Keep the corrected static eval strictly inside the non-mate band so it
     // can never be read back as a mate by the MATE_IN_MAX_PLY guards. (Real
@@ -1525,6 +1557,11 @@ fn update_correction_history(info: &mut SearchInfo, board: &Board, search_score:
             update_corr_entry(&mut info.trans_corr[stm][trans_idx], scaled_err, cap_div);
         }
     }
+    // E4: threat-bitboard corrhist update (always fires; independent of
+    // last-move context).
+    let threat_bb = board.attacks_by_color(flip_color(board.side_to_move));
+    let tbb_idx = (splitmix64(threat_bb) as usize) & (CORR_HIST_SIZE - 1);
+    update_corr_entry(&mut info.threat_bb_corr[stm][tbb_idx], scaled_err, cap_div);
 }
 
 /// LMR reduction tables (quiet and capture). Storage is `AtomicI32` so
