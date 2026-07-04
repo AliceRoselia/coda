@@ -111,6 +111,11 @@ tunables!(
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
     (RFP_MARGIN_IMP, 27, 0, 150, 6.0, true),
     (RFP_MARGIN_NOIMP, 32, 0, 200, 7.5, true),
+    // E2 (Raphael) opp_worsening RFP tightener. When curr + prev1 static
+    // eval > 0 (both sides think their own position is fine — implies
+    // opp made a worsening move), tighten RFP margin. Fires positive-only.
+    // Default 12 midpointish; SPSA-tunable if the branch H1s.
+    (RFP_MARGIN_OPP_WORSENING, 12, 0, 60, 4.0, true),
     // Root-depth-aware RFP relaxation (single-set, self-adapts STC<->LTC):
     // demand MORE static-eval confidence to RFP-cut as the OVERALL search
     // depth grows past RFP_ROOT_THRESH (diminishing-returns of depth — the
@@ -3736,6 +3741,16 @@ fn negamax(
         if depth <= tp(&RFP_DEPTH) && ply > 0 && !tt_pv && !tt_move_is_quiet && info.excluded_move[ply_u] == NO_MOVE && FEAT_RFP.load(Ordering::Relaxed)
             && static_eval.abs() < MATE_SCORE - 200 {
             let mut margin = if improving { depth * tp(&RFP_MARGIN_IMP) } else { depth * tp(&RFP_MARGIN_NOIMP) };
+            // E2 (Raphael): opp_worsening tightener. Sum current static
+            // eval with parent's stored static_eval (opponent's POV at
+            // their move). If > 0, opp is worsening — tighten margin.
+            // Guarded on ply-1 not being in-check (-INFINITY sentinel).
+            if ply_u >= 1 && info.static_evals[ply_u - 1] > -INFINITY + 1 {
+                let opp_worsening_rate = static_eval + info.static_evals[ply_u - 1];
+                if opp_worsening_rate > 0 {
+                    margin -= depth * tp(&RFP_MARGIN_OPP_WORSENING);
+                }
+            }
             // Root-depth-aware relaxation: + depth*(root_depth-thresh)+ *coef/100.
             // Zero at STC (root_depth <= thresh); grows with both remaining
             // depth and how deep the overall search is, so deep RFP at LTC
