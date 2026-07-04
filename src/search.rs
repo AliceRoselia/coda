@@ -3963,6 +3963,25 @@ fn negamax(
     } else {
         false
     };
+    // E8 (Icarus TT-only ProbCut, SF pattern): if TT already stores a
+    // LOWER bound at sufficient depth that satisfies the ProbCut
+    // condition, return probcut_beta directly — no re-search. Matches
+    // SF `if (ttData.value >= probCutBeta)` shortcut.
+    if !in_check && ply > 0 && !is_pv && depth >= probcut_min_depth
+        && beta.abs() < MATE_IN_MAX_PLY
+        && info.excluded_move[ply_u] == NO_MOVE
+        && king_zone_pressure < tp10(&PROBCUT_KING_ZONE_MAX_10X)
+        && !unstable
+        && tt_hit
+        && tt_entry.flag == TT_FLAG_LOWER
+        && tt_entry.depth >= depth - tp(&PROBCUT_TT_DEPTH_SLACK)
+        && score_from_tt(tt_entry.score, ply) >= probcut_beta
+        && FEAT_PROBCUT.load(Ordering::Relaxed)
+    {
+        info.stats.probcut_cutoffs += 1;
+        return probcut_beta;
+    }
+
     if !in_check && ply > 0 && !is_pv && depth >= probcut_min_depth
         && beta.abs() < MATE_IN_MAX_PLY  // skip for mate/TB scores
         && info.excluded_move[ply_u] == NO_MOVE  // skip during SE verification
