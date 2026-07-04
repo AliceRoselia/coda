@@ -2156,16 +2156,22 @@ fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimit
                     info.tm_asp_fail_low = info.tm_asp_fail_low.saturating_add(1);
                     beta = (3 * alpha + 5 * beta) / 8;
                     alpha = (result - delta).max(-INFINITY);
+                    // Asymmetric growth (probe 2): grow gently on fail-low — an
+                    // unstable/worse-than-hoped search shouldn't overshoot into a
+                    // huge window. ~1.25x vs the ~1.5x fail-high rate (Reckless).
+                    delta += delta / 4;
                 } else if result >= beta {
                     info.tm_asp_fail_high = info.tm_asp_fail_high.saturating_add(1);
                     alpha = (5 * alpha + 3 * beta) / 8;
                     beta = (result + delta).min(INFINITY);
                     asp_depth = (asp_depth - 1).max(1);
+                    // Grow faster on fail-high — we found something better,
+                    // confirm it quickly (unchanged ~1.5x).
+                    delta += delta / 2;
                 } else {
                     asp_result = result;
                     break;
                 }
-                delta += delta / 2;
             }
             score = asp_result;
         } else {
@@ -2494,6 +2500,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     // Fail low: contract beta aggressively toward alpha, widen alpha
                     beta = (3 * alpha + 5 * beta) / 8;
                     alpha = (result - delta).max(-INFINITY);
+                    // Asymmetric growth (probe 2): grow gently on fail-low — an
+                    // unstable/worse-than-hoped search shouldn't overshoot into a
+                    // huge window. ~1.25x vs the ~1.5x fail-high rate (Reckless).
+                    delta += delta / 4;
                 } else if result >= beta {
                     info.tm_asp_fail_high = info.tm_asp_fail_high.saturating_add(1);
                     // Fail high: contract alpha toward beta, widen beta
@@ -2501,12 +2511,13 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                     beta = (result + delta).min(INFINITY);
                     // Reduce depth for re-search (Alexandria/Midnight/Seer pattern)
                     asp_depth = (asp_depth - 1).max(1);
+                    // Grow faster on fail-high — we found something better,
+                    // confirm it quickly (unchanged ~1.5x).
+                    delta += delta / 2;
                 } else {
                     asp_result = result;
                     break;
                 }
-
-                delta += delta / 2;
             }
 
             score = asp_result;
