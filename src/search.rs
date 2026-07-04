@@ -5479,8 +5479,10 @@ fn quiescence_with_depth(
     }
 
     // Use main MovePicker in quiescence mode.
-    // This partitions captures into good (SEE>=0) and bad, and uses staged ordering.
-    let mut picker = MovePicker::new_quiescence(tt_move, &info.history, qs_checkers, qs_pinned);
+    // P3.4: pass QS_SEE_THRESHOLD as the good/bad split so the picker's
+    // partition coincides with the loop's SEE gate; the loop then skips bad
+    // captures via the stage flag instead of a second see_ge.
+    let mut picker = MovePicker::new_quiescence(tt_move, &info.history, qs_checkers, qs_pinned, tp(&QS_SEE_THRESHOLD));
     let mut best_move = NO_MOVE;
     let mut qs_move_count = 0i32;
     let qs_max_caps = tp(&QS_MAX_CAPTURES);
@@ -5534,10 +5536,12 @@ fn quiescence_with_depth(
             }
         }
 
-        // Skip bad captures (SEE below threshold)
-        // Negative threshold allows slightly losing captures (e.g. BxN)
-        // Obsidian uses -32, Viridithas -141
-        if !see_ge(board, mv, tp(&QS_SEE_THRESHOLD)) {
+        // Skip bad captures (SEE below QS_SEE_THRESHOLD). P3.4: the picker
+        // already ran this exact SEE at generation (fixed split threshold), so
+        // reuse its verdict via the BadCaptures stage instead of re-running
+        // see_ge. Bad captures are still yielded (delta pruning above sees them
+        // and can raise best_score identically) and skipped here.
+        if picker.last_was_bad_capture() {
             continue;
         }
 

@@ -219,6 +219,12 @@ pub struct MovePicker {
     bad_scores: [std::mem::MaybeUninit<i32>; 256],
     bad_len: usize,
     pub skip_quiet: bool,
+    /// Capture good/bad SEE split threshold (P3.4). `None` = dynamic
+    /// per-move `-capt_hist/18` (main/evasion search). `Some(t)` = fixed `t`
+    /// (quiescence passes QS_SEE_THRESHOLD), so the good/bad partition
+    /// coincides with the QS loop's own SEE gate and the loop can drop its
+    /// redundant see_ge, using the BadCaptures stage instead.
+    cap_split_threshold: Option<i32>,
     threats: Threats, // enemy attack bitboard for threat-aware history
     // B1: our own pieces blocking a slider's attack on an enemy piece.
     // Moving one of these creates a discovered attack.
@@ -288,6 +294,7 @@ impl MovePicker {
             bad_scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_len: 0,
             skip_quiet: false,
+            cap_split_threshold: None,
             threats,
             xray_blockers,
             checkers,
@@ -311,6 +318,9 @@ impl MovePicker {
         // (#1923 dedup pattern; audit P1).
         checkers: Bitboard,
         pinned: Bitboard,
+        // P3.4: fixed good/bad capture SEE split threshold (QS_SEE_THRESHOLD),
+        // so the partition matches the QS loop's SEE gate.
+        see_split: i32,
     ) -> Self {
         MovePicker {
             stage: Stage::TTMove,
@@ -327,6 +337,7 @@ impl MovePicker {
             bad_scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_len: 0,
             skip_quiet: true,
+            cap_split_threshold: Some(see_split),
             threats: 0,
             xray_blockers: 0,
             // Real pin/check masks so the TTMove-stage is_legal check works.
@@ -388,6 +399,7 @@ impl MovePicker {
             bad_scores: unsafe { std::mem::MaybeUninit::uninit().assume_init() },
             bad_len: 0,
             skip_quiet: false,
+            cap_split_threshold: None,
             // C8 audit LIKELY #19: evasion history READS must use the same
             // enemy_attacks key as beta-cutoff WRITES. Previously hardcoded
             // to 0, which hashed into a different 4D history slot than the
@@ -530,7 +542,13 @@ impl MovePicker {
             // forgiving threshold. Use captHist only (not MVV) to avoid inflation.
             let capt_hist = capt_hist_score_static(board, history, m);
             let cap_score = mvv_lva(board, m) + capt_hist;
-            let see_threshold = -capt_hist / 18;
+            // P3.4: quiescence pins the split to a fixed threshold
+            // (QS_SEE_THRESHOLD) so the good/bad partition matches its own SEE
+            // gate; main/evasion keep the dynamic per-move -capt_hist/18.
+            let see_threshold = match self.cap_split_threshold {
+                Some(t) => t,
+                None => -capt_hist / 18,
+            };
             if !see_ge(board, m, see_threshold) {
                 // Bad capture.
                 // C8 audit LIKELY #24: limit raised to 256 (from 64). 64
@@ -867,6 +885,16 @@ impl MovePicker {
             self.stage = Stage::BadCaptures;
             self.restore_bad_captures();
         }
+    }
+
+    /// True when the move most recently returned by `next()` came from the
+    /// BadCaptures stage. In quiescence (fixed split at QS_SEE_THRESHOLD) this
+    /// means the picker already judged it below the QS SEE gate, so the loop
+    /// can skip it without re-running see_ge (P3.4). Valid only immediately
+    /// after a `next()` that returned a capture.
+    #[inline]
+    pub fn last_was_bad_capture(&self) -> bool {
+        self.stage == Stage::BadCaptures
     }
 
     /// Selection sort: find best from current index, swap to front, return it.
