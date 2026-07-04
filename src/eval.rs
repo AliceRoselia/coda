@@ -274,6 +274,30 @@ pub fn evaluate_nnue(
 
 
     let mut v = net.forward_with_threats(acc, board.side_to_move, pc, threat_stack);
+    // Material-scaled eval, v3 (SF evaluate.cpp:80 / Reckless correct_eval —
+    // the mean-preserving port). factor = (BASE + mat) / (BASE + MAT_REF) with
+    // MAT_REF = 5880 (median material over the heldout T80 sample), so the MEAN
+    // eval scale is unchanged (~0.99 measured) and only the phase gradient is
+    // applied: bare kings ~0.85x, startpos ~1.11x at BASE=32000. Both failed
+    // ports are dissected in experiments.md 2026-07-04: v1 (#2517) compressed
+    // the endgame below the threshold-calibrated scale; v2 (#2524) anchored 1.0
+    // at bare kings (mean x1.18 = global EVAL_SCALE detune) and scaled only the
+    // negamax consumer while the QS stand-pat stayed raw. Living HERE, every
+    // consumer (search, QS, datagen, eval-fens) sees one consistent space, and
+    // the TT may safely cache the scaled value: material is a pure function of
+    // the position (hash-keyed), unlike the rule50 clock, which is why rule50
+    // scaling is point-of-use but this is not. Ablate with NO_MATERIAL_SCALE=1.
+    static MAT_SCALE_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *MAT_SCALE_ON.get_or_init(|| std::env::var("NO_MATERIAL_SCALE").is_err()) {
+        const MAT_REF: i64 = 5880;
+        let cnt = |pt: u8| board.pieces[pt as usize].count_ones() as i64;
+        let mat = 100 * cnt(crate::types::PAWN)
+            + 420 * (cnt(crate::types::KNIGHT) + cnt(crate::types::BISHOP))
+            + 640 * cnt(crate::types::ROOK)
+            + 1200 * cnt(crate::types::QUEEN);
+        let base = crate::search::MAT_SCALE_BASE.load(std::sync::atomic::Ordering::Relaxed) as i64;
+        v = ((v as i64 * (base + mat)) / (base + MAT_REF)) as i32;
+    }
     // Dominant endgame mop-up gradient (lone-king-vs-matable only). WHITE-rel -> stm.
     let mu = endgame_mopup(board);
     v += if board.side_to_move == crate::types::WHITE { mu } else { -mu };

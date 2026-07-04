@@ -505,6 +505,10 @@ tunables!(
     // probe rescale a candidate net to prod's scale (e.g. 127 = dual-s200
     // RMS 254 -> baseline 323) to de-confound net-vs-net SPRTs. 100 = off.
     (EVAL_SCALE_PCT, 100, 50, 200, 5.0, false),
+    // Material-scale gradient steepness (see eval.rs evaluate_nnue, v3 port).
+    // factor = (BASE+mat)/(BASE+5880): smaller BASE = steeper endgame->opening
+    // tilt. 32000 matches SF/Reckless's measured gradient (~0.85x..1.11x).
+    (MAT_SCALE_BASE, 32000, 12000, 96000, 5000.0, false),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
