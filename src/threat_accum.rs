@@ -10,7 +10,7 @@
 //! BoardObserver callbacks during make_move push deltas directly.
 //! Evaluate walks back to find an accurate ancestor and replays forward.
 
-use crate::threats::{RawThreatDelta, MAX_THREAT_DELTAS};
+use crate::threats::{RawThreatDelta, MAX_THREAT_DELTAS, MAX_XPLY_SPAN};
 use crate::types::*;
 
 const MAX_PLY: usize = 256;
@@ -325,6 +325,21 @@ impl ThreatStack {
             crate::threats::apply_stats::record_crossply(&adds, &subs);
         }
 
+        // Combined cross-ply replay ("double_inc_update"): for short gap>=2
+        // spans, expand the whole span's deltas into one add/sub list pair,
+        // cancel matched pairs across plies (A->B then B->C emits +feat@B
+        // then -feat@B), and stream weight rows once from the ancestor
+        // straight to the target. Combining the whole span is safe here:
+        // can_update rejected king e-file crossings and overflowed delta
+        // lists for this perspective at EVERY ply in the span, so `mirrored`
+        // is constant across it and every list is complete. Intermediate
+        // plies stay inaccurate and materialize on demand.
+        let gap = self.index - ancestor;
+        if (2..=MAX_XPLY_SPAN).contains(&gap) {
+            self.update_span(ancestor, net_weights, num_features, pov, mirrored);
+            return;
+        }
+
         for ply in (ancestor + 1)..=self.index {
             let entry_mv = self.stack[ply].mv;
 
@@ -371,6 +386,15 @@ impl ThreatStack {
             crate::threats::apply_stats::record_replay_gap(self.index - ancestor);
         }
 
+        // Combined cross-ply replay — see the matching branch in `update`.
+        // Both perspectives share the ancestor, so the whole span passed
+        // can_update's crossing/overflow checks for BOTH mirrors.
+        let gap = self.index - ancestor;
+        if (2..=MAX_XPLY_SPAN).contains(&gap) {
+            self.update_span_dual(ancestor, net_weights, num_features, mirrored_w, mirrored_b);
+            return;
+        }
+
         for ply in (ancestor + 1)..=self.index {
             let entry_mv = self.stack[ply].mv;
 
@@ -404,6 +428,74 @@ impl ThreatStack {
 
             entry.accurate = [true, true];
         }
+    }
+
+    /// Combined cross-ply replay for one perspective (gap 2..=MAX_XPLY_SPAN).
+    /// One raw-delta expansion + cancellation + SIMD apply from the ancestor
+    /// accumulator directly into the target ply; intermediate plies are not
+    /// written and stay inaccurate. Bit-exact vs the per-ply loop: i16
+    /// wrapping adds commute and concatenation preserves the add/sub
+    /// multiset (cancellation only drops net-zero pairs).
+    fn update_span(&mut self, ancestor: usize, net_weights: &[i8], num_features: usize,
+                   pov: Color, mirrored: bool) {
+        let h = self.hidden_size;
+        let p = pov as usize;
+        let (before, tail) = self.stack.split_at_mut(self.index);
+        let target = &mut tail[0];
+        let (slices, n_slices) = span_slices(before, ancestor, target.mv, &target.delta);
+        let src = &before[ancestor].values[p][..h];
+
+        if n_slices == 0 {
+            // Every ply in the span was a null move / delta-less: pure copy,
+            // same as the chain of per-ply copies.
+            target.values[p][..h].copy_from_slice(src);
+        } else {
+            unsafe {
+                crate::threats::apply_threat_deltas_span(
+                    &mut target.values[p][..h],
+                    src,
+                    &slices[..n_slices],
+                    net_weights, h, num_features,
+                    pov, mirrored,
+                );
+            }
+        }
+
+        target.accurate[p] = true;
+    }
+
+    /// Combined cross-ply replay for both perspectives — the span analogue
+    /// of `update_dual`. See `update_span`.
+    fn update_span_dual(&mut self, ancestor: usize, net_weights: &[i8], num_features: usize,
+                        mirrored_w: bool, mirrored_b: bool) {
+        let h = self.hidden_size;
+        let (before, tail) = self.stack.split_at_mut(self.index);
+        let target = &mut tail[0];
+        let (slices, n_slices) = span_slices(before, ancestor, target.mv, &target.delta);
+        let prev = &before[ancestor];
+        let (dst_w, dst_b) = {
+            let (w, b) = target.values.split_at_mut(1);
+            (&mut w[0][..h], &mut b[0][..h])
+        };
+
+        if n_slices == 0 {
+            dst_w.copy_from_slice(&prev.values[WHITE as usize][..h]);
+            dst_b.copy_from_slice(&prev.values[BLACK as usize][..h]);
+        } else {
+            unsafe {
+                crate::threats::apply_threat_deltas_span_dual(
+                    dst_w,
+                    &prev.values[WHITE as usize][..h],
+                    dst_b,
+                    &prev.values[BLACK as usize][..h],
+                    &slices[..n_slices],
+                    net_weights, h, num_features,
+                    mirrored_w, mirrored_b,
+                );
+            }
+        }
+
+        target.accurate = [true, true];
     }
 
     /// Get the accumulator values for a perspective.
@@ -442,6 +534,35 @@ impl ThreatStack {
             }
         }
     }
+}
+
+/// Gather the delta slices of a replay span (plies ancestor+1..=target,
+/// where `before` is the stack below the target and the target's fields are
+/// passed separately to satisfy the borrow split against its `values`).
+/// Null-move and delta-less plies are identity in the per-ply path (they
+/// copy the previous values — a null move's entry may even carry stale
+/// board deltas that the per-ply path ignores), so they contribute nothing
+/// to the combined span.
+#[inline]
+fn span_slices<'a>(
+    before: &'a [ThreatEntry],
+    ancestor: usize,
+    target_mv: Move,
+    target_delta: &'a DeltaVec,
+) -> ([&'a [RawThreatDelta]; MAX_XPLY_SPAN], usize) {
+    let mut slices: [&[RawThreatDelta]; MAX_XPLY_SPAN] = [&[]; MAX_XPLY_SPAN];
+    let mut n = 0usize;
+    for e in &before[ancestor + 1..] {
+        if e.mv != NO_MOVE && !e.delta.is_empty() {
+            slices[n] = e.delta.as_slice();
+            n += 1;
+        }
+    }
+    if target_mv != NO_MOVE && !target_delta.is_empty() {
+        slices[n] = target_delta.as_slice();
+        n += 1;
+    }
+    (slices, n)
 }
 
 #[cfg(test)]
@@ -580,6 +701,62 @@ mod incremental_tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Like `run_scenario`, but materializes only ONCE, after all moves are
+    /// played — forcing a single replay with gap == moves.len(). Exercises
+    /// the combined cross-ply span path (gap 2..=MAX_XPLY_SPAN) and the
+    /// per-ply fallback (gap > MAX_XPLY_SPAN).
+    ///
+    /// `dual == true` materializes via `ensure_computed` (the update_dual
+    /// span path — both perspectives share ancestor 0); `dual == false`
+    /// drives per-perspective `update` directly to cover the single-pov
+    /// span path.
+    fn run_gapped_scenario(name: &str, fen: &str, moves: &[&str], dual: bool) {
+        crate::init();
+        let nf = num_threat_features();
+        let weights = make_weights(nf);
+
+        let mut board = Board::new();
+        board.set_fen(fen);
+        board.generate_threat_deltas = true;
+
+        let mut incr = ThreatStack::new(H);
+        incr.active = true;
+        incr.refresh(&weights, nf, &board, WHITE);
+        incr.refresh(&weights, nf, &board, BLACK);
+
+        for (ply, uci) in moves.iter().enumerate() {
+            let mv = parse_uci(&board, uci);
+            incr.push(NO_MOVE, NO_PIECE_TYPE);
+            let ok = board.make_move(mv);
+            assert!(ok, "{}: move {} illegal at ply {}", name, uci, ply);
+            incr.absorb_deltas(&board);
+        }
+
+        if dual {
+            incr.ensure_computed(&weights, nf, &board);
+        } else {
+            for pov in [WHITE, BLACK] {
+                let anc = incr.can_update(pov)
+                    .unwrap_or_else(|| panic!("{}: span not replayable (king crossing?)", name));
+                assert_eq!(incr.index() - anc, moves.len(),
+                    "{}: expected full-span gap for pov {}", name, pov);
+                incr.update(anc, &weights, nf, &board, pov);
+            }
+        }
+
+        // From-scratch reference at the final position.
+        let mut refs = ThreatStack::new(H);
+        refs.active = true;
+        refs.refresh(&weights, nf, &board, WHITE);
+        refs.refresh(&weights, nf, &board, BLACK);
+
+        for pov in [WHITE, BLACK] {
+            assert_eq!(incr.values(pov), refs.values(pov),
+                "{}: pov={} gapped-replay mismatch vs refresh",
+                name, if pov == WHITE { "W" } else { "B" });
         }
     }
 
@@ -778,6 +955,73 @@ mod incremental_tests {
         );
     }
 
+    #[test]
+    fn gap2_crossply_cancel_dual() {
+        // Pawn takes on e5 (adds every feature touching the white pawn@e5),
+        // then dxe5 recaptures it (subtracts them) — the canonical A->B,
+        // B-removed cross-ply cancellation. Materialized once at the end:
+        // gap-2 dual span (both perspectives replay from ancestor 0).
+        run_gapped_scenario(
+            "gap2_dual",
+            "4k3/8/3p4/4p3/3P4/2N5/8/4K3 w - - 0 1",
+            &["d4e5", "d6e5"],
+            true,
+        );
+    }
+
+    #[test]
+    fn gap2_crossply_cancel_single() {
+        // Same span through the per-perspective `update` path.
+        run_gapped_scenario(
+            "gap2_single",
+            "4k3/8/3p4/4p3/3P4/2N5/8/4K3 w - - 0 1",
+            &["d4e5", "d6e5"],
+            false,
+        );
+    }
+
+    #[test]
+    fn gap3_knight_maneuver_crossply() {
+        // Nf3 (ply 1) adds knight@f3 features; Nxe5 (ply 3) subtracts them
+        // and adds knight@e5 ones — A->B ... B->C cancellation at f3 with an
+        // opponent move inside the span. Gap 3, still <= MAX_XPLY_SPAN.
+        run_gapped_scenario(
+            "gap3_dual",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            &["g1f3", "d7d6", "f3e5"],
+            true,
+        );
+        run_gapped_scenario(
+            "gap3_single",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            &["g1f3", "d7d6", "f3e5"],
+            false,
+        );
+    }
+
+    #[test]
+    fn gap4_span_boundary() {
+        // Exactly MAX_XPLY_SPAN plies — the widest combined span.
+        run_gapped_scenario(
+            "gap4",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            &["e2e4", "e7e5", "g1f3", "b8c6"],
+            true,
+        );
+    }
+
+    #[test]
+    fn gap5_per_ply_fallback() {
+        // One past MAX_XPLY_SPAN — must take the per-ply fallback loop and
+        // still match refresh (also re-verifies the fallback after refactor).
+        run_gapped_scenario(
+            "gap5",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            &["e2e4", "e7e5", "g1f3", "b8c6", "f1c4"],
+            true,
+        );
+    }
+
     /// Deterministic fuzzer: plays random legal moves from several
     /// starting positions and asserts incremental == refresh after
     /// every move. Covers move-type combinations that curated scenarios
@@ -889,6 +1133,108 @@ mod incremental_tests {
                             let (j, av, bv) = first.unwrap();
                             panic!(
                                 "fuzz divergence: fen_idx={} game={} ply={} move={} pov={} \
+                                 channel={} incr={} refresh={} seed={:#x}",
+                                fen_idx, game, ply,
+                                crate::types::move_to_uci(mv),
+                                if pov == WHITE { "W" } else { "B" },
+                                j, av, bv, seed,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Gapped fuzzer: like `fuzz_random_games`, but materializes only on a
+    /// random ~40% of plies, so replays span every gap class — gap 1, the
+    /// combined cross-ply path (2..=MAX_XPLY_SPAN), the per-ply fallback
+    /// beyond it, and refresh rejections when a king e-file crossing or
+    /// delta overflow lands inside a span.
+    #[test]
+    fn fuzz_random_games_gapped() {
+        crate::init();
+        let nf = num_threat_features();
+        let weights = make_weights(nf);
+
+        const START_FENS: &[&str] = &[
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "4k3/P6P/8/8/8/8/p6p/4K3 w - - 0 1", // promotion testbed
+        ];
+
+        fn next_u32(state: &mut u32) -> u32 {
+            let mut x = *state;
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *state = x;
+            x
+        }
+
+        const MAX_PLIES_PER_GAME: usize = 120;
+        const GAMES_PER_FEN: usize = 10;
+
+        for (fen_idx, fen) in START_FENS.iter().enumerate() {
+            for game in 0..GAMES_PER_FEN {
+                let seed: u32 = 0x5EEDCAFEu32
+                    .wrapping_add((fen_idx as u32).wrapping_mul(1_000_003))
+                    .wrapping_add((game as u32).wrapping_mul(7919));
+                let mut rng = if seed == 0 { 1 } else { seed };
+
+                let mut board = Board::new();
+                board.set_fen(fen);
+                board.generate_threat_deltas = true;
+
+                let mut incr = ThreatStack::new(H);
+                incr.active = true;
+                incr.refresh(&weights, nf, &board, WHITE);
+                incr.refresh(&weights, nf, &board, BLACK);
+
+                // Reference stack stays at index 0 and is refreshed from the
+                // current board only when we compare.
+                let mut refs = ThreatStack::new(H);
+                refs.active = true;
+
+                for ply in 0..MAX_PLIES_PER_GAME {
+                    let legal = generate_legal_moves(&board);
+                    if legal.len == 0 {
+                        break; // stalemate or checkmate
+                    }
+                    let idx = (next_u32(&mut rng) as usize) % legal.len;
+                    let mv = legal.get(idx);
+
+                    incr.push(NO_MOVE, NO_PIECE_TYPE);
+                    let ok = board.make_move(mv);
+                    assert!(ok, "gapped fuzz {} game {} ply {}: move {} illegal?",
+                        fen_idx, game, ply, crate::types::move_to_uci(mv));
+                    incr.absorb_deltas(&board);
+
+                    // Materialize (and verify) on ~40% of plies; the rest
+                    // grow the pending replay span.
+                    if next_u32(&mut rng) % 100 >= 40 {
+                        continue;
+                    }
+                    incr.ensure_computed(&weights, nf, &board);
+                    refs.refresh(&weights, nf, &board, WHITE);
+                    refs.refresh(&weights, nf, &board, BLACK);
+
+                    for pov in [WHITE, BLACK] {
+                        let a = incr.values(pov);
+                        let b = refs.values(pov);
+                        if a != b {
+                            let mut first = None;
+                            for j in 0..H {
+                                if a[j] != b[j] {
+                                    first = Some((j, a[j], b[j]));
+                                    break;
+                                }
+                            }
+                            let (j, av, bv) = first.unwrap();
+                            panic!(
+                                "gapped fuzz divergence: fen_idx={} game={} ply={} move={} pov={} \
                                  channel={} incr={} refresh={} seed={:#x}",
                                 fen_idx, game, ply,
                                 crate::types::move_to_uci(mv),

@@ -1101,6 +1101,13 @@ pub fn enumerate_threats_bullet_postfix_ref<F: FnMut(usize)>(
 /// Maximum threat deltas per ply.
 pub const MAX_THREAT_DELTAS: usize = 128;
 
+/// Maximum replay span (in plies) the combined cross-ply apply supports.
+/// Bounds the span scratch arrays at MAX_XPLY_SPAN × MAX_THREAT_DELTAS
+/// entries on the stack; longer spans fall back to per-ply replay.
+/// Instrumented avg replay gap is ~1.24 plies, so 4 covers essentially
+/// every gap>=2 materialization.
+pub const MAX_XPLY_SPAN: usize = 4;
+
 /// Packed threat delta (4 bytes, matching Reckless's ThreatDelta).
 /// Layout: [attacker_cp:8][from_sq:8][victim_cp:8][to_sq:7][add:1]
 #[derive(Copy, Clone)]
@@ -1692,6 +1699,48 @@ unsafe fn apply_threat_deltas_avx2(
     }
 }
 
+/// Remove net-zero add/sub pairs in place: any feature index present in
+/// both lists contributes +row then -row to the same accumulator — two
+/// full weight-row streams (2 KiB of effectively random reads) for a
+/// guaranteed no-op. The profile-threats instrumentation measured these
+/// at ~3.8% of all streamed rows (SF cancels the analogous pairs).
+///
+/// Bit-exact: i16 accumulation is wrapping and commutative, so dropping a
+/// matched +w/-w pair of the SAME row cannot change the result, saturation
+/// or no. O(n_subs × n_adds) scalar scan — the lists average ~10 entries
+/// (cap 128), so the scan costs nanoseconds against the 2 KiB×2 of row
+/// streaming it saves per hit. Duplicate indices are handled naturally:
+/// each sub cancels at most one matching add.
+#[inline]
+unsafe fn cancel_add_sub_pairs(
+    adds_ptr: *mut usize,
+    n_adds: &mut usize,
+    subs_ptr: *mut usize,
+    n_subs: &mut usize,
+) {
+    let mut si = 0;
+    while si < *n_subs {
+        let s = unsafe { subs_ptr.add(si).read() };
+        let mut matched = false;
+        let mut ai = 0;
+        while ai < *n_adds {
+            if unsafe { adds_ptr.add(ai).read() } == s {
+                // swap-remove from both lists
+                *n_adds -= 1;
+                unsafe { adds_ptr.add(ai).write(adds_ptr.add(*n_adds).read()); }
+                *n_subs -= 1;
+                unsafe { subs_ptr.add(si).write(subs_ptr.add(*n_subs).read()); }
+                matched = true;
+                break;
+            }
+            ai += 1;
+        }
+        if !matched {
+            si += 1;
+        }
+    }
+}
+
 /// Shared body for [`apply_threat_deltas`] — no `target_feature`, so its
 /// (and `apply_threat_indices`') scalar fallbacks compile to scalar code.
 #[inline(always)]
@@ -1903,6 +1952,306 @@ unsafe fn apply_threat_deltas_dual_body(
         crate::threats::apply_stats::record_cancel(adds_w, subs_w);
         crate::threats::apply_stats::record_cancel(adds_b, subs_b);
     }
+
+    unsafe {
+        apply_threat_indices(dst_w, src_w, threat_weights, hidden_size, adds_w, subs_w);
+        apply_threat_indices(dst_b, src_b, threat_weights, hidden_size, adds_b, subs_b);
+    }
+}
+
+/// Apply a multi-ply span of raw threat deltas in ONE pass for one
+/// perspective (the "double_inc_update" idea): expand every ply's list into
+/// a single combined add/sub index pair, cancel matched add/sub pairs across
+/// the whole span, then stream weight rows once from `src` (the ancestor
+/// accumulator) into `dst` (the target ply). A piece moving A->B at one ply
+/// and B->C at the next emits +feat@B then -feat@B — per-ply replay streams
+/// both 1 KiB rows; the combined span cancels them.
+///
+/// Bit-exact vs sequential per-ply applies: i16 accumulation is wrapping and
+/// commutative, and concatenating the plies preserves the total add/sub
+/// multiset, so one combined apply equals the chain of per-ply applies.
+/// The caller must guarantee `mirrored` is constant across the span (in the
+/// live path `ThreatStack::can_update` rejects king e-file crossings).
+///
+/// # Safety
+/// Same weight/index requirements as [`apply_threat_deltas`]. Additionally
+/// `delta_slices.len() <= MAX_XPLY_SPAN` and each slice at most
+/// MAX_THREAT_DELTAS long (DeltaVec's cap; overflowed plies never reach
+/// replay), bounding the combined scratch arrays.
+///
+/// Runtime dispatcher (function multiversioning) — see [`apply_threat_deltas`].
+pub unsafe fn apply_threat_deltas_span(
+    dst: &mut [i16],
+    src: &[i16],
+    delta_slices: &[&[RawThreatDelta]],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    num_threats: usize,
+    pov: Color,
+    mirrored: bool,
+) {
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    if is_x86_feature_detected!("avx2") {
+        return unsafe {
+            apply_threat_deltas_span_avx2(
+                dst, src, delta_slices, threat_weights, hidden_size, num_threats, pov, mirrored)
+        };
+    }
+    unsafe {
+        apply_threat_deltas_span_body(
+            dst, src, delta_slices, threat_weights, hidden_size, num_threats, pov, mirrored)
+    }
+}
+
+/// AVX2-specialized wrapper for [`apply_threat_deltas_span`]. Only call when
+/// AVX2 is available.
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+#[target_feature(enable = "avx2")]
+unsafe fn apply_threat_deltas_span_avx2(
+    dst: &mut [i16],
+    src: &[i16],
+    delta_slices: &[&[RawThreatDelta]],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    num_threats: usize,
+    pov: Color,
+    mirrored: bool,
+) {
+    unsafe {
+        apply_threat_deltas_span_body(
+            dst, src, delta_slices, threat_weights, hidden_size, num_threats, pov, mirrored)
+    }
+}
+
+/// Shared body for [`apply_threat_deltas_span`] — no `target_feature`.
+#[inline(always)]
+unsafe fn apply_threat_deltas_span_body(
+    dst: &mut [i16],
+    src: &[i16],
+    delta_slices: &[&[RawThreatDelta]],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    num_threats: usize,
+    pov: Color,
+    mirrored: bool,
+) {
+    debug_assert!(delta_slices.len() <= MAX_XPLY_SPAN);
+
+    #[cfg(feature = "profile-threats")]
+    crate::threats::apply_stats::record(delta_slices.iter().map(|s| s.len()).sum());
+
+    // Combined-span scratch: MAX_XPLY_SPAN plies × MAX_THREAT_DELTAS caps
+    // the expansion at 4 KiB per array. MaybeUninit skips the zero-init —
+    // only [..n_adds]/[..n_subs] are written/read.
+    let mut adds_storage =
+        std::mem::MaybeUninit::<[usize; MAX_XPLY_SPAN * MAX_THREAT_DELTAS]>::uninit();
+    let mut subs_storage =
+        std::mem::MaybeUninit::<[usize; MAX_XPLY_SPAN * MAX_THREAT_DELTAS]>::uninit();
+    let adds_ptr = scratch_ptr!(adds_storage, usize);
+    let subs_ptr = scratch_ptr!(subs_storage, usize);
+    let mut n_adds = 0usize;
+    let mut n_subs = 0usize;
+    for deltas in delta_slices {
+        for delta in *deltas {
+            let idx = threat_index(
+                delta.attacker_cp() as usize,
+                delta.from_sq() as u32,
+                delta.victim_cp() as usize,
+                delta.to_sq() as u32,
+                mirrored,
+                pov,
+            );
+            if idx < 0 || (idx as usize) >= num_threats { continue; }
+            if delta.add() {
+                unsafe { adds_ptr.add(n_adds).write(idx as usize); }
+                n_adds += 1;
+            } else {
+                unsafe { subs_ptr.add(n_subs).write(idx as usize); }
+                n_subs += 1;
+            }
+        }
+    }
+
+    #[cfg(feature = "profile-threats")]
+    crate::threats::apply_stats::record_cancel(
+        scratch_slice!(adds_ptr, n_adds), scratch_slice!(subs_ptr, n_subs));
+
+    unsafe { cancel_add_sub_pairs(adds_ptr, &mut n_adds, subs_ptr, &mut n_subs); }
+    let adds = scratch_slice!(adds_ptr, n_adds);
+    let subs = scratch_slice!(subs_ptr, n_subs);
+
+    unsafe {
+        apply_threat_indices(dst, src, threat_weights, hidden_size, adds, subs);
+    }
+}
+
+/// Multi-ply span apply for both perspectives after a shared replay walk —
+/// the span analogue of [`apply_threat_deltas_dual`]. One raw-delta walk over
+/// the whole span, one SIMD apply per perspective.
+///
+/// # Safety
+/// Same requirements as [`apply_threat_deltas_span`].
+///
+/// Runtime dispatcher (function multiversioning) — see [`apply_threat_deltas`].
+pub unsafe fn apply_threat_deltas_span_dual(
+    dst_w: &mut [i16],
+    src_w: &[i16],
+    dst_b: &mut [i16],
+    src_b: &[i16],
+    delta_slices: &[&[RawThreatDelta]],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    num_threats: usize,
+    mirrored_w: bool,
+    mirrored_b: bool,
+) {
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    if is_x86_feature_detected!("avx2") {
+        return unsafe {
+            apply_threat_deltas_span_dual_avx2(
+                dst_w, src_w, dst_b, src_b, delta_slices, threat_weights,
+                hidden_size, num_threats, mirrored_w, mirrored_b)
+        };
+    }
+    unsafe {
+        apply_threat_deltas_span_dual_body(
+            dst_w, src_w, dst_b, src_b, delta_slices, threat_weights,
+            hidden_size, num_threats, mirrored_w, mirrored_b)
+    }
+}
+
+/// AVX2-specialized wrapper for [`apply_threat_deltas_span_dual`]. Only call
+/// when AVX2 is available.
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+#[target_feature(enable = "avx2")]
+unsafe fn apply_threat_deltas_span_dual_avx2(
+    dst_w: &mut [i16],
+    src_w: &[i16],
+    dst_b: &mut [i16],
+    src_b: &[i16],
+    delta_slices: &[&[RawThreatDelta]],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    num_threats: usize,
+    mirrored_w: bool,
+    mirrored_b: bool,
+) {
+    unsafe {
+        apply_threat_deltas_span_dual_body(
+            dst_w, src_w, dst_b, src_b, delta_slices, threat_weights,
+            hidden_size, num_threats, mirrored_w, mirrored_b)
+    }
+}
+
+/// Shared body for [`apply_threat_deltas_span_dual`] — no `target_feature`.
+#[inline(always)]
+unsafe fn apply_threat_deltas_span_dual_body(
+    dst_w: &mut [i16],
+    src_w: &[i16],
+    dst_b: &mut [i16],
+    src_b: &[i16],
+    delta_slices: &[&[RawThreatDelta]],
+    threat_weights: &[i8],
+    hidden_size: usize,
+    num_threats: usize,
+    mirrored_w: bool,
+    mirrored_b: bool,
+) {
+    debug_assert!(delta_slices.len() <= MAX_XPLY_SPAN);
+
+    #[cfg(feature = "profile-threats")]
+    {
+        let n: usize = delta_slices.iter().map(|s| s.len()).sum();
+        crate::threats::apply_stats::record(n);
+        crate::threats::apply_stats::record(n);
+    }
+
+    let mut adds_w_storage =
+        std::mem::MaybeUninit::<[usize; MAX_XPLY_SPAN * MAX_THREAT_DELTAS]>::uninit();
+    let mut subs_w_storage =
+        std::mem::MaybeUninit::<[usize; MAX_XPLY_SPAN * MAX_THREAT_DELTAS]>::uninit();
+    let mut adds_b_storage =
+        std::mem::MaybeUninit::<[usize; MAX_XPLY_SPAN * MAX_THREAT_DELTAS]>::uninit();
+    let mut subs_b_storage =
+        std::mem::MaybeUninit::<[usize; MAX_XPLY_SPAN * MAX_THREAT_DELTAS]>::uninit();
+    let adds_w_ptr = scratch_ptr!(adds_w_storage, usize);
+    let subs_w_ptr = scratch_ptr!(subs_w_storage, usize);
+    let adds_b_ptr = scratch_ptr!(adds_b_storage, usize);
+    let subs_b_ptr = scratch_ptr!(subs_b_storage, usize);
+    let mut n_adds_w = 0usize;
+    let mut n_subs_w = 0usize;
+    let mut n_adds_b = 0usize;
+    let mut n_subs_b = 0usize;
+    let tables = get_threat_tables();
+    let flip_w = 7 * mirrored_w as u32;
+    let flip_b = (7 * mirrored_b as u32) ^ 56;
+
+    for deltas in delta_slices {
+        for delta in *deltas {
+            let attacker = delta.attacker_cp() as usize;
+            let from = delta.from_sq() as u32;
+            let victim = delta.victim_cp() as usize;
+            let to = delta.to_sq() as u32;
+            let add = delta.add();
+
+            let pair_w = tables.piece_pair[attacker][victim];
+            let base_w = pair_w.base(from, to);
+            if base_w >= 0 {
+                let from_w = from ^ flip_w;
+                let to_w = to ^ flip_w;
+                let idx_w = base_w
+                    + tables.piece_offset[attacker][from_w as usize]
+                    + tables.attack_index[attacker][from_w as usize][to_w as usize] as i32;
+                if (idx_w as usize) < num_threats {
+                    if add {
+                        unsafe { adds_w_ptr.add(n_adds_w).write(idx_w as usize); }
+                        n_adds_w += 1;
+                    } else {
+                        unsafe { subs_w_ptr.add(n_subs_w).write(idx_w as usize); }
+                        n_subs_w += 1;
+                    }
+                }
+            }
+
+            let attacker_b = flipped_colored_piece(attacker);
+            let victim_b = flipped_colored_piece(victim);
+            let pair_b = tables.piece_pair[attacker_b][victim_b];
+            let base_b = pair_b.base(from, to);
+            if base_b >= 0 {
+                let from_b = from ^ flip_b;
+                let to_b = to ^ flip_b;
+                let idx_b = base_b
+                    + tables.piece_offset[attacker_b][from_b as usize]
+                    + tables.attack_index[attacker_b][from_b as usize][to_b as usize] as i32;
+                if (idx_b as usize) < num_threats {
+                    if add {
+                        unsafe { adds_b_ptr.add(n_adds_b).write(idx_b as usize); }
+                        n_adds_b += 1;
+                    } else {
+                        unsafe { subs_b_ptr.add(n_subs_b).write(idx_b as usize); }
+                        n_subs_b += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "profile-threats")]
+    {
+        crate::threats::apply_stats::record_cancel(
+            scratch_slice!(adds_w_ptr, n_adds_w), scratch_slice!(subs_w_ptr, n_subs_w));
+        crate::threats::apply_stats::record_cancel(
+            scratch_slice!(adds_b_ptr, n_adds_b), scratch_slice!(subs_b_ptr, n_subs_b));
+    }
+
+    unsafe {
+        cancel_add_sub_pairs(adds_w_ptr, &mut n_adds_w, subs_w_ptr, &mut n_subs_w);
+        cancel_add_sub_pairs(adds_b_ptr, &mut n_adds_b, subs_b_ptr, &mut n_subs_b);
+    }
+    let adds_w = scratch_slice!(adds_w_ptr, n_adds_w);
+    let subs_w = scratch_slice!(subs_w_ptr, n_subs_w);
+    let adds_b = scratch_slice!(adds_b_ptr, n_adds_b);
+    let subs_b = scratch_slice!(subs_b_ptr, n_subs_b);
 
     unsafe {
         apply_threat_indices(dst_w, src_w, threat_weights, hidden_size, adds_w, subs_w);
@@ -2480,6 +2829,53 @@ unsafe fn add_weight_rows_neon(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// cancel_add_sub_pairs must preserve the multiset difference
+    /// adds - subs (as signed counts per index), including duplicates,
+    /// and never leave a cancellable pair behind.
+    #[test]
+    fn test_cancel_add_sub_pairs_preserves_multiset_difference() {
+        use std::collections::HashMap;
+        let cases: Vec<(Vec<usize>, Vec<usize>)> = vec![
+            (vec![], vec![]),
+            (vec![1, 2, 3], vec![]),
+            (vec![], vec![1, 2, 3]),
+            (vec![1, 2, 3], vec![2, 4]),            // one pair cancels
+            (vec![5, 5, 7], vec![5, 7, 9]),         // duplicate add: one 5 survives
+            (vec![10, 11], vec![11, 10]),            // full cancellation
+            (vec![1, 1, 1], vec![1, 1]),             // multiset: one 1 survives
+            (vec![3, 1, 4, 1, 5], vec![9, 2, 6, 5, 3]),
+        ];
+        for (adds0, subs0) in cases {
+            let mut adds = adds0.clone();
+            let mut subs = subs0.clone();
+            adds.resize(adds.len().max(1), 0); // ensure valid ptr even when empty
+            subs.resize(subs.len().max(1), 0);
+            let mut n_adds = adds0.len();
+            let mut n_subs = subs0.len();
+            unsafe {
+                cancel_add_sub_pairs(adds.as_mut_ptr(), &mut n_adds, subs.as_mut_ptr(), &mut n_subs);
+            }
+            let count = |v: &[usize]| {
+                let mut m = HashMap::new();
+                for &x in v { *m.entry(x).or_insert(0i64) += 1; }
+                m
+            };
+            // Signed difference adds-subs must be unchanged.
+            let mut before = count(&adds0);
+            for (k, v) in count(&subs0) { *before.entry(k).or_insert(0) -= v; }
+            let mut after = count(&adds[..n_adds]);
+            for (k, v) in count(&subs[..n_subs]) { *after.entry(k).or_insert(0) -= v; }
+            before.retain(|_, v| *v != 0);
+            after.retain(|_, v| *v != 0);
+            assert_eq!(before, after, "difference changed for {:?} / {:?}", adds0, subs0);
+            // No cancellable pair may remain.
+            for i in 0..n_adds {
+                assert!(!subs[..n_subs].contains(&adds[i]),
+                    "residual cancellable pair {} for {:?} / {:?}", adds[i], adds0, subs0);
+            }
+        }
+    }
 
     /// Scalar reference for apply_deltas_{avx2,neon} — mirrors the
     /// dispatcher's scalar fallback exactly so SIMD paths can be
