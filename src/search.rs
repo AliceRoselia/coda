@@ -505,6 +505,14 @@ tunables!(
     // probe rescale a candidate net to prod's scale (e.g. 127 = dual-s200
     // RMS 254 -> baseline 323) to de-confound net-vs-net SPRTs. 100 = off.
     (EVAL_SCALE_PCT, 100, 50, 200, 5.0, false),
+    // Existing material-damp scaler shape (SearchInfo::eval, Alexandria
+    // pattern since 2026-04-13), exposed 2026-07-04. factor =
+    // (BASE + npm + pawns*PAWN_W) / 32768. Defaults reproduce the
+    // pre-exposure formula exactly. BASE > ~24800 lets the startpos factor
+    // exceed 1.0 (SF/Reckless amplification region); PAWN_W>0 moves from
+    // npm-only toward all-material.
+    (MAT_DAMP_BASE, 22400, 14000, 34000, 1200.0, false),
+    (MAT_PAWN_W, 0, 0, 300, 20.0, false),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
@@ -1250,7 +1258,15 @@ impl SearchInfo {
         // correction — hence SPRT #610 showed −8 Elo at 1000 games before
         // we caught this. The fix is structural: keep TT storage
         // halfmove-independent, apply scale freshly on read.
-        score * (22400 + material) / 32 / 1024
+        //
+        // Shape exposed to SPSA 2026-07-04 (material-scaling thread, see
+        // experiments.md correction #2): MAT_DAMP_BASE controls steepness AND
+        // mean (base+mat > 32768 amplifies above 1.0, the SF/Reckless region);
+        // MAT_PAWN_W=0 reproduces the npm-only Alexandria shape exactly, >0
+        // moves toward RK/SF all-material. Defaults are bench-identical to the
+        // pre-exposure formula.
+        let pawns = popcount(board.pieces[PAWN as usize]) as i32;
+        score * (tp(&MAT_DAMP_BASE) + material + pawns * tp(&MAT_PAWN_W)) / 32 / 1024
     }
 
     #[inline]
