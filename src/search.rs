@@ -505,6 +505,11 @@ tunables!(
     // probe rescale a candidate net to prod's scale (e.g. 127 = dual-s200
     // RMS 254 -> baseline 323) to de-confound net-vs-net SPRTs. 100 = off.
     (EVAL_SCALE_PCT, 100, 50, 200, 5.0, false),
+    // Material-scaled eval (SF/Reckless pattern): sharpen eval when material
+    // is on the board, anchored at x1.0 for bare kings so the endgame stays at
+    // the net's natural (threshold-calibrated) scale. scaled = raw*(BASE+mat)/BASE.
+    // Smaller BASE => more middlegame amplification. See apply_material_scale.
+    (MAT_SCALE_BASE, 32000, 12000, 80000, 3000.0, false),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
@@ -575,6 +580,7 @@ pub static FEAT_SEE_PRUNE: AtomicBool = AtomicBool::new(true); // confirmed: -17
 pub static FEAT_BAD_NOISY: AtomicBool = AtomicBool::new(true); // confirmed: -26 Elo without (retested without CPU contention)
 pub static FEAT_EXTENSIONS: AtomicBool = AtomicBool::new(true);
 pub static FEAT_FH_BLEND: AtomicBool = AtomicBool::new(true); // gates fail-high score blending (replaces dead FEAT_ALPHA_REDUCE — see below)
+pub static FEAT_MATERIAL_SCALE: AtomicBool = AtomicBool::new(true); // material-scaled eval blend (apply_material_scale); ablate via NO_MATERIAL_SCALE
 // FEAT_ALPHA_REDUCE removed 2026-06-06: it gated the `alpha_raised` LMR
 // adjustment that was deleted in 21c8f7f (Apr 7, "LMR simplify", H0'd
 // -2..-4). The flag was orphaned — never read (.load) anywhere — so its
@@ -1288,6 +1294,35 @@ fn apply_halfmove_scale(score: i32, halfmove: u16) -> i32 {
     score * (200 - hm) / 200
 }
 
+/// Material-scaled eval blend (SF `evaluate.cpp` / Reckless `correct_eval`).
+/// Amplifies the eval by a factor `(BASE + material)/BASE` that grows with the
+/// material on the board — sharpening rich middlegame positions while leaving
+/// the endgame anchored at x1.0 (bare kings => material 0 => factor 1.0). This
+/// is the amplify-only half of the SF/RK lever; it deliberately never
+/// compresses the endgame below the net's natural scale (that half burned us at
+/// SPRT #2517 because it pushed endgame evals below where the pruning
+/// thresholds are calibrated and hurt conversion). `material` uses SEE-aligned
+/// piece weights over BOTH colors; kings are constant and excluded.
+///
+/// Placement is load-bearing: this runs on `raw_eval` at the point of use
+/// (before `apply_halfmove_scale`, matching RK's material->rule50->corrhist
+/// order), NOT inside `evaluate_nnue`. The TT must keep storing the UNSCALED
+/// `raw_eval` — folding the scale into the cache would (a) violate the
+/// store-raw/scale-fresh invariant and (b) overflow the 13-bit TT static-eval
+/// clamp once the factor exceeds 1.0. Corrhist is unaffected: read (corrected_eval)
+/// and update (update_correction_history) both consume the post-scale `scaled_eval`.
+fn apply_material_scale(score: i32, board: &Board) -> i32 {
+    // Leave sentinel / mate scores untouched (same guard as apply_halfmove_scale).
+    if score <= -INFINITY + 1 || score.abs() >= MATE_IN_MAX_PLY {
+        return score;
+    }
+    let cnt = |pt: u8| board.pieces[pt as usize].count_ones() as i64;
+    let material = 100 * cnt(PAWN) + 420 * cnt(KNIGHT) + 420 * cnt(BISHOP)
+        + 640 * cnt(ROOK) + 1200 * cnt(QUEEN);
+    let base = tp(&MAT_SCALE_BASE) as i64;
+    ((score as i64 * (base + material)) / base) as i32
+}
+
 /// Build a DirtyPiece for lazy NNUE accumulator update.
 /// `us`/`them` are the sides BEFORE the move.
 /// `net`: NNUE net whose king-bucket layout determines bucket/mirror
@@ -1617,6 +1652,7 @@ fn init_feature_flags() {
             if std::env::var("NO_IIR").is_ok() { FEAT_IIR.store(false, Ordering::Relaxed); }
             if std::env::var("NO_HINDSIGHT").is_ok() { FEAT_HINDSIGHT.store(false, Ordering::Relaxed); }
             if std::env::var("NO_CORRECTION").is_ok() { FEAT_CORRECTION.store(false, Ordering::Relaxed); }
+            if std::env::var("NO_MATERIAL_SCALE").is_ok() { FEAT_MATERIAL_SCALE.store(false, Ordering::Relaxed); }
             if std::env::var("NO_PVS").is_ok() { FEAT_PVS.store(false, Ordering::Relaxed); }
             if std::env::var("NO_TT_CUTOFF").is_ok() { FEAT_TT_CUTOFF.store(false, Ordering::Relaxed); }
             if std::env::var("NO_TT_NEARMISS").is_ok() { FEAT_TT_NEARMISS.store(false, Ordering::Relaxed); }
@@ -3577,8 +3613,13 @@ fn negamax(
                 info.tt.store(board.hash, -2, -INFINITY, TT_FLAG_UPPER, NO_MOVE, raw_eval, is_pv);
             }
         }
-        scaled_eval = apply_halfmove_scale(raw_eval, board.halfmove);
-        // Apply correction history to the halfmove-scaled value
+        // Material scale (raw->material->rule50->corrhist, RK order), gated so
+        // it can be ablated without a rebuild. TT still holds the raw_eval above.
+        let mat_scaled = if FEAT_MATERIAL_SCALE.load(Ordering::Relaxed) {
+            apply_material_scale(raw_eval, board)
+        } else { raw_eval };
+        scaled_eval = apply_halfmove_scale(mat_scaled, board.halfmove);
+        // Apply correction history to the material+halfmove-scaled value
         static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, scaled_eval) } else { scaled_eval };
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = static_eval;
