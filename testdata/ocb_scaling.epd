@@ -1,0 +1,9 @@
+# Opposite-colored-bishop draw-scaling test set. Each line: FEN; c0 "<truth> <source>".
+# Truth from lichess EGTB (<=7 man) or deep search. Used by scripts/ocb_check.py to
+# verify the OCB scale factor deflates drawn OCB toward 0 while preserving wins.
+# NOTE: starter set — needs expansion with game-like higher-piece-count OCB positions
+# (where the NNUE actually over-evals) labelled by deep SF.
+4k3/8/8/8/2b5/8/5B2/4K3 w - - 0 1; c0 "draw egtb";
+4k3/8/8/4p3/2b5/8/5B2/4K3 w - - 0 1; c0 "draw egtb";
+4k3/8/8/3pp3/2b5/8/5B2/4K3 w - - 0 1; c0 "draw egtb";
+4k3/8/8/2pppp2/2b5/8/5B2/4K3 w - - 0 1; c0 "win-black clear";

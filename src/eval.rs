@@ -226,6 +226,100 @@ fn endgame_mopup(board: &crate::board::Board) -> i32 {
     if winner == 0 { term } else { -term }
 }
 
+/// True if square `sq` (0-63) is a light square.
+#[inline(always)]
+fn sq_is_light(sq: u32) -> bool {
+    (((sq % 8) + (sq / 8)) & 1) == 1
+}
+
+/// Passed pawns per side. A white pawn is passed if no black pawn stands on its
+/// file or the two adjacent files on any rank ahead of it (and mirror for black).
+/// Returns (white_passed, black_passed) bitboards.
+fn passed_pawns(board: &crate::board::Board) -> (u64, u64) {
+    use crate::bitboard::FILES;
+    let p = crate::types::PAWN as usize;
+    let wp = board.pieces[p] & board.colors[0];
+    let bp = board.pieces[p] & board.colors[1];
+    let file_span = |f: usize| -> u64 {
+        let mut m = FILES[f];
+        if f > 0 { m |= FILES[f - 1]; }
+        if f < 7 { m |= FILES[f + 1]; }
+        m
+    };
+    let mut w_pass = 0u64;
+    let mut bb = wp;
+    while bb != 0 {
+        let sq = bb.trailing_zeros();
+        bb &= bb - 1;
+        let (f, r) = ((sq % 8) as usize, sq / 8);
+        let ahead = if r >= 7 { 0 } else { !0u64 << ((r + 1) * 8) };
+        if bp & file_span(f) & ahead == 0 { w_pass |= 1u64 << sq; }
+    }
+    let mut b_pass = 0u64;
+    let mut bb = bp;
+    while bb != 0 {
+        let sq = bb.trailing_zeros();
+        bb &= bb - 1;
+        let (f, r) = ((sq % 8) as usize, sq / 8);
+        let ahead = if r == 0 { 0 } else { (1u64 << (r * 8)) - 1 };
+        if wp & file_span(f) & ahead == 0 { b_pass |= 1u64 << sq; }
+    }
+    (w_pass, b_pass)
+}
+
+// Opposite-colored-bishop draw scaling. Pure OCB endgames (exactly one bishop
+// each on opposite colours, no other minors/majors) are strongly drawish — the
+// defender blockades on its bishop's colour and the attacker's bishop can never
+// cover those squares, so a one/two-pawn edge is usually not enough. The NNUE
+// structurally under-learns this material-configuration draw (rare pattern; MSE
+// on the bulk doesn't pressure it), which is why SF/Reckless keep an explicit
+// scale factor. We scale the NNUE eval toward zero, backing off (less scaling)
+// as winning indicators appear: extra passed pawns, passers spread across the
+// board that the defender's king+bishop cannot all stop, and a larger pawn edge.
+const OCB_SCALE_BASE: i32 = 36;       // pure OCB, ~equal, no passers: keep 36%
+const OCB_SCALE_MIN: i32 = 25;
+const OCB_PASSER_BONUS: i32 = 16;     // per passer beyond the first
+const OCB_SPREAD_BONUS: i32 = 12;     // 2+ passers separated by >=3 files
+const OCB_PAWN_EDGE_BONUS: i32 = 14;  // per extra pawn beyond the first
+
+/// Returns the percent of the NNUE eval to KEEP in a pure OCB+pawns endgame
+/// (100 = no scaling), or None if the position is not pure OCB. `v_white` is the
+/// eval in white-relative cp, used to pick which side's winning chances to weigh.
+fn ocb_scale_pct(board: &crate::board::Board, v_white: i32) -> Option<i32> {
+    use crate::bitboard::popcount;
+    let (b, n, r, q) = (crate::types::BISHOP as usize, crate::types::KNIGHT as usize,
+                        crate::types::ROOK as usize, crate::types::QUEEN as usize);
+    let wb = board.pieces[b] & board.colors[0];
+    let bbi = board.pieces[b] & board.colors[1];
+    if popcount(wb) != 1 || popcount(bbi) != 1 { return None; }
+    if board.pieces[n] | board.pieces[r] | board.pieces[q] != 0 { return None; }
+    if sq_is_light(wb.trailing_zeros()) == sq_is_light(bbi.trailing_zeros()) { return None; }
+
+    let p = crate::types::PAWN as usize;
+    let wp = board.pieces[p] & board.colors[0];
+    let bp = board.pieces[p] & board.colors[1];
+    let (w_pass, b_pass) = passed_pawns(board);
+    let ahead_white = v_white >= 0;
+    let (my_pawns, opp_pawns, my_pass) = if ahead_white {
+        (popcount(wp) as i32, popcount(bp) as i32, w_pass)
+    } else {
+        (popcount(bp) as i32, popcount(wp) as i32, b_pass)
+    };
+    let np = popcount(my_pass) as i32;
+    let spread = if np >= 2 {
+        let (mut lo, mut hi) = (8i32, -1i32);
+        let mut m = my_pass;
+        while m != 0 { let f = (m.trailing_zeros() % 8) as i32; m &= m - 1; lo = lo.min(f); hi = hi.max(f); }
+        hi - lo
+    } else { 0 };
+    let pawn_edge = (my_pawns - opp_pawns).max(0);
+    let scale = OCB_SCALE_BASE
+        + OCB_PASSER_BONUS * (np - 1).max(0)
+        + if spread >= 3 { OCB_SPREAD_BONUS } else { 0 }
+        + OCB_PAWN_EDGE_BONUS * (pawn_edge - 1).max(0);
+    Some(scale.clamp(OCB_SCALE_MIN, 100))
+}
+
 /// Evaluate with NNUE if available, otherwise fall back to PeSTO.
 pub fn evaluate_nnue(
     board: &crate::board::Board,
@@ -274,6 +368,16 @@ pub fn evaluate_nnue(
 
 
     let mut v = net.forward_with_threats(acc, board.side_to_move, pc, threat_stack);
+    // Opposite-colored-bishop draw scaling — the NNUE under-learns OCB
+    // drawishness, so pull a pure-OCB eval toward zero (backed off by winning
+    // indicators; see ocb_scale_pct). Ablate with NO_OCB_SCALE=1.
+    static OCB_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *OCB_ENABLED.get_or_init(|| std::env::var("NO_OCB_SCALE").is_err()) {
+        let v_white = if board.side_to_move == crate::types::WHITE { v } else { -v };
+        if let Some(pct) = ocb_scale_pct(board, v_white) {
+            v = v * pct / 100;
+        }
+    }
     // Dominant endgame mop-up gradient (lone-king-vs-matable only). WHITE-rel -> stm.
     let mu = endgame_mopup(board);
     v += if board.side_to_move == crate::types::WHITE { mu } else { -mu };
