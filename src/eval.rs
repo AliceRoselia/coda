@@ -226,6 +226,28 @@ fn endgame_mopup(board: &crate::board::Board) -> i32 {
     if winner == 0 { term } else { -term }
 }
 
+// Material-scaled eval compression — the generic drawishness lever SF/Reckless
+// apply post-NNUE. As material leaves the board, advantages convert less often,
+// so the eval is pulled toward zero. SF/Reckless scale the eval UP with material
+// (their nets are trained calibrated for that); a bolt-on inflation would break
+// Coda's SPSA-tuned threshold calibration, so we instead compress DOWN toward a
+// floor at low material and leave typical-material evals at 100% — only endgames
+// are compressed, preserving middlegame calibration. Likely wants a
+// retune-on-branch (it shifts the endgame eval scale). Ablate with NO_MAT_SCALE=1.
+const MAT_SCALE_FLOOR: i32 = 70;   // min % of eval kept at minimal material
+const MAT_SCALE_FULL: i32 = 3500;  // total material (cp) at/above which scale=100
+
+fn material_scale_pct(board: &crate::board::Board) -> i32 {
+    use crate::bitboard::popcount;
+    let t = |pt: usize| popcount(board.pieces[pt]) as i32;
+    let mat = 100 * t(crate::types::PAWN as usize)
+        + 420 * (t(crate::types::KNIGHT as usize) + t(crate::types::BISHOP as usize))
+        + 640 * t(crate::types::ROOK as usize)
+        + 1200 * t(crate::types::QUEEN as usize);
+    (MAT_SCALE_FLOOR + (100 - MAT_SCALE_FLOOR) * mat.min(MAT_SCALE_FULL) / MAT_SCALE_FULL)
+        .clamp(MAT_SCALE_FLOOR, 100)
+}
+
 /// Evaluate with NNUE if available, otherwise fall back to PeSTO.
 pub fn evaluate_nnue(
     board: &crate::board::Board,
@@ -274,6 +296,12 @@ pub fn evaluate_nnue(
 
 
     let mut v = net.forward_with_threats(acc, board.side_to_move, pc, threat_stack);
+    // Material-scaled eval compression (generic drawishness lever; SF/Reckless
+    // do this). Compress endgame evals toward zero; ablate with NO_MAT_SCALE=1.
+    static MAT_SCALE_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *MAT_SCALE_ENABLED.get_or_init(|| std::env::var("NO_MAT_SCALE").is_err()) {
+        v = v * material_scale_pct(board) / 100;
+    }
     // Dominant endgame mop-up gradient (lone-king-vs-matable only). WHITE-rel -> stm.
     let mu = endgame_mopup(board);
     v += if board.side_to_move == crate::types::WHITE { mu } else { -mu };
