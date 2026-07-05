@@ -4002,6 +4002,15 @@ fn negamax(
         }
     }
 
+    // improving |= eval >= beta (SF search.cpp:1025, post-NMP): a node whose
+    // static eval already meets beta is a near-certain fail-high — treat it as
+    // improving for everything downstream (LMP /(2-improving), ProbCut margins,
+    // LMR !improving) even when the ply-2/ply-4 trend says otherwise. RFP runs
+    // BEFORE this (matching SF's ordering: RFP sees the raw trend flag).
+    if !in_check && static_eval > -INFINITY + 1 && static_eval >= beta {
+        improving = true;
+    }
+
     // IIR: moved after NMP so null search uses full depth, not IIR-reduced depth.
     // All 6 reference engines run NMP at full depth; IIR only applies to the moves loop.
     // Coda previously ran IIR before NMP, silently reducing null depth by 1 at cut nodes.
