@@ -1189,6 +1189,19 @@ impl SearchInfo {
         }
     }
 
+    /// Decay pawn history in place by `factor/divisor` (e.g. 4/5 = ×0.8), same
+    /// shape as `History::age`. Used by the SMP pool to age a helper's persisted
+    /// pawn_hist per go instead of clearing it (diversity probe).
+    pub fn age_pawn_hist(&mut self, factor: i32, divisor: i32) {
+        for bucket in self.pawn_hist.iter_mut() {
+            for piece in bucket.iter_mut() {
+                for v in piece.iter_mut() {
+                    *v = (*v as i32 * factor / divisor) as i16;
+                }
+            }
+        }
+    }
+
     /// Evaluate using NNUE if loaded, otherwise classical PeSTO.
     fn eval(&mut self, board: &Board) -> i32 {
         // Ensure threat accumulator is computed before eval
@@ -1732,10 +1745,7 @@ fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
     helper.cont_corr.copy_from_slice(&main.cont_corr[..]);
     helper.trans_corr.copy_from_slice(&main.trans_corr[..]);
 
-    // pawn_hist is position-specific (indexed by pawn hash); a helper's
-    // self-accumulated table carries toxic stale ordering across positions
-    // (measured -8 at T=4, OB #2539), so it is cleared every go even in Stage 2.
-    helper.clear_pawn_hist();
+    // pawn_hist is handled by the seed/per-go callers (copy vs age) like history.
     // Per-search scalars a fresh helper had zeroed.
     helper.nmp_min_ply = 0;
     helper.rfp_audit_active = false;
@@ -1748,6 +1758,9 @@ fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
 pub(crate) fn seed_helper_from_main(helper: &mut SearchInfo, main: &SearchInfo) {
     refresh_helper_common(helper, main);
     helper.history.copy_from(&main.history);
+    // Seed pawn_hist warm from main too (probe: age it per go instead of
+    // clearing — see refresh_helper_per_go).
+    helper.pawn_hist.copy_from_slice(&main.pawn_hist[..]);
 }
 
 /// Per-`go` refresh of a reused pool worker (Stage 2 — SMP diversity). Unlike
@@ -1757,10 +1770,14 @@ pub(crate) fn seed_helper_from_main(helper: &mut SearchInfo, main: &SearchInfo) 
 /// from the other workers', which is the Lazy-SMP search-diversity source Coda
 /// previously threw away by rebuilding a fresh helper every move. Eval-side
 /// state (corrhist) is still copied from main by `refresh_helper_common` for
-/// consistency, and pawn_hist is still cleared.
+/// consistency. pawn_hist is AGED here (probe) rather than cleared: clearing it
+/// was the safe fix for the -8 unaged-carry-over bug (#2539); aging decays the
+/// toxic stale signal while keeping pawn_hist warm when the pawn structure is
+/// stable (most moves) — testing whether that nets extra diversity.
 pub(crate) fn refresh_helper_per_go(helper: &mut SearchInfo, main: &SearchInfo) {
     refresh_helper_common(helper, main);
     helper.history.age(4, 5);
+    helper.age_pawn_hist(4, 5);
 }
 
 /// Per-`go` preparation of a helper `SearchInfo` for a search on `board`:
