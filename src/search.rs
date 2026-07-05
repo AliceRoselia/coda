@@ -505,6 +505,10 @@ tunables!(
     // probe rescale a candidate net to prod's scale (e.g. 127 = dual-s200
     // RMS 254 -> baseline 323) to de-confound net-vs-net SPRTs. 100 = off.
     (EVAL_SCALE_PCT, 100, 50, 200, 5.0, false),
+    // TT-cutoff history bonus weight (% of the full search-cutoff bonus).
+    // SF credits TT cutoffs at ~0.46x its search-cutoff cap; Coda paid 100%.
+    // Probe default 50 (2026-07-05 SF audit Tier1 #4).
+    (TT_CUT_BONUS_PCT, 50, 0, 150, 10.0, false),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
@@ -3546,18 +3550,24 @@ fn negamax(
                             info.pv_len[ply_u] = 0;
                         }
 
-                        // History bonus for TT cutoff: reinforce move ordering
+                        // History bonus for TT cutoff: reinforce move ordering.
+                        // DOWN-WEIGHTED vs a real search cutoff (SF pattern:
+                        // min(114*d, 724) ~= 0.46x its search-cutoff cap; Coda
+                        // paid FULL bonus). TT-hit rate RISES with node count,
+                        // so over-crediting TT cutoffs — which carry no fresh
+                        // search evidence — progressively dilutes real cutoff
+                        // signal in big trees (2026-07-05 SF audit Tier1 #4).
                         let tt_piece = board.piece_at(move_from(tt_move));
                         let tt_is_cap = board.piece_type_at(move_to(tt_move)) != NO_PIECE_TYPE
                             || move_flags(tt_move) == FLAG_EN_PASSANT;
                         if !tt_is_cap && tt_piece != NO_PIECE {
-                            let bonus = history_bonus(depth);
+                            let bonus = history_bonus(depth) * tp(&TT_CUT_BONUS_PCT) / 100;
                             History::update_history(
                                 info.history.main_entry(move_from(tt_move), move_to(tt_move), enemy_attacks),
                                 bonus,
                             );
                         } else if tt_is_cap && tt_piece != NO_PIECE {
-                            let bonus = capture_history_bonus(depth);
+                            let bonus = capture_history_bonus(depth) * tp(&TT_CUT_BONUS_PCT) / 100;
                             let cpt_pt = board.piece_type_at(move_to(tt_move));
                             let ct = if move_flags(tt_move) == FLAG_EN_PASSANT {
                                 captured_type(PAWN)
