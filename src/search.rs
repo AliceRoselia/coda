@@ -1760,7 +1760,10 @@ pub(crate) fn seed_helper_from_main(helper: &mut SearchInfo, main: &SearchInfo) 
 /// consistency, and pawn_hist is still cleared.
 pub(crate) fn refresh_helper_per_go(helper: &mut SearchInfo, main: &SearchInfo) {
     refresh_helper_common(helper, main);
-    helper.history.age(4, 5);
+    // Age helper history MORE aggressively than main (×3/5 vs main's ×4/5) so a
+    // worker's ordering diverges faster from main's → more Lazy-SMP diversity.
+    // (SMP diversity probe; main uses age(4,5) at its own search start.)
+    helper.history.age(3, 5);
 }
 
 /// Per-`go` preparation of a helper `SearchInfo` for a search on `board`:
