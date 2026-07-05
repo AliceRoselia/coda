@@ -895,6 +895,13 @@ pub struct SearchInfo {
     pub pv_table: [[Move; MAX_PLY + 1]; MAX_PLY + 1],
     pub pv_len: [usize; MAX_PLY + 1],
     static_evals: [i32; MAX_PLY + 1],
+    /// followPV (SF search.cpp:752): the previous COMPLETED ID iteration's
+    /// root PV, banked per thread at iteration end. `follow_pv[p]` = the node
+    /// at ply p lies on that PV path (parent followed AND parent's move
+    /// matched prev_iter_pv[p-1]). Consumed by IIR (protect the spine).
+    prev_iter_pv: [Move; MAX_PLY + 1],
+    prev_iter_pv_len: usize,
+    follow_pv: [bool; MAX_PLY + 2],
     /// LMR reduction applied at each ply (for hindsight reduction gating)
     reductions: [i32; MAX_PLY + 1],
     /// Excluded move for singular extension verification search (always NoMove when disabled)
@@ -987,6 +994,9 @@ impl SearchInfo {
             root_depth: 0,
             nmp_min_ply: 0,
             static_evals: [0; MAX_PLY + 1],
+            prev_iter_pv: [NO_MOVE; MAX_PLY + 1],
+            prev_iter_pv_len: 0,
+            follow_pv: [false; MAX_PLY + 2],
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
             double_ext_count: [0; MAX_PLY + 1],
@@ -2175,6 +2185,9 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     // NOT clear it here. Reset only per-search scratch state.
     info.stats = PruneStats::default();
     info.static_evals = [0; MAX_PLY + 1];
+    info.prev_iter_pv_len = 0;
+    info.follow_pv = [false; MAX_PLY + 2];
+    info.follow_pv[0] = true;
     info.reductions = [0; MAX_PLY + 1];
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
@@ -2256,6 +2269,11 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
         if info.pv_len[0] > 0 {
             best_move = info.pv_table[0][0];
         }
+        // followPV: bank this completed iteration's PV for the next one.
+        info.prev_iter_pv_len = info.pv_len[0].min(MAX_PLY);
+        for i in 0..info.prev_iter_pv_len {
+            info.prev_iter_pv[i] = info.pv_table[0][i];
+        }
         prev_score = score;
         info.last_score = score;
         info.completed_depth = depth;
@@ -2312,6 +2330,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     }
     // Clear static evals, excluded moves, depth tracking
     info.static_evals = [0; MAX_PLY + 1];
+    info.prev_iter_pv_len = 0;
+    info.follow_pv = [false; MAX_PLY + 2];
+    info.follow_pv[0] = true;
     info.depth_nodes = [0; MAX_PLY + 1];
     info.completed_depth = 0;
     info.reductions = [0; MAX_PLY + 1];
@@ -2672,6 +2693,11 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         stable_pv_len = info.pv_len[0].min(stable_pv.len());
         for i in 0..stable_pv_len {
             stable_pv[i] = info.pv_table[0][i];
+        }
+        // followPV: bank this completed iteration's PV for the next one.
+        info.prev_iter_pv_len = info.pv_len[0].min(MAX_PLY);
+        for i in 0..info.prev_iter_pv_len {
+            info.prev_iter_pv[i] = info.pv_table[0][i];
         }
 
         // Record cumulative nodes at this depth (for EBF calculation)
@@ -3857,6 +3883,7 @@ fn negamax(
                     if depth - r < 1 { r = depth - 1; }
                     info.rfp_audit_active = true;
                     board.make_null_move();
+                    info.follow_pv[(ply_u + 1).min(MAX_PLY + 1)] = false; // followPV: null child is off-PV
                     if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::incremental(&[])); }
                     if info.threat_stack.active { info.threat_stack.push(crate::types::NO_MOVE, crate::types::NO_PIECE_TYPE); }
                     if ply_u <= MAX_PLY {
@@ -3936,6 +3963,7 @@ fn negamax(
         }
 
         board.make_null_move();
+        info.follow_pv[(ply_u + 1).min(MAX_PLY + 1)] = false; // followPV: null child is off-PV
         info.tt.prefetch(board.hash);
         let null_key = board.hash; // save hash for threat detection after unmake
         if let Some(acc) = &mut info.nnue_acc { acc.push(DirtyPiece::incremental(&[])); }
@@ -4006,7 +4034,9 @@ fn negamax(
     // All 6 reference engines run NMP at full depth; IIR only applies to the moves loop.
     // Coda previously ran IIR before NMP, silently reducing null depth by 1 at cut nodes.
     // (NMP audit N2)
-    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
+    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node)
+        && !info.follow_pv[ply_u]  // followPV (SF :1030): never IIR the previous iteration's PV spine
+        && FEAT_IIR.load(Ordering::Relaxed) {
         depth -= 1;
     }
 
@@ -4088,6 +4118,7 @@ fn negamax(
         if info.threat_stack.active { info.threat_stack.pop(); }
                 continue;
             }
+            info.follow_pv[(ply_u + 1).min(MAX_PLY + 1)] = false; // followPV: probcut/qsearch child is off-PV
                     if info.threat_stack.active {
                         info.threat_stack.absorb_deltas(board);
                     }
@@ -4520,6 +4551,11 @@ fn negamax(
         if info.threat_stack.active { info.threat_stack.pop(); }
             continue;
         }
+        // followPV: child is on the previous iteration's PV path iff this
+        // node is AND this move matches that PV at this ply.
+        info.follow_pv[ply_u + 1] = info.follow_pv[ply_u]
+            && ply_u < info.prev_iter_pv_len
+            && mv == info.prev_iter_pv[ply_u];
         // Store threat deltas from make_move into accumulator stack
         if info.threat_stack.active {
             info.threat_stack.absorb_deltas(board);
