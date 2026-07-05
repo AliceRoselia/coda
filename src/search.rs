@@ -4839,22 +4839,18 @@ fn negamax(
                     };
                     if nudge_bonus != 0 {
                         let gp_mv = go_piece(moved_piece);
-                        // T6: base = current cont_hist + main_hist / 2 (Stormphrax history.h:120).
-                        let main_score_v = info.history.main_score(from, to, enemy_attacks);
+                        // E9 (Icarus): base = SUM of cont_hist reads across all 4
+                        // offset plies at (gp_mv, to). Single confidence signal used
+                        // as the gravity modulator for every offset update.
+                        let cont_total = cont_hist_total_at(info, ply_u, gp_mv, to);
                         let ch_offsets = [1usize, 2, 4, 6];
                         for &off in &ch_offsets {
                             if ply_u >= off {
                                 let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                 let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                 if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
-                                    // B1 (audit 2026-05-19): uniform bonus across offsets
-                                    // {1,2,4,6}. Coda was unique in [bonus, b/2, b/2, b/2]
-                                    // shape; Reckless/Berserk/Alexandria/Stormphrax use
-                                    // uniform `bonus`. See docs/history_prune_cont_hist_
-                                    // review_2026-05-08.md Experiment B1.
                                     let ch_b = nudge_bonus;
-                                    let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
-                                    let base = cur_cont + main_score_v / 2;
+                                    let base = cont_total;
                                     History::update_cont_history_with_base(
                                         &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
                                         base,
@@ -4973,18 +4969,16 @@ fn negamax(
                         // Ply-1 at full bonus, plies 2/4/6 at half bonus (Obsidian pattern)
                         if moved_piece != NO_PIECE {
                             let gp_mv = go_piece(moved_piece);
-                            // T6: base = current cont_hist + main_hist / 2 (Stormphrax history.h:120).
-                            let main_score_v = info.history.main_score(from, to, enemy_attacks);
+                            // E9 (Icarus): base = SUM of cont_hist across all 4 offsets.
+                            let cont_total = cont_hist_total_at(info, ply_u, gp_mv, to);
                             let ch_offsets = [1usize, 2, 4, 6];
                             for &off in ch_offsets.iter() {
                                 if ply_u >= off {
                                     let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                     let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                     if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
-                                        // B1: uniform bonus (see LMR nudge site above).
                                         let ch_bonus = bonus;
-                                        let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
-                                        let base = cur_cont + main_score_v / 2;
+                                        let base = cont_total;
                                         History::update_cont_history_with_base(
                                             &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
                                             base,
@@ -5020,17 +5014,16 @@ fn negamax(
                                 let q_piece = board.piece_at(qf);
                                 if q_piece != NO_PIECE {
                                     let gp_q = go_piece(q_piece);
-                                    let q_main_score = info.history.main_score(qf, qt, enemy_attacks);
+                                    // E9 (Icarus): base = SUM of cont_hist across all 4 offsets.
+                                    let cont_total = cont_hist_total_at(info, ply_u, gp_q, qt);
                                     let ch_offsets = [1usize, 2, 4, 6];
                                     for &off in ch_offsets.iter() {
                                         if ply_u >= off {
                                             let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
                                             let prior_to = info.moved_to_stack[ply_u - off] as usize;
                                             if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
-                                                // B1: uniform penalty (see bonus site above).
                                                 let ch_pen = -malus;
-                                                let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize] as i32;
-                                                let base = cur_cont + q_main_score / 2;
+                                                let base = cont_total;
                                                 History::update_cont_history_with_base(
                                                     &mut info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize],
                                                     base,
@@ -5220,6 +5213,28 @@ fn negamax(
 /// Consensus: SF min(1469, 155*d-93), Clarity min(1632, 276*d-119),
 /// Obsidian min(1400, 175*d-50). Our old depth² formula gave 25 at d=5
 /// vs SF's 682 — history values were 27× too small to influence ordering.
+/// E9 (Icarus): compute the total cont-hist score at (gp_mv, to) across
+/// all 4 offset plies {1, 2, 4, 6}. Used as the gravity base for
+/// cont-hist updates — matches Icarus `cont_score` which is the SUM
+/// of cont-hist reads at the move, not the per-entry value.
+#[inline]
+fn cont_hist_total_at(
+    info: &SearchInfo,
+    ply_u: usize,
+    gp_mv: usize,
+    to: u8,
+) -> i32 {
+    let mut total: i32 = 0;
+    for &off in &[1usize, 2, 4, 6] {
+        if ply_u < off { continue; }
+        let prior_piece = info.moved_piece_stack[ply_u - off] as usize;
+        let prior_to = info.moved_to_stack[ply_u - off] as usize;
+        if prior_piece == 0 || prior_piece >= 13 || prior_to >= 64 { continue; }
+        total += info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
+    }
+    total
+}
+
 fn history_bonus(depth: i32) -> i32 {
     // Offset shape — mirrors Stockfish's `155*d - 93` and our own
     // capture-history's `MULT * d - BASE`. Clamped at 0 to avoid
