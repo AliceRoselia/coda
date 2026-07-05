@@ -211,6 +211,13 @@ tunables!(
     // singular_depth is too low to judge singularity reliably. Bumping
     // 4 → 6 first; ttPv add deferred to a follow-up if H1.
     (SE_DEPTH_10X, 40, 40, 200, 20.0, true),
+    // E5 (Raphael) LDSE — low-depth singular extension. When SE
+    // doesn't fire (depth < SE_DEPTH) but TT holds a LOWER bound and
+    // static_eval sits well below alpha, extend TT move by 1 without
+    // a re-search. Fires at depth 1..LDSE_MAX_DEPTH.
+    (LDSE_MAX_DEPTH, 5, 2, 12, 1.0, true),
+    (LDSE_MARGIN_BASE, 24, 0, 120, 5.0, true),
+    (LDSE_MARGIN_CORR_MUL, 102, 0, 256, 15.0, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 33378, 8000, 50000, 2100.0, false),
     // 2026-05-09 cross-engine bisect (Tier 5.3a): SF/Obsidian/Reckless all
@@ -4428,6 +4435,33 @@ fn negamax(
                     singular_extension = -1;
                     info.stats.negative_ext += 1;
                 }
+            }
+        }
+
+        // E5 (Raphael) LDSE: low-depth singular extension. Fires when
+        // the SE block above did NOT (depth < SE_DEPTH, or other SE
+        // gates blocked) — we still catch a "TT-move-is-effectively-
+        // singular" heuristic cheaply. Gate: !in_check, LOWER-bound TT
+        // hit, static_eval sufficiently below alpha (adjusted by
+        // correction-history magnitude — higher uncertainty allows
+        // MORE extension, matching Raphael's shape).
+        if singular_extension == 0
+            && mv == tt_move
+            && tt_move != NO_MOVE
+            && ply > 0
+            && !in_check
+            && depth <= tp(&LDSE_MAX_DEPTH)
+            && info.excluded_move[ply_u] == NO_MOVE
+            && tt_hit
+            && tt_entry.flag == TT_FLAG_LOWER
+            && FEAT_SINGULAR.load(Ordering::Relaxed)
+        {
+            let corr_abs = correction_value(info, board).abs();
+            let ldse_margin = alpha - tp(&LDSE_MARGIN_BASE)
+                + tp(&LDSE_MARGIN_CORR_MUL) * corr_abs / 128;
+            if static_eval <= ldse_margin {
+                singular_extension = 1;
+                info.stats.singular_ext += 1;
             }
         }
 
