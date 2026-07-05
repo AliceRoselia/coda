@@ -523,6 +523,9 @@ tunables!(
     // Fail-low prior-countermove cont-hist bonus, % of history_bonus(depth)
     // (SF fail-low history harvesting, simple core — audit 2026-07-05 T1#2).
     (FAIL_LOW_PREV_BONUS_PCT, 60, 0, 150, 15.0, false),
+    // Continuation-history pruning threshold (v2 retest): prune quiets with
+    // cont1+cont2+pawn history < -MULT*depth, ALL depths (SF -4313*d shape).
+    (CONTHIST_PRUNE_MULT, 2500, 800, 12000, 400.0, false),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
@@ -4920,6 +4923,52 @@ fn negamax(
         // PruneStats fields (hist_prune_*, history_prunes, cont_hist_*).
 
         // (Futility pruning moved above SEE-quiet — P2.2.)
+
+        // Continuation-history pruning, v2 RETEST (SF search.cpp:1183-1189;
+        // 2026-07-05 SF audit pruning F2). Prune quiets whose cont1+cont2+pawn
+        // history says "this move keeps failing in this context", threshold
+        // linear in RAW depth so deep nodes prune proportionally MORE — SF's
+        // depth-proportional quiet-thinning device, which Coda lacks entirely.
+        //
+        // Why a retest after 3 H0s (#1562 -9.4, #1691 -7.5, #1697 -6.8,
+        // removal +3.0): BOTH prior premises changed. (a) All three tests ran
+        // on a cont-hist table that ProbCut had been polluting with wrong-bin
+        // writes for their entire lifetime — fixed in #2432 ("unblocks future
+        // cont-hist-sensitive experiments"). (b) The old gate had a SHALLOW
+        // ceiling (lmr_d <= ~4-5), so SF's all-depth deep-thinning shape was
+        // never actually tested; the fixed-nodes decomposition (2026-07-05)
+        // says the deep regime is precisely where Coda's trees are too dense.
+        // Signal is SF-exact: offsets 1+2 cont-hist + pawn hist ONLY (main
+        // hist dilutes — #27e5227 finding). Plain `continue` (SF), no
+        // skip-quiets plumbing. MULT rescaled to Coda's history range: SF's
+        // -4313 operates on ~+-68k total range (2x+-30000 cont + +-8192 pawn);
+        // ours is ~+-49k, so the equivalent tail-prune is ~-3100*d. Seed 2500
+        // (slightly hotter than equivalent; SPSA refines). At 5000 the gate
+        // provably never fired at bench (threshold beyond range for d>=10).
+        if ply > 0 && !in_check
+            && !is_cap && !is_promo
+            && mv != tt_move
+            && !is_loss(best_score)
+            && moved_piece != NO_PIECE
+        {
+            let gp = go_piece(moved_piece);
+            let mut ch_score: i32 = 0;
+            for &off in &[1usize, 2] {
+                if ply_u >= off {
+                    let p = info.moved_piece_stack[ply_u - off] as usize;
+                    let pt = info.moved_to_stack[ply_u - off] as usize;
+                    if p > 0 && p < 13 && pt < 64 {
+                        ch_score += info.history.cont_hist[p][pt][gp][to as usize] as i32;
+                    }
+                }
+            }
+            let ph_idx = (board.pawn_hash as usize) % info.pawn_hist.len();
+            ch_score += info.pawn_hist[ph_idx][gp][to as usize] as i32;
+            if ch_score < -tp(&CONTHIST_PRUNE_MULT) * depth {
+                continue;
+            }
+        }
+
 
         // (Late Move Pruning moved earlier — now runs before SEE/futility,
         // immediately after the skip_quiets check. SF Step-14 order.)
