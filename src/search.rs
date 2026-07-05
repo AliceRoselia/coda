@@ -2168,7 +2168,7 @@ pub fn search_smp(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimit
 ///
 /// History is seeded from main in `create_helper_info` — see comment
 /// there. We deliberately do NOT clear it here.
-pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimits, _thread_id: usize) -> Move {
+pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &SearchLimits, thread_id: usize) -> Move {
     init_feature_flags();
 
     // History was just seeded from main in create_helper_info — do
@@ -2219,7 +2219,12 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
         // Aspiration windows (skip for mate scores) — mirrors search().
         if depth >= 4 && prev_score > -MATE_IN_MAX_PLY && prev_score < MATE_IN_MAX_PLY {
             let avg = prev_score;
-            let mut delta = tp(&ASP_DELTA) + (avg as i64 * avg as i64 / tp(&ASP_SCORE_DIV) as i64) as i32;
+            // Per-thread aspiration-window jitter (SF pattern): each helper starts
+            // its window a few cp wider by a thread-specific amount, so workers
+            // fail high/low at slightly different points → extra Lazy-SMP search
+            // diversity for free. Main (search()) uses no jitter.
+            let mut delta = tp(&ASP_DELTA) + (avg as i64 * avg as i64 / tp(&ASP_SCORE_DIV) as i64) as i32
+                + (thread_id % 8) as i32;
             let mut alpha = (prev_score - delta).max(-INFINITY);
             let mut beta = (prev_score + delta).min(INFINITY);
             let mut asp_depth = depth;
