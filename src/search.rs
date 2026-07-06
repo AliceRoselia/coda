@@ -479,7 +479,7 @@ tunables!(
     // value to 20 (eff depth 2). With floor=20 SPSA can't explore below
     // depth 2; lifting to 5 (eff 0.5) lets SPSA find effective optimum,
     // including "fire at any depth ≥ 1".
-    (IIR_MIN_DEPTH_10X, 34, 5, 100, 15.0, true),          // was hardcoded 4; tune #743 converged to 2 (strong signal)
+    (IIR_MIN_DEPTH_10X, 60, 5, 100, 15.0, true),          // was hardcoded 4; tune #743 converged to 2 (strong signal)
     // ProbCut floor lifted from 30 → 10 (audit 2026-05-19): SPSA at 32,
     // ~2% from floor. Lifting to 10 (eff 1) allows exploration of more
     // aggressive ProbCut activation.
