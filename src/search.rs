@@ -3631,7 +3631,13 @@ fn negamax(
     // Found via correctness audit 2026-05-23, adjacent to the prior
     // MAX_PLY=64→128 fix family.
     if ply > 0 {
-        let draw_score: i32 = 0;
+        // Draw-score randomization (SF value_draw(nodes), search.cpp:168;
+        // audit wave 2, W3): return VALUE_DRAW +-1 keyed off the node counter
+        // instead of exactly 0. Dithers 3-fold-blindness ties so the search
+        // explores both sides of "is this repetition actually best" instead of
+        // collapsing all drawn lines to one indistinguishable score. Directly
+        // on the draws-not-losses LTC axis. Contempt-free (mean zero).
+        let draw_score: i32 = 1 - (info.nodes as i32 & 2);
         if board.halfmove >= 100 {
             return draw_score;
         }
@@ -5751,7 +5757,8 @@ fn quiescence_with_depth(
     info.stats.qnodes += 1;
 
     // Draw detection: repetition and 50-move rule. Contempt removed (#508).
-    let draw_score = 0;
+    // Dithered +-1 like negamax (SF value_draw pattern, W3).
+    let draw_score = 1 - (info.nodes as i32 & 2);
     if board.halfmove >= 100 {
         return draw_score;
     }
