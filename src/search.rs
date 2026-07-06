@@ -520,6 +520,8 @@ tunables!(
     // probe rescale a candidate net to prod's scale (e.g. 127 = dual-s200
     // RMS 254 -> baseline 323) to de-confound net-vs-net SPRTs. 100 = off.
     (EVAL_SCALE_PCT, 100, 50, 200, 5.0, false),
+    // RFP damped-return beta weight /1024 (SF 716*beta + 308*eval; W4).
+    (RFP_RET_BETA_W, 716, 0, 1024, 80.0, false),
     // Fail-low prior-countermove cont-hist bonus, % of history_bonus(depth)
     // (SF fail-low history harvesting, simple core — audit 2026-07-05 T1#2).
     (FAIL_LOW_PREV_BONUS_PCT, 60, 0, 150, 15.0, false),
@@ -4313,7 +4315,15 @@ fn negamax(
                         info.stats.rfp_audit_fp[d_idx] += 1;
                     }
                 }
-                return static_eval - margin;
+                // Damped return (SF search.cpp:987 `(716*beta+308*eval)/1024`;
+                // audit wave 2, W4): blend toward beta instead of returning the
+                // raw margin-adjusted eval. RFP is Coda's highest-volume pruner
+                // (~300/Kn) and its raw returns propagate static-eval optimism
+                // up big trees; bounding the excess dampens that compounding.
+                // RFP_RET_BETA_W = beta weight out of 1024 (1024 = old raw-ish
+                // behaviour direction; SF ships 716).
+                let w = tp(&RFP_RET_BETA_W);
+                return (w * beta + (1024 - w) * (static_eval - margin)) / 1024;
             }
         }
     }
