@@ -520,6 +520,14 @@ tunables!(
     // probe rescale a candidate net to prod's scale (e.g. 127 = dual-s200
     // RMS 254 -> baseline 323) to de-confound net-vs-net SPRTs. 100 = off.
     (EVAL_SCALE_PCT, 100, 50, 200, 5.0, false),
+    // Root-score optimism, SF/Reckless/Plenty/Stormphrax shape. Unlike the
+    // earlier optimism branch, this is NOT folded into SearchInfo::eval() and
+    // therefore never stored in TT static_eval. TT keeps the reusable
+    // halfmove-independent base eval; each consumer applies this root-state
+    // term fresh before halfmove scaling and correction history.
+    (OPTIMISM_K, 150, 0, 400, 16.0, false),
+    (OPTIMISM_OFFSET, 120, 20, 400, 12.0, false),
+    (OPTIMISM_MAT_BASE, 1500, 0, 8000, 80.0, false),
     // Fail-low prior-countermove cont-hist bonus, % of history_bonus(depth)
     // (SF fail-low history harvesting, simple core — audit 2026-07-05 T1#2).
     (FAIL_LOW_PREV_BONUS_PCT, 60, 0, 150, 15.0, false),
@@ -914,6 +922,12 @@ pub struct SearchInfo {
     pub max_depth: i32,
     pub max_nodes: u64,
     pub move_overhead: u64, // ms
+    /// Root-score-derived optimism bias. Positive for root_stm, negative for
+    /// the opponent. This is deliberately applied after TT static-eval lookup
+    /// so TT entries never cache stale root/iteration-specific optimism.
+    optimism: [i32; 2],
+    optimism_avg: i32,
+    optimism_has_data: bool,
     // Dynamic time management state
     tm_prev_best: Move,
     tm_prev_score: i32,
@@ -1135,6 +1149,9 @@ impl SearchInfo {
             max_depth: 100,
             max_nodes: 0,
             move_overhead: 100,
+            optimism: [0; 2],
+            optimism_avg: 0,
+            optimism_has_data: false,
             tm_prev_best: NO_MOVE,
             tm_best_move_changes: 0,
             tm_forced_state: ForcedState::None,
@@ -1463,13 +1480,7 @@ impl SearchInfo {
         // shouldn't get dampened toward zero; pawns retain decisive value at
         // low non-pawn material counts.
         // N=422, B=422, R=642, Q=1015
-        let material = {
-            let knights = popcount(board.pieces[KNIGHT as usize]) as i32 * 422;
-            let bishops = popcount(board.pieces[BISHOP as usize]) as i32 * 422;
-            let rooks = popcount(board.pieces[ROOK as usize]) as i32 * 642;
-            let queens = popcount(board.pieces[QUEEN as usize]) as i32 * 1015;
-            knights + bishops + rooks + queens
-        };
+        let material = eval_non_pawn_material(board);
         // `eval()` now returns the halfmove-INDEPENDENT score (material
         // scaling only). 50-move scaling is applied at every consumption
         // site (via `apply_halfmove_scale`) using the *current* halfmove.
@@ -1487,6 +1498,41 @@ impl SearchInfo {
     }
 
     #[inline]
+    fn apply_optimism(&self, score: i32, board: &Board) -> i32 {
+        if score <= -INFINITY + 1 || score.abs() >= MATE_IN_MAX_PLY {
+            return score;
+        }
+        let opt = self.optimism[board.side_to_move as usize];
+        if opt == 0 {
+            return score;
+        }
+        let material = eval_non_pawn_material(board);
+        score + opt * (tp(&OPTIMISM_MAT_BASE) + material) / 32 / 1024
+    }
+
+    /// Update the root-score optimism bias from a completed ID iteration.
+    /// Mates are excluded so a single mate PV does not pin the EMA.
+    fn update_optimism(&mut self, score: i32) {
+        if !is_mate_score(score) {
+            self.optimism_avg = if self.optimism_has_data {
+                (2 * score + self.optimism_avg) / 3
+            } else {
+                score
+            };
+            self.optimism_has_data = true;
+        }
+
+        let avg = self.optimism_avg;
+        let opt = if self.optimism_has_data {
+            tp(&OPTIMISM_K) * avg / (avg.abs() + tp(&OPTIMISM_OFFSET).max(1))
+        } else {
+            0
+        };
+        self.optimism[self.root_stm as usize] = opt;
+        self.optimism[(self.root_stm ^ 1) as usize] = -opt;
+    }
+
+    #[inline]
     fn materialize_tt_barrier(&mut self, board: &Board) {
         if let (Some(net), Some(acc)) = (&self.nnue_net, &mut self.nnue_acc) {
             if acc.has_unmaterialized_psq_barrier() {
@@ -1494,6 +1540,15 @@ impl SearchInfo {
             }
         }
     }
+}
+
+#[inline]
+fn eval_non_pawn_material(board: &Board) -> i32 {
+    let knights = popcount(board.pieces[KNIGHT as usize]) as i32 * 422;
+    let bishops = popcount(board.pieces[BISHOP as usize]) as i32 * 422;
+    let rooks = popcount(board.pieces[ROOK as usize]) as i32 * 642;
+    let queens = popcount(board.pieces[QUEEN as usize]) as i32 * 1015;
+    knights + bishops + rooks + queens
 }
 
 /// Scale a raw (halfmove-independent) eval toward zero as the halfmove
@@ -2067,6 +2122,9 @@ pub(crate) fn prepare_helper_for_search(info: &mut SearchInfo, board: &Board) {
     // zero iterations (instant-stop).
     info.completed_depth = 0;
     info.last_score = 0;
+    info.optimism = [0; 2];
+    info.optimism_avg = 0;
+    info.optimism_has_data = false;
     info.sel_depth = 0;
     info.tb_hits = 0;
     // Rebuild the NNUE accumulator for the root position.
@@ -2495,6 +2553,9 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     info.pv_len = [0; MAX_PLY + 1];
     info.nodes = 0;
     info.last_flushed_nodes.set(0);
+    info.optimism = [0; 2];
+    info.optimism_avg = 0;
+    info.optimism_has_data = false;
     info.tm_has_data = false;
     info.tm_best_stable = 0;
     info.tm_best_move_changes = 0;
@@ -2579,6 +2640,7 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
         prev_best = best_move;
         prev_score = score;
         info.last_score = score;
+        info.update_optimism(score);
         info.completed_depth = depth;
     }
 
@@ -2635,6 +2697,9 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.static_evals = [0; MAX_PLY + 1];
     info.depth_nodes = [0; MAX_PLY + 1];
     info.completed_depth = 0;
+    info.optimism = [0; 2];
+    info.optimism_avg = 0;
+    info.optimism_has_data = false;
     // Reset the shared instant-reply gate inputs for THIS search. The UCI
     // thread also clears both before spawning (belt-and-braces there); this
     // reset covers non-UCI callers and reuse. Unlike the ponderhit deadline
@@ -3072,6 +3137,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         prev_score = score;
         info.last_score = score;
+        info.update_optimism(score);
         info.ponder_depth.store(depth as u64, std::sync::atomic::Ordering::Relaxed);
         info.ponder_stability.store(info.tm_best_stable.max(0) as u64, std::sync::atomic::Ordering::Relaxed);
 
@@ -4062,10 +4128,9 @@ fn negamax(
     // Compute static eval for pruning and LMR improving detection.
     //
     // Three variables — same value at different processing stages:
-    //   raw_eval    : halfmove-INDEPENDENT  (what goes in/out of TT, also
-    //                                        passed to corrhist *update*)
-    //   scaled_eval : halfmove-scaled, pre-correction (corrhist sees this as
-    //                                                   its input base)
+    //   raw_eval    : halfmove- and optimism-INDEPENDENT (what goes in/out of TT)
+    //   scaled_eval : optimism + halfmove scaled, pre-correction (corrhist sees
+    //                                                   this as its input base)
     //   static_eval : scaled + corrected (what pruning/LMR decisions use)
     //
     // Keeping these separate fixes the TT staleness bug where a position
@@ -4116,8 +4181,9 @@ fn negamax(
                 info.tt.store(board.hash, -2, -INFINITY, TT_FLAG_UPPER, NO_MOVE, raw_eval, is_pv);
             }
         }
-        scaled_eval = apply_halfmove_scale(raw_eval, board.halfmove);
-        // Apply correction history to the halfmove-scaled value
+        let optimistic_eval = info.apply_optimism(raw_eval, board);
+        scaled_eval = apply_halfmove_scale(optimistic_eval, board.halfmove);
+        // Apply correction history to the optimism+halfmove-scaled value
         static_eval = if FEAT_CORRECTION.load(Ordering::Relaxed) { corrected_eval(info, board, scaled_eval) } else { scaled_eval };
         if ply_u < MAX_PLY {
             info.static_evals[ply_u] = static_eval;
@@ -5990,14 +6056,15 @@ fn quiescence_with_depth(
         info.eval(board)
     };
     // Apply correction history to the QS stand-pat, mirroring negamax's
-    // static-eval path (halfmove-scale THEN corrected_eval, line ~3361).
+    // static-eval path (fresh optimism, then halfmove-scale, then correction).
     // Consensus QS audit (2026-06-23): all 6 reference engines (SF, Reckless,
     // Berserk, Obsidian, PlentyChess, Alexandria) correct the QS stand-pat;
     // Coda was the sole outlier using the raw eval. The stand-pat feeds the
     // returned cutoff score, the best_score floor, AND the delta-prune base,
     // so the uncorrected error compounds. TT still stores the RAW value
     // (raw_stand_pat) — correct-on-read discipline is unchanged.
-    let scaled_stand_pat = apply_halfmove_scale(raw_stand_pat, board.halfmove);
+    let optimistic_stand_pat = info.apply_optimism(raw_stand_pat, board);
+    let scaled_stand_pat = apply_halfmove_scale(optimistic_stand_pat, board.halfmove);
     let stand_pat = if FEAT_CORRECTION.load(Ordering::Relaxed) {
         corrected_eval(info, board, scaled_stand_pat)
     } else {
