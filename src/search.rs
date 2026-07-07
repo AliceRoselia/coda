@@ -1088,6 +1088,16 @@ pub struct SearchInfo {
     pub excluded_move: [Move; MAX_PLY + 1],
     /// Double extension counter — propagated from parent, capped to prevent search explosion
     double_ext_count: [i32; MAX_PLY + 1],
+    /// Previous completed ID iteration's root PV (the "spine"). Used with
+    /// `follow_pv` for SF-style spine protection (audit T1.1): nodes on the
+    /// previous iteration's PV line are the search's backbone — features
+    /// that degrade them (IIR depth loss) are gated off there.
+    prev_pv: [Move; MAX_PLY + 1],
+    prev_pv_len: usize,
+    /// Per-ply "still on the previous iteration's PV" flag; set for the
+    /// child before each recursion (parent on-spine AND move == spine move
+    /// at this ply). +2 padding for unconditional child indexing.
+    follow_pv: [bool; MAX_PLY + 2],
     /// Per-ply moved piece (go_piece index 1-12, 0=none). Set before make_move.
     /// Used for correct cont hist lookups at ply-2+ (avoids stale board.piece_at).
     moved_piece_stack: [u8; MAX_PLY + 1],
@@ -1185,6 +1195,9 @@ impl SearchInfo {
             reductions: [0; MAX_PLY + 1],
             excluded_move: [NO_MOVE; MAX_PLY + 1],
             double_ext_count: [0; MAX_PLY + 1],
+            prev_pv: [NO_MOVE; MAX_PLY + 1],
+            prev_pv_len: 0,
+            follow_pv: [false; MAX_PLY + 2],
             moved_piece_stack: [0; MAX_PLY + 1],
             moved_to_stack: [0; MAX_PLY + 1],
             pv_table: [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1],
@@ -2506,6 +2519,8 @@ pub(crate) fn search_helper(board: &mut Board, info: &mut SearchInfo, _limits: &
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
+    info.prev_pv_len = 0; // spine resets per search (position moved on)
+    info.follow_pv = [false; MAX_PLY + 2];
     info.moved_to_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
@@ -2670,6 +2685,8 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     info.excluded_move = [NO_MOVE; MAX_PLY + 1];
     info.moved_piece_stack = [0; MAX_PLY + 1];
     info.double_ext_count = [0; MAX_PLY + 1];
+    info.prev_pv_len = 0; // spine resets per search (position moved on)
+    info.follow_pv = [false; MAX_PLY + 2];
     info.moved_to_stack = [0; MAX_PLY + 1];
     info.pv_table = [[NO_MOVE; MAX_PLY + 1]; MAX_PLY + 1];
     info.pv_len = [0; MAX_PLY + 1];
@@ -3094,6 +3111,12 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
         // Snapshot the completed iteration's pv_table[0] so a future
         // mid-iteration interrupt can restore consistency between best_move
         // and pv_table[0]. See comment at stable_pv declaration.
+        // Refresh the follow-PV spine for the next iteration (audit T1.1).
+        info.prev_pv_len = info.pv_len[0].min(MAX_PLY);
+        for i in 0..info.prev_pv_len {
+            info.prev_pv[i] = info.pv_table[0][i];
+        }
+        info.follow_pv[0] = true;
         stable_pv_len = info.pv_len[0].min(stable_pv.len());
         for i in 0..stable_pv_len {
             stable_pv[i] = info.pv_table[0][i];
@@ -4164,6 +4187,10 @@ fn negamax(
         }
     }
 
+    // Clear the child spine flag before any pre-move-loop recursion (the
+    // null-move search enters ply+1 before the move loop sets this).
+    info.follow_pv[ply_u + 1] = false;
+
     // Eval instability: detect sharp eval swings from parent node
     let unstable = !in_check && ply >= 1 && ply_u >= 1
         && info.static_evals[ply_u - 1] > -INFINITY
@@ -4468,7 +4495,13 @@ fn negamax(
     // All 6 reference engines run NMP at full depth; IIR only applies to the moves loop.
     // Coda previously ran IIR before NMP, silently reducing null depth by 1 at cut nodes.
     // (NMP audit N2)
-    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node) && FEAT_IIR.load(Ordering::Relaxed) {
+    // Spine protection (audit T1.1 probe a, SF pattern): never IIR-reduce a
+    // node on the previous iteration's PV line — the spine is re-searched
+    // every iteration and losing a ply of depth there (after a TT overwrite
+    // evicted its move) degrades the backbone the whole tree hangs from.
+    if depth >= tp10(&IIR_MIN_DEPTH_10X) && tt_move == NO_MOVE && !in_check && (is_pv || cut_node)
+        && !info.follow_pv[ply_u]
+        && FEAT_IIR.load(Ordering::Relaxed) {
         depth -= 1;
     }
 
@@ -5016,6 +5049,12 @@ fn negamax(
             info.double_ext_count[ply_u + 1] = info.double_ext_count[ply_u]
                 + if singular_extension >= 2 { 1 } else { 0 };
         }
+
+        // Spine flag for the child (audit T1.1): on-spine iff this node is
+        // on-spine and this move IS the previous iteration's PV move here.
+        info.follow_pv[ply_u + 1] = info.follow_pv[ply_u]
+            && ply_u < info.prev_pv_len
+            && mv == info.prev_pv[ply_u];
 
         if new_depth < 0 {
             new_depth = 0;
