@@ -217,6 +217,13 @@ tunables!(
     (LMR_HIST_DIV_CAP, 2623, 1000, 20000, 1500.0, true),
     (LMR_C_QUIET, 149, 40, 300, 13.0, true),
     (LMR_C_CAP, 178, 80, 350, 12.5, true),
+    // Additive LMR base (Berserk +0.2319, Obsidian dBase, SF 1027/1024).
+    // ISOLATED RETEST of atlas/lmr-base-offset (now archive/…-broken): that
+    // implementation added the base inside the float->int truncation, so
+    // "0.20 plies" bumped ~20% of table cells by a WHOLE ply and left the
+    // rest untouched — its H0s are void. Here the base is exact centi added
+    // AFTER conversion: 20 = 0.20 plies uniformly across the table.
+    (LMR_BASE_CENTI, 20, 0, 120, 6.0, true),
     // Explicit cut-node LMR bump (P1.1 / #2065). Cut nodes reduce by
     // LMR_CUTNODE_BUMP (+1 more with no TT move); all-nodes keep +1. Default 2
     // is a halfway step toward SF's larger cut-node reduction; SPSA can push it.
@@ -1876,7 +1883,8 @@ pub fn init_lmr() {
             // Quiet table: C from tunable (default 130 = 1.30). CENTI-PLY.
             if depth >= 3 && moves >= 3 {
                 let c = tp(&LMR_C_QUIET) as f64 / 100.0;
-                let r = (LMR_SCALE as f64 * (depth as f64).ln() * (moves as f64).ln() / c) as i32;
+                let r = tp(&LMR_BASE_CENTI)
+                    + (LMR_SCALE as f64 * (depth as f64).ln() * (moves as f64).ln() / c) as i32;
                 LMR_TABLE[depth][moves].store(r.min((depth - 2) as i32 * LMR_SCALE), Ordering::Relaxed);
             }
             // Capture table: C from tunable (default 180 = 1.80). CENTI-PLY.
