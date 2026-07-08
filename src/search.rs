@@ -107,6 +107,13 @@ tunables!(
     // With min-depth de-gated to 3, depths 3-11 now get the classic unverified
     // cutoff; 12+ verify (zugzwang guard).
     (NMP_VERIFY_DEPTH_10X, 105, 40, 200, 20.0, true),
+    // Depth-relaxed NMP eval gate (audit N4). The flat `eval >= beta` gate
+    // refuses NMP cutoffs at deep quiet nodes; the consensus shape is
+    // beta + BASE - PER_DEPTH*d - 45*improving (stricter shallow, relaxed
+    // deep; crossover ~d15 at defaults) — deep nodes earn null cutoffs the
+    // flat gate denies.
+    (NMP_GATE_BASE, 300, 0, 800, 40.0, true),
+    (NMP_GATE_PER_DEPTH, 20, 0, 60, 4.0, true),
     (RFP_DEPTH, 18, 2, 20, 2.0, true),
     // Floors lifted to 0 (audit 2026-05-20): both pinned within ~10% of floor.
     (RFP_MARGIN_IMP, 22, 0, 150, 6.0, true),
@@ -4406,7 +4413,11 @@ fn negamax(
     let undefended_count: i32 = {
         let nmp_gate_cheap = depth >= tp10(&NMP_MIN_DEPTH_10X) && !in_check && ply > 0
             && stm_non_pawn != 0 && beta - alpha == 1
-            && static_eval >= beta && !prev_was_null
+            && static_eval
+                >= beta + tp(&NMP_GATE_BASE)
+                    - tp(&NMP_GATE_PER_DEPTH) * depth
+                    - 45 * (improving as i32)
+            && !prev_was_null
             && beta.abs() < MATE_IN_MAX_PLY
             && info.excluded_move[ply_u] == NO_MOVE
             && cut_node && ply >= info.nmp_min_ply;
