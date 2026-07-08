@@ -127,6 +127,13 @@ tunables!(
     (RFP_DEEP_KNEE_10X, 50, 40, 170, 20.0, true),
     (RFP_DEEP_LINEAR, 47, 0, 200, 10.0, true),
     (RFP_DEEP_QUAD_10X, 10, 0, 800, 50.0, true),
+    // Correction-magnitude RFP widening (audit T3, second half — the LMR
+    // half already exists as the complexity term). When corrhist is
+    // applying a large correction, static eval is self-admittedly
+    // unreliable: widen the RFP margin by PCT% of |applied correction|.
+    // Signal cleaned by the 2026-07-06 fortress-drift fix (piece-count
+    // damping) — pre-fix this read railed noise in locked endgames.
+    (RFP_CORR_WIDEN_PCT, 50, 0, 200, 10.0, true),
     // Razoring (re-added 2026-06-11, audit T2.6). Consensus band:
     // Obsidian 352/d<=5, Berserk 214/d<=5, Clover 145/d<=2, Integral
     // 393/d<=4, Stormphrax ~290/d<=4.
@@ -4344,6 +4351,12 @@ fn negamax(
             if deep_extra > 0 {
                 margin += deep_extra * tp(&RFP_DEEP_LINEAR)
                     + deep_extra * deep_extra * tp(&RFP_DEEP_QUAD_10X) / 10;
+            }
+            // Correction-magnitude widening (audit T3): a large applied
+            // correction means static eval is unreliable here — demand more
+            // margin before a static cutoff.
+            if scaled_eval > -INFINITY {
+                margin += (static_eval - scaled_eval).abs() * tp(&RFP_CORR_WIDEN_PCT) / 100;
             }
             // Widen margin when opponent pawns attack our pieces (Minic/Berserk pattern)
             if has_pawn_threats { margin += margin / 3; }
