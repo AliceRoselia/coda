@@ -33,9 +33,12 @@ pub struct History {
     /// captured_type uses 0-6 scheme (0=empty, 1=pawn, ..., 6=king).
     /// int16 values (i32 causes different gravity behavior).
     pub capture: [[[i16; 7]; 64]; 13],
-    /// Continuation history: [piece 1-12][to][piece 1-12][to]
-    /// piece uses 1-12 indexing (slot 0 unused).
-    pub cont_hist: [[[[i16; 64]; 13]; 64]; 13],
+    /// Continuation history: [parent_isCap 0-1][piece 1-12][to][piece 1-12][to]
+    /// piece uses 1-12 indexing (slot 0 unused). Leading dim splits by whether
+    /// the PARENT (prior-ply) move was a capture — quiet-after-capture patterns
+    /// differ structurally from quiet-after-quiet, so conflating them dilutes
+    /// both (SF/Obsidian isCap-indexed cont-hist).
+    pub cont_hist: [[[[[i16; 64]; 13]; 64]; 13]; 2],
 }
 
 impl History {
@@ -78,7 +81,7 @@ impl History {
     pub fn clear(&mut self) {
         self.main = [[[[0; 64]; 64]; 2]; 2];
         self.capture = [[[0i16; 7]; 64]; 13];
-        self.cont_hist = [[[[0; 64]; 13]; 64]; 13];
+        self.cont_hist = [[[[[0; 64]; 13]; 64]; 13]; 2];
     }
 
     /// Copy all table contents from `src`. Used to seed Lazy SMP
@@ -107,10 +110,12 @@ impl History {
                 for v in row.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
             }
         }
-        for plane0 in self.cont_hist.iter_mut() {
-            for plane1 in plane0.iter_mut() {
-                for row in plane1.iter_mut() {
-                    for v in row.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
+        for cap_plane in self.cont_hist.iter_mut() {
+            for plane0 in cap_plane.iter_mut() {
+                for plane1 in plane0.iter_mut() {
+                    for row in plane1.iter_mut() {
+                        for v in row.iter_mut() { *v = (*v as i32 * factor / divisor) as i16; }
+                    }
                 }
             }
         }
@@ -252,6 +257,7 @@ impl MovePicker {
         xray_blockers: Bitboard,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
+        moved_cap_stack: &[u8],
     ) -> Self {
         // Get continuation history sub-table pointers at plies 1, 2, 4, 6 back.
         // Uses moved_piece_stack for correct piece lookup (avoids stale board.piece_at).
@@ -263,8 +269,11 @@ impl MovePicker {
             if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
+                // Parent-move capture bit selects the cont-hist plane.
+                let prior_cap = (ply - off < moved_cap_stack.len()
+                    && moved_cap_stack[ply - off] != 0) as usize;
                 if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
-                    cont_hist_subs[i] = Some(&history.cont_hist[prior_piece][prior_to] as *const [[i16; 64]; 13]);
+                    cont_hist_subs[i] = Some(&history.cont_hist[prior_cap][prior_piece][prior_to] as *const [[i16; 64]; 13]);
                 }
             }
         }
@@ -354,6 +363,7 @@ impl MovePicker {
         threats: Threats,
         moved_piece_stack: &[u8],
         moved_to_stack: &[u8],
+        moved_cap_stack: &[u8],
     ) -> Self {
         // Build cont-hist pointers for evasion (same as main picker).
         // Also guard the upper bound: qsearch can deepen past MAX_PLY via
@@ -365,8 +375,11 @@ impl MovePicker {
             if ply >= off && ply - off < moved_piece_stack.len() && ply - off < moved_to_stack.len() {
                 let prior_piece = moved_piece_stack[ply - off] as usize;
                 let prior_to = moved_to_stack[ply - off] as usize;
+                // Parent-move capture bit selects the cont-hist plane.
+                let prior_cap = (ply - off < moved_cap_stack.len()
+                    && moved_cap_stack[ply - off] != 0) as usize;
                 if prior_piece > 0 && prior_piece < 13 && prior_to < 64 {
-                    cont_hist_subs[i] = Some(&history.cont_hist[prior_piece][prior_to] as *const [[i16; 64]; 13]);
+                    cont_hist_subs[i] = Some(&history.cont_hist[prior_cap][prior_piece][prior_to] as *const [[i16; 64]; 13]);
                 }
             }
         }
