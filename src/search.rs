@@ -141,6 +141,11 @@ tunables!(
     // HIST_PRUNE_DEPTH_10X / HIST_PRUNE_MULT removed 2026-06-02 — see hist-prune
     // removal block in main negamax body for rationale (three H0 SPRTs).
     (SEE_QUIET_MULT, 23, 5, 80, 3.75, true),
+    // History-adjusted effective depth for the quiet-SEE bar (audit S2):
+    // good-history quiets face a shallower quadratic threshold and survive
+    // later; bad-history quiets prune earlier. Extends the capture-SEE
+    // capt-hist pattern to quiets. main_hist(+/-16k)/4000 = +/-4 plies.
+    (SEE_QUIET_HIST_DIV, 4000, 1000, 20000, 800.0, true),
     // Low-increment TM multiplier ceiling (2026-06-18). The factor product
     // (stability×fail-low×forced×subtree×score-trend, up to ~13.8×) is only
     // clamped for no_inc; at increments that are SMALL RELATIVE TO THE CLOCK
@@ -4867,7 +4872,10 @@ fn negamax(
             && beta < MATE_IN_MAX_PLY  // forced-win guard: don't SEE-prune quiets while proving a win
             && FEAT_SEE_PRUNE.load(Ordering::Relaxed)
         {
-            let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * lmr_d * lmr_d;
+            let see_lmr_d = (lmr_d
+                + info.history.main_score(from, to, enemy_attacks) / tp(&SEE_QUIET_HIST_DIV))
+                .clamp(0, depth);
+            let see_quiet_threshold = -tp(&SEE_QUIET_MULT) * see_lmr_d * see_lmr_d;
             if !see_ge(board, mv, see_quiet_threshold) {
                 info.stats.see_prunes += 1;
                 continue;
