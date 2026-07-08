@@ -4825,12 +4825,17 @@ fn negamax(
         // Estimated LMR depth for pre-MakeMove pruning (SEE quiet, futility).
         // Computed once and shared — no depth ceiling; at high depths lmr_d
         // collapses to 1, so thresholds naturally become permissive.
-        let lmr_d = if move_count > 1 && depth >= 2 {
-            // Table is centi-ply; gates want integer plies (floor = old value).
-            let r = lmr_reduction((depth as usize).min(63) as i32, (move_count as usize).min(63) as i32) / LMR_SCALE;
-            if r > 0 { (depth - r).max(1) } else { depth }
+        let (lmr_d, lmr_d_centi) = if move_count > 1 && depth >= 2 {
+            // Table is centi-ply; the pruning GATES want integer plies (floor =
+            // old value), but the futility MARGIN uses the un-rounded centi-ply
+            // value for sub-ply precision — a stair-stepped margin is coarse at
+            // deep, low-reduction depths (an LTC-scaling refinement).
+            let r_centi = lmr_reduction((depth as usize).min(63) as i32, (move_count as usize).min(63) as i32);
+            let r = r_centi / LMR_SCALE;
+            let lmr_d = if r > 0 { (depth - r).max(1) } else { depth };
+            (lmr_d, (depth * LMR_SCALE - r_centi).max(LMR_SCALE))
         } else {
-            depth
+            (depth, depth * LMR_SCALE)
         };
 
         // Futility pruning (P2.2: moved ABOVE SEE-quiet so the cheap static prune
@@ -4848,7 +4853,7 @@ fn negamax(
             let main_hist = info.history.main_score(from, to, enemy_attacks);
             let hist_adj = main_hist / 128;
             let threats_adj = any_threat_count * tp(&FUT_THREATS_MARGIN);
-            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d * tp(&FUT_PER_DEPTH) + hist_adj + threats_adj;
+            let futility_value = static_eval + tp(&FUT_BASE) + lmr_d_centi * tp(&FUT_PER_DEPTH) / LMR_SCALE + hist_adj + threats_adj;
             // Direct-check carve-out + strong-history exemption (Igel/Reckless #410).
             if futility_value <= alpha && main_hist < 12000 && !board.gives_direct_check(mv) {
                 info.stats.futility_prunes += 1;
