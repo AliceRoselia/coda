@@ -554,6 +554,17 @@ tunables!(
     // Fail-low prior-countermove cont-hist bonus, % of history_bonus(depth)
     // (SF fail-low history harvesting, simple core — audit 2026-07-05 T1#2).
     (FAIL_LOW_PREV_BONUS_PCT, 60, 0, 150, 15.0, false),
+    // EvalHist (modelled on Obsidian search.cpp:840): always-on retroactive
+    // credit for the OPPONENT's last quiet move, scaled by the static-eval
+    // swing it caused. theirLoss = static_evals[ply-1] + static_eval - BIAS
+    // (both stm-relative; large positive = opponent's move left us better =
+    // their move was bad); bonus = clamp(-MULT*theirLoss/64, +-MAX) written to
+    // the opponent move's main history. Distinct from FAIL_LOW_PREV_BONUS
+    // (fail-low-only, cont-hist, fixed depth-bonus) in trigger, table, and
+    // magnitude. Non-core.
+    (EVAL_SWING_MULT, 492, 0, 1500, 60.0, false),
+    (EVAL_SWING_BIAS, 58, -200, 400, 20.0, false),
+    (EVAL_SWING_MAX, 534, 0, 2000, 90.0, false),
 );
 
 // Demoted loose knobs (2026-05-22 cross-tune analysis): SPSA drift dominated
@@ -4281,6 +4292,31 @@ fn negamax(
         let eval_sum = info.static_evals[ply_u - 1] + static_eval;
         if eval_sum <= 0 {
             depth += 1;
+        }
+    }
+
+    // EvalHist (Obsidian search.cpp:840): retroactively credit the opponent's
+    // last QUIET move by the static-eval swing it caused. Always-on (not just
+    // fail-low). Uses `enemy_attacks` as the (approximate) threat frame for the
+    // opponent move's 4D-history slot — Coda's main history is color-agnostic +
+    // threat-keyed, so this is the pragmatic MVP; refine the frame if it H1s.
+    if !in_check && ply_u >= 1 && static_eval > -MATE_IN_MAX_PLY
+        && info.static_evals[ply_u - 1] > -MATE_IN_MAX_PLY
+    {
+        let sl = board.undo_stack.len();
+        if sl >= 1 {
+            let opp = &board.undo_stack[sl - 1];
+            if opp.mv != NO_MOVE && opp.captured == NO_PIECE_TYPE {
+                let of = move_from(opp.mv);
+                let ot = move_to(opp.mv);
+                let their_loss = info.static_evals[ply_u - 1] + static_eval - tp(&EVAL_SWING_BIAS);
+                let cap = tp(&EVAL_SWING_MAX);
+                let bonus = (-tp(&EVAL_SWING_MULT) * their_loss / 64).clamp(-cap, cap);
+                History::update_history(
+                    info.history.main_entry(of, ot, enemy_attacks),
+                    bonus,
+                );
+            }
         }
     }
 
