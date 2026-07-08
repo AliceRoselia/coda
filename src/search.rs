@@ -3705,7 +3705,12 @@ fn negamax(
     // Found via correctness audit 2026-05-23, adjacent to the prior
     // MAX_PLY=64→128 fix family.
     if ply > 0 {
-        let draw_score: i32 = 0;
+        // Zero-mean node-keyed jitter instead of a flat 0, so equal drawn lines
+        // aren't bit-identical — breaks the search out of drawn-eval plateaus and
+        // nudges playing-on over accepting a nominal draw. Deterministic per
+        // search (node count is deterministic single-threaded), so bench stays
+        // reproducible. {-2,-1,0,1,2}, mean 0.
+        let draw_score: i32 = (info.nodes % 5) as i32 - 2;
         if board.halfmove >= 100 {
             return draw_score;
         }
