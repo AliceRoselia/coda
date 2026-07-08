@@ -5878,7 +5878,11 @@ fn negamax(
         // Divisor floor: SPSA can perturb FH_BLEND_OFFSET to 0 AND
         // FH_BLEND_DEPTH_10X low enough that the gate admits depth=0,
         // producing a 0+0 divisor → div-by-zero panic. Clamp.
-        return (best_score * depth + beta) / (depth + tp(&FH_BLEND_OFFSET)).max(1);
+        // Cap the depth weight: with raw depth, at LTC depths (25-30) best_score
+        // swamps beta and the blend stops doing anything. Capping keeps beta's
+        // pull meaningful in deep searches (an LTC-scaling fix).
+        let w = depth.min(8);
+        return (best_score * w + beta) / (w + tp(&FH_BLEND_OFFSET)).max(1);
     }
 
     best_score
