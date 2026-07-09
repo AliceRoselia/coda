@@ -119,7 +119,11 @@ impl History {
     /// Update history with gravity (bonus capped, decayed toward zero).
     pub fn update_history(entry: &mut i32, bonus: i32) {
         let clamped = bonus.clamp(-MAX_HISTORY, MAX_HISTORY);
-        *entry += clamped - *entry * clamped.abs() / MAX_HISTORY;
+        let abs_bonus = clamped.abs();
+        let entry_term = *entry * abs_bonus/MAX_HISTORY;
+        let term = clamped - entry_term;
+        let term2 = term * abs_bonus/(2*MAX_HISTORY);
+        *entry += term - term2;
     }
 
     /// Update continuation history (i16 entries) with gravity.
@@ -127,7 +131,11 @@ impl History {
     pub fn update_cont_history(entry: &mut i16, bonus: i32) {
         let clamped = bonus.clamp(-MAX_HISTORY, MAX_HISTORY);
         let val = *entry as i32;
-        let new_val = val + clamped - val * clamped.abs() / MAX_HISTORY;
+        let abs_bonus = clamped.abs();
+        let entry_term = val * abs_bonus/MAX_HISTORY;
+        let term = clamped - entry_term;
+        let term2 = term * abs_bonus/(2*MAX_HISTORY);
+        let new_val = val + term - term2;
         *entry = new_val.clamp(-32000, 32000) as i16;
     }
 
@@ -139,7 +147,11 @@ impl History {
     pub fn update_cont_history_with_base(entry: &mut i16, base: i32, bonus: i32) {
         let clamped = bonus.clamp(-MAX_HISTORY, MAX_HISTORY);
         let val = *entry as i32;
-        let new_val = val + clamped - base * clamped.abs() / MAX_HISTORY;
+        let abs_bonus = clamped.abs();
+        let entry_term = base * abs_bonus/MAX_HISTORY;
+        let term = clamped - entry_term;
+        let term2 = term * abs_bonus/(2*MAX_HISTORY);
+        let new_val = val + term - term2;
         *entry = new_val.clamp(-32000, 32000) as i16;
     }
 }
