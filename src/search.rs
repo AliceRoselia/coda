@@ -5328,12 +5328,13 @@ fn negamax(
 
     // Hindsight extension (a common cross-engine pattern — Stockfish,
     // Alexandria, Halogen, Stormphrax): mirror of the
-    // reduction. When parent reduced aggressively (>=3) but the combined
+    // reduction. When parent reduced by at least 2 plies but the combined
     // eval shows position has worsened (eval_sum <= 0), extend +1 ply to
     // find the threat we missed. Non-PV only (PV already searched fully).
+    // Threshold 2 (was 3): #3557 +1.0 H1 at 177k games, 2026-09-13.
     if !in_check && ply >= 1 && ply_u >= 1
         && !is_pv
-        && prior_reduction >= 3
+        && prior_reduction >= 2
         && info.static_evals[ply_u - 1] > -(MATE_IN_MAX_PLY)
         && static_eval > -INFINITY
         && FEAT_HINDSIGHT.load(Ordering::Relaxed)
