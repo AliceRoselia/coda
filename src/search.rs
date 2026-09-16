@@ -312,6 +312,20 @@ tunables!(
     // Minimum depth at which singular extension is attempted. Too low and
     // singular_depth is itself too shallow to judge singularity reliably.
     (SE_DEPTH_10X, 40, 40, 200, 20.0, true),
+    // Root-depth-aware uplift on the singular-extension depth gate, the same
+    // shape as LMP_ROOT_* and as the RFP_ROOT_* correction those both follow.
+    // SE_DEPTH_10X now holds the deep-search value: the LTC core tune left it
+    // at 4.0 (a9cf975d) while an STC walk started from that point pulled it to
+    // 5.3, i.e. shallow searches want singular verification to start LATER.
+    // Mechanism: the verification re-search is a fixed cost per firing, and a
+    // short search has fewer plies to amortise it over.
+    //
+    // KNEE = 17, our measured deep-search median root depth (same measurement
+    // as LMP_ROOT_KNEE: 14 at 100ms/move, 17 at 1s, 22 at 4s), so the uplift
+    // is zero at LTC and main is unchanged there. COEF = 4 = the STC walk's
+    // preferred +13 (in tenths of a ply) over the measured 3-ply gap.
+    (SE_ROOT_KNEE, 17, 10, 24, 1.5, true),
+    (SE_ROOT_COEF, 4, 0, 15, 1.5, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
     (ASP_SCORE_DIV, 12000, 8000, 50000, 2100.0, false),
     // Late move pruning: quiets searched before the cutoff, on the shape
@@ -6043,7 +6057,9 @@ fn negamax(
         if mv == tt_move
             && tt_move != NO_MOVE
             && ply > 0
+            // Shallow searches start singular verification later — see SE_ROOT_KNEE.
             && depth >= tp10(&SE_DEPTH_10X)
+                + (tp(&SE_ROOT_KNEE) - info.root_depth).max(0) * tp(&SE_ROOT_COEF) / 10
             // Deliberately NO !in_check gate. None of SF/Obsidian/Berserk/
             // Stormphrax gate SE on check, and gating it means a deep in-check
             // node's TT move (often the single forced evasion — maximally
