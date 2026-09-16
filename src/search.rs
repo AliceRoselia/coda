@@ -5235,7 +5235,12 @@ fn negamax(
         // Consumer threshold matches pack_data's static_eval clamp range
         // (-4095..4095). Stores that pass -INFINITY (in-check positions
         // where eval is undefined) get clamped to -4095; we reject that
-        // value here and recompute. The legitimate-eval-at-exactly-(-4095)
+        // value here and recompute. This is a SENTINEL test, not a range
+        // check, which is why it is one-sided: nothing ever writes a
+        // positive sentinel. (The +4095 rail needs ~41 pawns of raw eval,
+        // about four spare queens — constructible, never played. Thor,
+        // NNUE audit 47ec0b3: 11.0M TT static-eval uses, zero differing
+        // from a fresh eval.) The legitimate-eval-at-exactly-(-4095)
         // false positive case (~-40 pawns) is rare enough that re-eval
         // is harmless.
         if FEAT_TT_STATIC_EVAL.load(Ordering::Relaxed) && tt_hit && tt_entry.static_eval > -4095 {
