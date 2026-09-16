@@ -332,6 +332,21 @@ tunables!(
     // implementation. Tested anyway at Adam's request (2026-08-17) since the
     // predictor here differs from the post-hoc selector that was measured.
     (LMP_MARGIN_THRESH, 53, 50, 500, 35.0, true),
+    // Root-depth-aware uplift on the LMP predictive margin, same shape as the
+    // RFP_ROOT_* correction above with the sign flipped: that one demands MORE
+    // confidence as the search gets deeper, this one demands more as it gets
+    // SHALLOWER. LMP_MARGIN_THRESH now holds the deep-search value (the LTC
+    // core tune moved it 77 -> 53, a9cf975d); an STC walk started from that
+    // point pulled it back to 76, so the knob is genuinely clock-dependent and
+    // one constant cannot serve both.
+    //
+    // Constants from our own measurement (warm TT, one middlegame line, this
+    // binary): median root depth 14 at 100 ms/move, 17 at 1 s/move, 22 at 4 s.
+    // KNEE = 17, the measured deep-search median, so the uplift is zero at LTC
+    // and above and main is unchanged there. COEF = 8 = the STC walk's
+    // preferred +23 divided by the measured 3-ply gap between the two medians.
+    (LMP_ROOT_KNEE, 17, 10, 24, 1.5, true),
+    (LMP_ROOT_COEF, 8, 0, 20, 1.5, true),
     (LMP_MARGIN_PCT, 58, 40, 100, 6.0, true),
     // Root-depth-aware LMR relaxation (single-set, self-adapts STC<->LTC):
     // reduce LESS as the OVERALL search depth grows past LMR_ROOT_THRESH
@@ -5907,7 +5922,10 @@ fn negamax(
             // is the best in-node signal that this will fail low, so spend fewer
             // quiets on it. Guarded on static_eval being real (it is -INFINITY
             // in check, though !in_check above already excludes that).
-            if static_eval > -INFINITY && alpha - static_eval >= tp(&LMP_MARGIN_THRESH) {
+            // Shallow searches want a larger margin here — see LMP_ROOT_KNEE.
+            let lmp_margin = tp(&LMP_MARGIN_THRESH)
+                + (tp(&LMP_ROOT_KNEE) - info.root_depth).max(0) * tp(&LMP_ROOT_COEF);
+            if static_eval > -INFINITY && alpha - static_eval >= lmp_margin {
                 lmp_limit = (lmp_limit * tp(&LMP_MARGIN_PCT) / 100).max(1);
             }
             // The gives_direct_check carve sits inside the movecount test — only
