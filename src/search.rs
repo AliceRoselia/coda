@@ -6696,6 +6696,7 @@ fn negamax(
                                     let base = cur_cont + main_score_v / 2;
                                     History::update_cont_history_with_base(
                                         &info.cont.t[prior_piece][prior_to][gp_mv][to as usize],
+                                        cur_cont,
                                         base,
                                         ch_b,
                                     );
@@ -6861,6 +6862,7 @@ fn negamax(
                                         let base = cur_cont + main_score_v / 2;
                                         History::update_cont_history_with_base(
                                             &info.cont.t[prior_piece][prior_to][gp_mv][to as usize],
+                                            cur_cont,
                                             base,
                                             ch_bonus,
                                         );
@@ -6907,6 +6909,7 @@ fn negamax(
                                                 let base = cur_cont + q_main_score / 2;
                                                 History::update_cont_history_with_base(
                                                     &info.cont.t[prior_piece][prior_to][gp_q][qt as usize],
+                                                    cur_cont,
                                                     base,
                                                     ch_pen,
                                                 );
