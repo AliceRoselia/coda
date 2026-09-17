@@ -3936,6 +3936,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
 
         prev_score = score;
         info.last_score = score;
+
         // Recomputed each completed iteration from that iteration's settled root
         // score; a mid-iteration abort leaves the previous iteration's verdict,
         // which is the conservative direction.
@@ -4059,6 +4060,24 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
                 global, nps, elapsed,
                 info.tt.hashfull(), info.tb_hits, pv_str
             );
+        }
+
+        // Nothing can beat a mate in one, and nothing avoids being mated in
+        // one, so once either is proved there is no better move left to find
+        // and the remaining think time is pure waste. Placed AFTER this
+        // iteration's `info` line so the GUI still receives the score and PV.
+        // Only under time management: an `infinite`/analysis search must keep
+        // reporting, and fixed-node or fixed-depth runs have their own
+        // contract. `score` is a completed iteration's settled value here.
+        //
+        // The failure this removes is losing a won game on the clock while the
+        // engine re-proves a mate it already holds — a deployment problem our
+        // SPRT harness cannot see, because adjudication ends those games first.
+        if !limits.infinite && info.time_limit > 0
+            && score.abs() >= MATE_IN_MAX_PLY
+            && MATE_SCORE - score.abs() <= 2
+        {
+            break;
         }
 
         // MultiPV secondary lines (analysis only). Save/restore the primary
