@@ -1216,6 +1216,8 @@ pub struct SearchInfo {
     pub rfp_audit_active: bool,
     pub tt: std::sync::Arc<TT>,  // shared across Lazy SMP threads
     pub history: Box<History>,
+    /// Continuation history, shared by all threads of a search.
+    pub cont: std::sync::Arc<crate::movepicker::ContHist>,
     pub stop: std::sync::Arc<AtomicBool>,  // shared stop flag
     /// EXTERNAL stop flag: set ONLY by the UCI
     /// thread on `stop`/`quit`/abandon (uci.rs shares its external_stop
@@ -1475,6 +1477,7 @@ impl SearchInfo {
             stats_tt_static_eval_hits: 0,
             tt,
             history: alloc_zeroed_box(),
+            cont: crate::movepicker::ContHist::shared_zeroed(),
             stop: std::sync::Arc::new(AtomicBool::new(false)),
             external_stop: std::sync::Arc::new(AtomicBool::new(false)),
             start_time: Instant::now(),
@@ -1771,6 +1774,7 @@ impl SearchInfo {
 
     pub fn clear_persistent_histories(&mut self) {
         self.history.clear();
+        self.cont.clear();
         self.clear_pawn_hist();
         self.clear_correction_history();
     }
@@ -1779,7 +1783,7 @@ impl SearchInfo {
     pub fn dirty_persistent_histories_for_test(&mut self) {
         self.history.main[1][0][2][3] = 123;
         self.history.capture[1][4][2] = -45;
-        self.history.cont_hist[1][4][2][5] = 67;
+        self.cont.t[1][4][2][5].store(67, Ordering::Relaxed);
         self.pawn_hist[3][1][7] = 89;
         self.corr.pawn[WHITE as usize][5].store(101, Ordering::Relaxed);
         self.corr.np[BLACK as usize][WHITE as usize][6].store(-202, Ordering::Relaxed);
@@ -1805,15 +1809,7 @@ impl SearchInfo {
                 }
             }
         }
-        for a in self.history.cont_hist.iter() {
-            for b in a.iter() {
-                for c in b.iter() {
-                    for &v in c.iter() {
-                        assert_eq!(v, 0, "continuation history was not cleared");
-                    }
-                }
-            }
-        }
+        self.cont.assert_clear_for_test();
         for a in self.pawn_hist.iter() {
             for b in a.iter() {
                 for &v in b.iter() {
@@ -2666,6 +2662,10 @@ fn refresh_helper_common(helper: &mut SearchInfo, main: &SearchInfo) {
 pub(crate) fn seed_helper_from_main(helper: &mut SearchInfo, main: &SearchInfo) {
     refresh_helper_common(helper, main);
     helper.history.copy_from(&main.history);
+    // Continuation history is SHARED with main (one Arc): move-pattern knowledge
+    // every thread can reuse, unlike main/capture history which is the
+    // Lazy-SMP diversity source (sharing all three lost 16 Elo, #3590).
+    helper.cont = main.cont.clone();
 }
 
 /// Per-`go` refresh of a reused pool worker (Stage 2 — SMP diversity). Unlike
@@ -2679,6 +2679,7 @@ pub(crate) fn seed_helper_from_main(helper: &mut SearchInfo, main: &SearchInfo) 
 pub(crate) fn refresh_helper_per_go(helper: &mut SearchInfo, main: &SearchInfo) {
     refresh_helper_common(helper, main);
     helper.history.age(4, 5);
+    // cont is shared; main ages it once per go, helpers must not age it again.
 }
 
 /// Per-`go` preparation of a helper `SearchInfo` for a search on `board`:
@@ -3493,6 +3494,7 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
     // converges too slowly for persistence to matter, but with them each move
     // starts from a warm eval calibration.
     info.history.age(4, 5);
+    info.cont.age(4, 5);
     info.stats = PruneStats::default();
     // Age pawn history (×0.80, matching main/capture history aging)
     for entry in info.pawn_hist.iter_mut() {
@@ -5134,8 +5136,8 @@ fn negamax(
                                 && opp_to < 64 && our_to < 64
                             {
                                 let malus = -((155 * depth).min(385));
-                                History::update_cont_history(
-                                    &mut info.history.cont_hist[our_gp][our_to][opp_gp][opp_to],
+                                History::update_shared_cont(
+                                    &info.cont.t[our_gp][our_to][opp_gp][opp_to],
                                     malus,
                                 );
                             }
@@ -5729,7 +5731,7 @@ fn negamax(
         } else {
             NO_MOVE
         };
-        let mut pc_picker = QMovePicker::new(board, pc_tt_move, &info.history, pinned, checkers);
+        let mut pc_picker = QMovePicker::new(board, pc_tt_move, &info.history, &info.cont, pinned, checkers);
         loop {
             let mv = pc_picker.next(board);
             if mv == NO_MOVE { break; }
@@ -5862,9 +5864,9 @@ fn negamax(
     };
     let pawn_hist_ref = Some(&info.pawn_hist[ph_idx] as &[[i16; 64]; 13]);
     let mut picker = if in_check {
-        MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new_evasion(tt_move, safe_ply, checkers, pinned, &info.history, &info.cont, prev_move, pawn_hist_ref, enemy_attacks, &info.moved_piece_stack, &info.moved_to_stack)
     } else {
-        MovePicker::new(board, tt_move, safe_ply, checkers, pinned, &info.history, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
+        MovePicker::new(board, tt_move, safe_ply, checkers, pinned, &info.history, &info.cont, prev_move, pawn_hist_ref, enemy_attacks, our_xray_blockers, &info.moved_piece_stack, &info.moved_to_stack)
     };
     picker.threat_sq = threat_sq;
 
@@ -6442,10 +6444,10 @@ fn negamax(
                 if moved_piece != NO_PIECE {
                     let gp = go_piece(moved_piece);
                     if prev_piece_for_cont != 0 {
-                        hist_score += info.history.cont_hist[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize] as i32;
+                        hist_score += info.cont.t[prev_piece_for_cont][prev_to_for_cont as usize][gp][to as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
                     }
                     if prev2_piece_for_cont != 0 {
-                        hist_score += info.history.cont_hist[prev2_piece_for_cont][prev2_to_for_cont as usize][gp][to as usize] as i32 / 2;
+                        hist_score += info.cont.t[prev2_piece_for_cont][prev2_to_for_cont as usize][gp][to as usize].load(std::sync::atomic::Ordering::Relaxed) as i32 / 2;
                     }
                     // Pawn history: pawn-structure-aware move quality (SF/Alexandria pattern).
                     // Uses the node-level ph_idx (parent pawn hash) — this code runs
@@ -6690,10 +6692,10 @@ fn negamax(
                                     // as Berserk/Alexandria/Stormphrax do —
                                     // NOT a [bonus, b/2, b/2, b/2] taper.
                                     let ch_b = nudge_bonus;
-                                    let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
+                                    let cur_cont = info.cont.t[prior_piece][prior_to][gp_mv][to as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
                                     let base = cur_cont + main_score_v / 2;
                                     History::update_cont_history_with_base(
-                                        &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
+                                        &info.cont.t[prior_piece][prior_to][gp_mv][to as usize],
                                         base,
                                         ch_b,
                                     );
@@ -6855,10 +6857,10 @@ fn negamax(
                                     if prior_piece > 0 && prior_piece < crate::movepicker::CONT_PLANES && prior_to < 64 {
                                         // B1: uniform bonus (see LMR nudge site above).
                                         let ch_bonus = bonus;
-                                        let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize] as i32;
+                                        let cur_cont = info.cont.t[prior_piece][prior_to][gp_mv][to as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
                                         let base = cur_cont + main_score_v / 2;
                                         History::update_cont_history_with_base(
-                                            &mut info.history.cont_hist[prior_piece][prior_to][gp_mv][to as usize],
+                                            &info.cont.t[prior_piece][prior_to][gp_mv][to as usize],
                                             base,
                                             ch_bonus,
                                         );
@@ -6901,10 +6903,10 @@ fn negamax(
                                             if prior_piece > 0 && prior_piece < crate::movepicker::CONT_PLANES && prior_to < 64 {
                                                 // B1: uniform penalty (see bonus site above).
                                                 let ch_pen = -malus;
-                                                let cur_cont = info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize] as i32;
+                                                let cur_cont = info.cont.t[prior_piece][prior_to][gp_q][qt as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
                                                 let base = cur_cont + q_main_score / 2;
                                                 History::update_cont_history_with_base(
-                                                    &mut info.history.cont_hist[prior_piece][prior_to][gp_q][qt as usize],
+                                                    &info.cont.t[prior_piece][prior_to][gp_q][qt as usize],
                                                     base,
                                                     ch_pen,
                                                 );
@@ -7105,8 +7107,8 @@ fn negamax(
                     && opp_to < 64 && our_to < 64
                 {
                     let bonus = history_bonus(depth) * tp(&FAIL_LOW_PREV_BONUS_PCT) / 100;
-                    History::update_cont_history(
-                        &mut info.history.cont_hist[our_gp][our_to][opp_gp][opp_to],
+                    History::update_shared_cont(
+                        &info.cont.t[our_gp][our_to][opp_gp][opp_to],
                         bonus,
                     );
                 }
@@ -7392,7 +7394,7 @@ fn quiescence_with_depth(
         // has thrown a won game in live play.
         let qs_safe_ply = (ply as usize).min(MAX_PLY - 1);
         let mut evasion_picker = MovePicker::new_evasion(
-            tt_move, qs_safe_ply, qs_checkers, qs_pinned, &info.history, qs_prev_move, qs_pawn_hist_ref,
+            tt_move, qs_safe_ply, qs_checkers, qs_pinned, &info.history, &info.cont, qs_prev_move, qs_pawn_hist_ref,
             qs_enemy_attacks,
             &info.moved_piece_stack, &info.moved_to_stack,
         );
@@ -7588,7 +7590,7 @@ fn quiescence_with_depth(
 
     // Use main MovePicker in quiescence mode.
     // This partitions captures into good (SEE>=0) and bad, and uses staged ordering.
-    let mut picker = MovePicker::new_quiescence(tt_move, &info.history, qs_checkers, qs_pinned);
+    let mut picker = MovePicker::new_quiescence(tt_move, &info.history, &info.cont, qs_checkers, qs_pinned);
     let mut best_move = NO_MOVE;
     let mut qs_move_count = 0i32;
     let qs_max_caps = tp(&QS_MAX_CAPTURES);
