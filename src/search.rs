@@ -324,18 +324,6 @@ tunables!(
     // as LMP_ROOT_KNEE: 14 at 100ms/move, 17 at 1s, 22 at 4s), so the uplift
     // is zero at LTC and main is unchanged there. COEF = 4 = the STC walk's
     // preferred +13 (in tenths of a ply) over the measured 3-ply gap.
-    // Reduce one ply less for move shapes whose reductions are repeatedly
-    // undone. The tally must be weighted AGAINST the base rate or it simply
-    // drifts to the common outcome and the gate never fires: re-searches are
-    // the minority event, so a re-search costs LMR_RESEARCH_PENALTY while a
-    // reduction that holds credits +1. At penalty ~= (1-p)/p for base rate p
-    // a shape of average rate sits near zero and only worse-than-average
-    // shapes go negative. MEASURED on bench: LMR searches fail high on only
-    // 1.5% of reductions (5,468 of 365,040), so the neutral penalty is
-    // (1-p)/p ~= 65 — a first guess of 6 was an order of magnitude out and the
-    // gate never fired. Measure the base rate before choosing tally weights.
-    (LMR_RESEARCH_PRIOR, 8, 2, 256, 6.0, false),
-    (LMR_RESEARCH_PENALTY, 64, 8, 256, 24.0, false),
     (SE_ROOT_KNEE, 17, 10, 24, 1.5, true),
     (SE_ROOT_COEF, 4, 0, 15, 1.5, true),
     (ASP_DELTA, 11, 5, 30, 1.5, false),
@@ -1153,7 +1141,6 @@ pub struct PruneStats {
     pub width_cnt_by_depth: [u64; 32],
     pub ts_lmr_research: u64,
     pub ts_lmr_failhigh: u64,
-    pub ts_lmr_failhigh: u64,
     pub ts_asp_fail_low: u64,
     pub ts_asp_fail_high: u64,
 }
@@ -1407,14 +1394,6 @@ pub struct SearchInfo {
     /// decided and the search is deep enough for that score to be trusted.
     /// Read at interior nodes to suppress positive singular extensions.
     pub root_decided: bool,
-    /// Late-move-reduction RE-SEARCH rate, by move shape [piece 1-12][to].
-    /// LMR decides whether to reduce from a history score, which is a PROXY for
-    /// "will this reduction turn out to be wrong". The direct quantity is
-    /// observable and currently thrown away: every reduced search that fails
-    /// high and forces a full re-search is a reduction we should not have made,
-    /// and every one that holds is a reduction that was right. Nothing in the
-    /// tree learns from that outcome.
-    pub lmr_outcome: Box<[[i16; 64]; 13]>,
     /// TMDebug-only stop-time snapshot of the dynamic-TM factors (see TmDbg).
     tm_dbg: TmDbg,
     /// Line-trace forensics (CODA_TRACE_LINE env): zobrist hashes of the
@@ -1543,7 +1522,6 @@ impl SearchInfo {
             completed_depth: 0,
             root_depth: 0,
             root_decided: false,
-            lmr_outcome: alloc_zeroed_box(),
             tm_dbg: TmDbg::default(),
             trace_hashes: Vec::new(),
             trace_line_mv: Vec::new(),
@@ -6597,18 +6575,6 @@ fn negamax(
                         }
                     }
 
-                    // Shapes whose reductions have repeatedly been undone get one
-                    // ply back: the re-search rate directly measures "was reducing
-                    // this a mistake", where the history score is only a proxy.
-                    {
-                        let lp = board.piece_at(move_from(mv));
-                        if lp != NO_PIECE
-                            && info.lmr_outcome[go_piece(lp) as usize][move_to(mv) as usize]
-                                <= -(tp(&LMR_RESEARCH_PRIOR) as i16)
-                        {
-                            reduction -= LMR_SCALE;
-                        }
-                    }
                     if reduction < 0 {
                         reduction = 0;
                     }
@@ -6667,16 +6633,6 @@ fn negamax(
             // reduction slot after the reduced search).
             info.reductions[ply_u] = 0;
 
-            {
-                // Record whether this reduction had to be undone.
-                if lmr_score > alpha { info.stats.ts_lmr_failhigh += 1; }
-                let lp = board.piece_at(move_from(mv));
-                if lp != NO_PIECE {
-                    let e = &mut info.lmr_outcome[go_piece(lp) as usize][move_to(mv) as usize];
-                    let d: i16 = if lmr_score > alpha { -(tp(&LMR_RESEARCH_PENALTY) as i16) } else { 1 };
-                    *e = (*e + d).clamp(-1024, 1024);
-                }
-            }
             if lmr_score > alpha { info.stats.ts_lmr_failhigh += 1; }
             if lmr_score > alpha && !info.stop.load(Ordering::Relaxed) {
                 // LMR failed high: doDeeper/doShallower before re-search.
@@ -7974,8 +7930,6 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         total_stats.ts_lmr_failhigh += info.stats.ts_lmr_failhigh;
         // ts_lmr_research was collected but never merged, so it read 0 in every
         // bench report that touched it.
-        total_stats.ts_lmr_research += info.stats.ts_lmr_research;
-        total_stats.ts_lmr_failhigh += info.stats.ts_lmr_failhigh;
         total_stats.ts_asp_fail_low += info.stats.ts_asp_fail_low;
         total_stats.ts_asp_fail_high += info.stats.ts_asp_fail_high;
         total_stats.tt_hits += info.stats.tt_hits;
@@ -8065,8 +8019,6 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
     // re-searches are cheap -- but the rate should stay visible.
     eprintln!("Asp fail-low:   {:>8}  fail-high: {}", s.ts_asp_fail_low, s.ts_asp_fail_high);
     eprintln!("LMR fail-high:  {:>8}  ({:.1}% of LMR searches); deepened re-searches: {}",
-        s.ts_lmr_failhigh, 100.0 * s.ts_lmr_failhigh as f64 / s.lmr_searches.max(1) as f64, s.ts_lmr_research);
-    eprintln!("LMR fail-high:  {:>8}  ({:.1}% of LMR searches);  deepened re-searches: {}",
         s.ts_lmr_failhigh, 100.0 * s.ts_lmr_failhigh as f64 / s.lmr_searches.max(1) as f64, s.ts_lmr_research);
     eprintln!("NMP attempts:   {:>8}  cutoffs: {} ({:.0}%)", s.nmp_attempts, s.nmp_cutoffs,
         if s.nmp_attempts > 0 { s.nmp_cutoffs as f64 / s.nmp_attempts as f64 * 100.0 } else { 0.0 });
