@@ -163,7 +163,7 @@ tunables!(
     // a fail-HIGH. (Idea from Hobbes, who instead EXTENDS their shallower RFP
     // range upward under qsearch confirmation; our range is already deep, so
     // the population is at the top of the existing range, not beyond it.)
-    (RFP_QS_VERIFY_DEPTH, 10, 4, 18, 2.0, false),
+    (RFP_QS_VERIFY_DEPTH, 6, 4, 18, 2.0, false),
     // Razoring: drop straight to qsearch when static eval is far enough below
     // alpha that a full search is unlikely to recover it. Margin scales with
     // depth, gated to shallow depths only.
