@@ -1794,6 +1794,33 @@ impl SearchInfo {
         self.clear_correction_history();
     }
 
+    /// Read and clear the cross-thread best-move-change slots, returning the
+    /// total. This is a ONE-ITERATION window: every completed root iteration
+    /// that changes a thread's best move adds one to that thread's slot, and
+    /// the consumer (`bmc_instability_factor`) divides by the thread count, so
+    /// "every thread changed once" — total == num_threads — is the intended
+    /// maximum. The drain therefore has to happen once per root iteration,
+    /// unconditionally; see the call site in `search`.
+    ///
+    /// `swap(AcqRel)` and not `Relaxed`: the writers publish with `Release`
+    /// (main's own slot and every helper's), so the drain needs the paired
+    /// `Acquire` to be guaranteed to observe them on a weakly-ordered target
+    /// such as aarch64, and the `Release` half so a helper's next `fetch_add`
+    /// cannot be reordered ahead of the zeroing it must follow.
+    ///
+    /// Not gated on `num_threads > 1`, because the write side is not: main
+    /// adds to slot 0 on every root best-move change whatever the thread
+    /// count, while the per-search reset runs only on the threads > 1 path.
+    /// An ungated drain is what keeps slot 0 from accumulating across a whole
+    /// single-threaded game.
+    pub fn take_bmc_window(&self) -> u32 {
+        let mut total: u32 = 0;
+        for slot in self.thread_bmc.iter().take(self.num_threads.max(1)) {
+            total = total.saturating_add(slot.swap(0, Ordering::AcqRel));
+        }
+        total
+    }
+
     #[cfg(test)]
     pub fn dirty_persistent_histories_for_test(&mut self) {
         self.history.main[1][0][2][3] = 123;
@@ -2769,6 +2796,29 @@ pub(crate) fn nnue_net_identity(info: &SearchInfo) -> usize {
         .as_ref()
         .map(|n| std::sync::Arc::as_ptr(n) as *const () as usize)
         .unwrap_or(0)
+}
+
+/// Dynamic-TM factor 6: cross-thread best-move instability (Threads > 1 only).
+///
+/// `window` is one iteration's best-move changes summed over the pool (see
+/// `SearchInfo::take_bmc_window`), normalized by the thread count so the factor
+/// means "what fraction of the pool changed its mind this iteration", not "how
+/// many threads are running". Scales time UP when the pool is collectively
+/// still churning — main may have momentarily settled while helpers disagree,
+/// which its own stability table cannot see.
+///
+/// With the live knobs (TM_BMC_INSTAB_BASE 1000, TM_BMC_INSTAB_MULT 2315) the
+/// per-iteration range is 1.00 (nobody changed) to 1.00 + 2.315 = 3.32 (every
+/// thread changed). That ceiling is a property of the window being ONE
+/// iteration wide: a window that banks several iterations of changes has no
+/// bound and saturates the multiplier product against tm_max_time.
+fn bmc_instability_factor(window: u32, num_threads: usize) -> f64 {
+    if num_threads <= 1 {
+        return 1.0;
+    }
+    let base = tp(&TM_BMC_INSTAB_BASE) as f64 / 1000.0;
+    let mult = tp(&TM_BMC_INSTAB_MULT) as f64 / 1000.0;
+    base + mult * (window as f64) / (num_threads as f64)
 }
 
 /// Compute time-management budgets from clock state. Returns
@@ -4284,6 +4334,32 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             }
         }
 
+        // Drain the cross-thread best-move-change slots on EVERY completed
+        // iteration, before the dynamic-TM block below may or may not consume
+        // them. The slots are a one-iteration window (see take_bmc_window);
+        // draining inside the TM block instead made the window as wide as the
+        // gap between two iterations that both satisfy
+        // `soft_limit > 0 && depth >= 4 && !should_stop()`.
+        //
+        // That gap is the whole ponder. `go ponder` runs with soft_limit == 0
+        // (UCI marks the search infinite and no budget exists until
+        // ponderhit), so every ponder iteration's changes piled into one
+        // window and the FIRST post-ponderhit iteration read them as though a
+        // single iteration had produced them. With the live knobs the intended
+        // per-iteration maximum is 1.00 + 2.315 = 3.32; a 30-iteration ponder
+        // on 4 threads banking ~30 changes gives 1.00 + 2.315 * 30/4 = 18.4,
+        // which pins the factor product at the increment ceiling and then at
+        // tm_max_time — roughly one extra iteration of spend, at the frontier
+        // about a doubling of the first post-hit iteration. Depths 1-3 and
+        // stopped iterations bank the same way, just narrower.
+        //
+        // Unconditional rather than a one-shot drain at the post-ponderhit
+        // arming block: arming is one of several ways to skip the TM block,
+        // and this keeps the invariant "the slots hold changes since main's
+        // previous completed iteration" true on every path, including
+        // Threads == 1 where the write side is ungated too.
+        let bmc_window = info.take_bmc_window();
+
         // Dynamic TM: a multiplicative factor product applied to the soft
         // budget, clamped to max_time — there is no separate cap. A bounded
         // product (~9.5× max) against a wide hard window (46% of clock, from
@@ -4426,24 +4502,10 @@ pub fn search(board: &mut Board, info: &mut SearchInfo, limits: &SearchLimits) -
             // Combined multiplier — the standard factors + score-trend + cross-thread.
             // Max product ~ 2.50 × 1.68 × 1.0 × 2.27 × 1.45 = 13.8×
             // Min product ~ 0.75 × 1.0  × 0.386 × 0.87 × 0.80 = 0.20×
-            // Factor 6: cross-thread best-move instability (concept from SF, Threads>1
-            // only). Sum this iteration's best-move changes across ALL threads,
-            // normalize by thread count, and scale time UP when the pool is
-            // collectively still churning — main may have momentarily settled
-            // while helpers disagree, which its own stability table can't see.
-            // Reset the per-thread slots after reading (per-iteration window).
-            let cross_thread_instability = if info.num_threads > 1 {
-                let n = info.num_threads;
-                let mut total: u32 = 0;
-                for slot in info.thread_bmc.iter().take(n) {
-                    total = total.saturating_add(slot.swap(0, Ordering::AcqRel));
-                }
-                let base = tp(&TM_BMC_INSTAB_BASE) as f64 / 1000.0;
-                let mult = tp(&TM_BMC_INSTAB_MULT) as f64 / 1000.0;
-                base + mult * (total as f64) / (n as f64)
-            } else {
-                1.0
-            };
+            // Factor 6: cross-thread best-move instability (concept from SF,
+            // Threads>1 only) — this iteration's pool-wide best-move changes,
+            // drained above. See `bmc_instability_factor`.
+            let cross_thread_instability = bmc_instability_factor(bmc_window, info.num_threads);
 
             let mut multiplier = stability_multiplier
                 * failed_low_multiplier
@@ -8423,6 +8485,78 @@ mod tests {
         let _ = negamax(&mut board, &mut info, -1, 0, 7, 1, true);
         assert!(info.nodes > 1, "rejected bound must not return via TT narrowing");
         assert_eq!(board.hash, hash);
+    }
+
+    /// A `go ponder` search is infinite with no clock, so `soft_limit` stays 0
+    /// for its whole duration and the dynamic-TM block — which used to be the
+    /// only place the cross-thread best-move-change slots were drained — never
+    /// runs. The slots are a ONE-ITERATION window, so the root loop has to
+    /// drain them itself; otherwise the first post-ponderhit iteration inherits
+    /// every ponder iteration's churn as if it were its own.
+    ///
+    /// The limits below are that shape (infinite, no clock), and the slots are
+    /// pre-loaded as a long ponder would leave them.
+    #[test]
+    fn root_iterations_drain_the_cross_thread_bmc_window() {
+        crate::init();
+        let Some(net) = test_net_path() else {
+            eprintln!("Skipping root_iterations_drain_the_cross_thread_bmc_window: \
+                       no NNUE net found (set CODA_TEST_NET or fetch the net.txt net)");
+            return;
+        };
+        let mut info = SearchInfo::new(16);
+        info.load_nnue(&net).unwrap();
+        info.silent = true;
+        const THREADS: usize = 4;
+        const PONDER_ITERS: u32 = 30;
+        info.num_threads = THREADS;
+        // A 30-iteration ponder on 4 threads with every thread changing its
+        // best move every iteration — the worst case a ponder can bank.
+        for slot in info.thread_bmc.iter().take(THREADS) {
+            slot.store(PONDER_ITERS, Ordering::Relaxed);
+        }
+        let limits = SearchLimits {
+            depth: 6,
+            fixed_depth: true,
+            infinite: true,
+            ..SearchLimits::new()
+        };
+        assert_eq!(limits.movetime, 0, "the ponder shape has no clock");
+        let mut board = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        let _ = search(&mut board, &mut info, &limits);
+        assert_eq!(info.soft_limit, 0, "this search must have no soft limit, or it is not the ponder path");
+        let left: u32 = info.thread_bmc.iter().take(THREADS)
+            .map(|s| s.load(Ordering::Acquire)).sum();
+        assert_eq!(left, 0,
+                   "root iterations must drain the cross-thread bmc window even with no soft limit; \
+                    {} changes were still banked for the first post-ponderhit iteration", left);
+    }
+
+    /// The instability factor is normalized by thread count, so "every thread
+    /// changed once" is one fixed ceiling at any `Threads` setting — and a
+    /// window that banks N iterations of that is N times as far above the idle
+    /// rail, with no bound of its own. That is the whole reason the drain has
+    /// to happen once per iteration.
+    #[test]
+    fn bmc_instability_ceiling_is_one_change_per_thread() {
+        let idle = bmc_instability_factor(0, 2);
+        let ceiling = bmc_instability_factor(2, 2);
+        assert!(ceiling > idle, "a churning pool must ask for more time, not less");
+        for n in [2usize, 4, 8, 16, 64] {
+            assert_eq!(bmc_instability_factor(0, n), idle, "idle rail must not depend on thread count");
+            assert!((bmc_instability_factor(n as u32, n) - ceiling).abs() < 1e-9,
+                    "one change per thread must be the same ceiling at Threads={}", n);
+            // 30 banked iterations of the ceiling window sit 30 increments
+            // above the idle rail — unbounded in the window width.
+            let banked = bmc_instability_factor(30 * n as u32, n);
+            assert!((banked - idle - 30.0 * (ceiling - idle)).abs() < 1e-9,
+                    "an undrained window scales linearly past the ceiling at Threads={}", n);
+            assert!(banked > 5.0 * ceiling, "30 banked iterations must be far past the per-iteration ceiling");
+        }
+        // Threads <= 1 has no cross-thread signal: the factor is inert, even
+        // though main writes its own slot at every thread count.
+        assert_eq!(bmc_instability_factor(30, 1), 1.0);
+        assert_eq!(bmc_instability_factor(30, 0), 1.0);
     }
 
     #[test]
