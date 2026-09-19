@@ -752,7 +752,7 @@ impl MovePicker {
                 score += escape_bonus_by_pt[pt.min(7) as usize];
             }
 
-            // Quiet check bonus: moves that give direct check (SF +16384).
+            // Quiet check bonus: moves that give direct check.
             // SEE-gated like SF: a check that loses material by more
             // than QUIET_CHECK_SEE_MARGIN is a losing sac — don't order it first.
             if piece != NO_PIECE
@@ -872,8 +872,9 @@ impl MovePicker {
                 //
                 // The (1<<20) base makes the capture band uncrossable: quiet
                 // history sums span ±80k, so a smaller offset lets a hot quiet
-                // outrank a fresh capture of the checker. SF uses 1<<28,
-                // Berserk 1e7. mvv+captHist still order within the band.
+                // outrank a fresh capture of the checker. The constant only
+                // has to dominate the mvv+captHist range, which still orders
+                // moves within the band.
                 (1 << 20) + mvv_lva(board, m) + capt_hist_score_static(board, history, m)
             } else if is_promotion(m) {
                 if flags == FLAG_PROMOTE_Q {
