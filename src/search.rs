@@ -1576,11 +1576,28 @@ pub struct SearchInfo {
     pub syzygy: Option<std::sync::Arc<crate::tb::SyzygyTB>>,
     /// Min depth at which to probe Syzygy WDL when at the maximum loaded
     /// piece count (SF `SyzygyProbeDepth`). Below the max piece count we
-    /// always probe regardless of depth. Default 4: our deploy set is
-    /// 5-man-everything, so max-men interior probes at depth<4 are frequent
-    /// and largely redundant (re-probed deeper up the tree). Local RR
-    /// (5-man, STC, no-adjudication) measured =4 vs =1 at +2.0 Elo, LOS
-    /// 92.2%, N=10000. UCI option `SyzygyProbeDepth`.
+    /// always probe regardless of depth. UCI option `SyzygyProbeDepth`.
+    ///
+    /// Default 1. The earlier default of 4 rested on a local RR (5-man, STC,
+    /// no-adjudication) measuring =4 over =1 at +2.0 Elo, LOS 92.2%, N=10000
+    /// — 1.4 sigma. Two SPRTs on TB-holding workers then split by clock:
+    ///   STC 10+0.1, N=154378: -0.08 +- 0.86, H0 — flat, not a regression.
+    ///   LTC 40+0.4, N= 75694: +1.54 +- 1.14, H1 — passed.
+    /// The STC leg measures the same regime as the old RR at 15x the sample
+    /// and finds nothing, so the two agree that the effect is invisible at a
+    /// fast clock; the LTC leg is the first measurement positioned to see it.
+    ///
+    /// Why the gate cost accuracy rather than merely time: the trigger is
+    /// REMAINING depth, so a deeper search creates proportionally MORE nodes
+    /// inside the gated region, and the error does not converge. Measured on
+    /// 1780 six-man tablebase-drawn positions with 5-man tables mounted, the
+    /// exact score was returned for 47.8% at =4 against 77.1% at =1.
+    ///
+    /// The cost is narrower than raw NPS suggests: the probe condition
+    /// short-circuits on piece count before consulting this gate, so outside
+    /// TB range the setting is inert. Inside it, table hits terminate
+    /// subtrees — the same positions reached median depth 31 at =1 against
+    /// 24 at =4, despite the lower node rate.
     pub tb_probe_depth: i32,
 }
 
@@ -1673,7 +1690,7 @@ impl SearchInfo {
             nnue_acc: None,
             threat_stack: crate::threat_accum::ThreatStack::new(768), // max v9 accum size
             syzygy: None,
-            tb_probe_depth: 4,
+            tb_probe_depth: 1,
             rfp_audit_active: false,
         }
     }
