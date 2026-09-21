@@ -1,7 +1,20 @@
 //! Syzygy tablebase probing via shakmaty-syzygy.
 //!
-//! WDL probes at interior nodes (requires halfmove == 0).
-//! DTZ probes at root for best tablebase move.
+//! WDL probes at interior nodes; DTZ probes at root for the best move.
+//!
+//! NOTE: we deliberately do NOT use the common `halfmove == 0` probe
+//! restriction. Syzygy WDL alone is 50-move-unaware, so the usual guard is to
+//! probe only at a zeroed clock. We instead probe at ANY halfmove and let
+//! shakmaty's halfmove-aware `AmbiguousWdl` report Cursed/Blessed/Maybe, with
+//! `tb_cache` keyed by (hash, halfmove) so the two cannot cross-contaminate
+//! (see `probe_wdl`). That extracts tablebase information in a strictly larger
+//! set of positions — and it is why `SyzygyProbeDepth` matters more here than
+//! the option's origin suggests: our probeable set is bigger, so gating it
+//! discards more.
+//!
+//! Positions with any castling right are declined outright: Syzygy assumes
+//! none, so a probe would be unsound. The `castling_rights: EMPTY` in the
+//! setup builder is safe ONLY because that guard runs first.
 
 use shakmaty::{Chess, FromSetup, CastlingMode, Position, Setup, Role,
                Color as ShColor, Square as ShSquare, Piece as ShPiece,
