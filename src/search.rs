@@ -1199,11 +1199,6 @@ prune_stats! {
     rfp_audit_var_fp: [u64; 3],
     cut_quiet_rank1: u64,
     cut_quiet_rank_sum: u64,
-    // Dual-net dispatch instrumentation: |material-proxy| buckets of 100
-    // SEE units, index 11 = 1100+.
-    dualnet_evals: [u64; 12],
-    dualnet_abseval: [u64; 12],
-    dualnet_neareq: [u64; 12],
     // Fail-low node histogram, indexed
     // [depth band 0-2][margin band 0-3][quiet-count band 0-3]:
     // depth {<=4, 5-8, >=9}, margin {<50, 50-150, 150-300, >=300}cp,
@@ -2294,23 +2289,6 @@ impl SearchInfo {
                 let span = SAT_MAT_FULL - SAT_MAT_KNEE;
                 let ramp = excess.min(span);
                 final_score += mat * SAT_TIEBREAK_W * ramp / (100 * span);
-            }
-        }
-
-        // Dual-net dispatch instrumentation (both paths still call the big
-        // net). Proxy = SIGNED piece-material balance in SEE
-        // units — the candidate dispatch signal: position-intrinsic,
-        // changes only on captures/promotions. Per |proxy| bucket we count
-        // evals, sum |internal eval|, and count near-equal evals
-        // (|eval| < 100 internal) — giving, from one bench run, the
-        // small-net qualification rate at ANY threshold plus the
-        // false-positive rate the re-eval guard would face there.
-        {
-            let bucket = ((signed_material.abs() / 100) as usize).min(11);
-            self.stats.dualnet_evals[bucket] += 1;
-            self.stats.dualnet_abseval[bucket] += final_score.unsigned_abs() as u64;
-            if final_score.abs() < 100 {
-                self.stats.dualnet_neareq[bucket] += 1;
             }
         }
 
@@ -8381,25 +8359,6 @@ fn bench_inner(depth: i32, nnue_path: Option<&str>, print_stats: bool) -> u64 {
         }
         eprintln!("Move ordering:  avg cutoff pos {:.2}, avg pos² {:.1}, first-move {:.1}%",
             avg_pos, avg_sq, first_pct);
-        {
-            let total: u64 = s.dualnet_evals.iter().sum();
-            if total > 0 {
-                eprintln!("--- Dual-net dispatch candidate (proxy = |material| in SEE units) ---");
-                let mut cum = 0u64;
-                for i in (0..12).rev() {
-                    cum += s.dualnet_evals[i];
-                    let n = s.dualnet_evals[i];
-                    if n == 0 { continue; }
-                    let lo = i * 100;
-                    let label = if i == 11 { "1100+ ".to_string() } else { format!("{:>4}-{:<4}", lo, lo + 99) };
-                    eprintln!("proxy {}: {:>8} evals ({:5.2}%)  qualify-if-thresh<=this: {:5.1}%  mean|eval|={:>5}  near-eq {:4.1}%",
-                        label, n, 100.0 * n as f64 / total as f64,
-                        100.0 * cum as f64 / total as f64,
-                        s.dualnet_abseval[i] / n.max(1),
-                        100.0 * s.dualnet_neareq[i] as f64 / n.max(1) as f64);
-                }
-            }
-        }
         {
             let bn: u64 = s.b_probe_nodes.iter().flatten().sum();
             if bn > 0 && s.moves_searched > 0 {
